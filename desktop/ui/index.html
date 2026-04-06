@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SynapCode</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    h1 { color: #58a6ff; font-size: 1.5rem; margin-bottom: 4px; }
+    .subtitle { color: #8b949e; font-size: 0.85rem; margin-bottom: 24px; }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .card h2 { font-size: 0.9rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+    .service {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #21262d;
+    }
+    .service:last-child { border-bottom: none; }
+    .service-name { font-weight: 600; }
+    .service-detail { color: #8b949e; font-size: 0.85rem; }
+    .status-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      display: inline-block; margin-right: 8px;
+    }
+    .status-dot.running { background: #3fb950; }
+    .status-dot.stopped { background: #f85149; }
+    .btn {
+      background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+      padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 0.8rem;
+    }
+    .btn:hover { background: #30363d; }
+    .ram-bar {
+      height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; margin-top: 8px;
+    }
+    .ram-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+    .ram-fill.ok { background: #3fb950; }
+    .ram-fill.warn { background: #d29922; }
+    .ram-fill.danger { background: #f85149; }
+    .ram-text { font-size: 0.85rem; color: #8b949e; margin-top: 4px; }
+    .quick-start { margin-top: 16px; }
+    .quick-start code {
+      display: block; background: #0d1117; border: 1px solid #30363d;
+      padding: 12px; border-radius: 4px; font-size: 0.85rem; color: #79c0ff;
+      margin-top: 8px; white-space: pre;
+    }
+  </style>
+</head>
+<body>
+  <h1>SynapCode</h1>
+  <p class="subtitle">Local-first GraphRAG cognitive stack</p>
+
+  <div class="card" id="services-card">
+    <h2>Services</h2>
+    <div id="services">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h2>Hardware</h2>
+    <div id="ram-info">--</div>
+    <div class="ram-bar"><div class="ram-fill ok" id="ram-bar" style="width: 0%"></div></div>
+    <div class="ram-text" id="ram-text"></div>
+  </div>
+
+  <div class="card quick-start">
+    <h2>Quick Start</h2>
+    <code>synapcode init /path/to/your/repo
+synapcode search "authenticate"
+synapcode impact process_data
+synapcode query "What calls this function?"</code>
+  </div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+
+    async function refreshHealth() {
+      try {
+        const health = await invoke("get_health");
+        renderServices(health.services);
+        renderRAM(health);
+      } catch (e) {
+        document.getElementById("services").textContent = "Error: " + e;
+      }
+    }
+
+    function renderServices(services) {
+      const container = document.getElementById("services");
+      container.innerHTML = services.map(s => `
+        <div class="service">
+          <div>
+            <span class="status-dot ${s.running ? 'running' : 'stopped'}"></span>
+            <span class="service-name">${s.name}</span>
+            <span class="service-detail">${s.detail}${s.pid ? ' (PID ' + s.pid + ')' : ''}</span>
+          </div>
+          <button class="btn" onclick="restartService('${s.name.toLowerCase()}')">Restart</button>
+        </div>
+      `).join("");
+    }
+
+    function renderRAM(health) {
+      const pct = health.ram_percent;
+      const bar = document.getElementById("ram-bar");
+      bar.style.width = pct + "%";
+      bar.className = "ram-fill " + (pct > 80 ? "danger" : pct > 60 ? "warn" : "ok");
+      document.getElementById("ram-info").textContent =
+        `${health.ram_used_gb.toFixed(1)} / ${health.ram_total_gb.toFixed(1)} GB`;
+      document.getElementById("ram-text").textContent =
+        pct > 60
+          ? `${pct.toFixed(0)}% — approaching 60% threshold for cloud bursting`
+          : `${pct.toFixed(0)}% — within safe range`;
+    }
+
+    async function restartService(name) {
+      try {
+        const msg = await invoke("restart_service", { name });
+        console.log(msg);
+        setTimeout(refreshHealth, 2000);
+      } catch (e) {
+        alert("Failed: " + e);
+      }
+    }
+
+    // Poll every 5 seconds
+    refreshHealth();
+    setInterval(refreshHealth, 5000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "SynapCode",
+  "version": "0.1.0",
+  "identifier": "com.synapcode.app",
+  "build": {
+    "frontendDist": "../ui",
+    "devUrl": "http://localhost:5173"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "SynapCode",
+        "width": 900,
+        "height": 640,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "tooltip": "SynapCode"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/falkordb-server",
+      "binaries/temporal-server"
+    ]
+  },
+  "plugins": {
+    "shell": {
+      "open": true,
+      "scope": [
+        {
+          "name": "python-worker",
+          "cmd": "python",
+          "args": ["-m", "synapcode.temporal.worker"]
+        },
+        {
+          "name": "python-mcp",
+          "cmd": "python",
+          "args": ["-m", "synapcode.mcp"]
+        }
+      ]
+    }
+  }
+}

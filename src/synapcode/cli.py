@@ -27,9 +27,47 @@ from synapcode.graph.query import GraphQueryEngine
 from synapcode.sync.git_hooks import get_current_head, get_last_indexed_sha, save_last_indexed_sha
 
 
-def _make_client() -> GraphClient:
+def _ensure_falkordb() -> GraphClient:
+    """Connect to FalkorDB, auto-starting it via Docker if needed."""
+    import subprocess
+    import time
+
     config = load_config()
-    return GraphClient(config.falkordb)
+    client = GraphClient(config.falkordb)
+
+    try:
+        client.ensure_schema()
+        return client
+    except Exception:
+        pass  # Not running, try to start it
+
+    click.echo("FalkorDB not running. Starting via Docker...")
+    try:
+        subprocess.run(
+            ["docker", "run", "-d", "--name", "synapcode-falkordb",
+             "-p", "6379:6379", "falkordb/falkordb:latest"],
+            capture_output=True, check=True,
+        )
+    except subprocess.CalledProcessError:
+        # Container might already exist but be stopped
+        subprocess.run(
+            ["docker", "start", "synapcode-falkordb"],
+            capture_output=True,
+        )
+
+    # Wait for it
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            client = GraphClient(config.falkordb)
+            client.ensure_schema()
+            click.echo("FalkorDB started.")
+            return client
+        except Exception:
+            continue
+
+    click.echo("Could not start FalkorDB. Install Docker or start it manually.", err=True)
+    sys.exit(1)
 
 
 @click.group()
@@ -42,15 +80,7 @@ def cli():
 @click.argument("repo_path", type=click.Path(exists=True, file_okay=False))
 def init(repo_path: str):
     """First-time setup: create schema, full index, save bookmark."""
-    client = _make_client()
-
-    click.echo(f"Connecting to FalkorDB at {client._config.host}:{client._config.port}...")
-    try:
-        client.ensure_schema()
-    except Exception as e:
-        click.echo(f"Failed to connect to FalkorDB: {e}", err=True)
-        click.echo("Start it with: docker compose up -d falkordb", err=True)
-        sys.exit(1)
+    client = _ensure_falkordb()
 
     click.echo(f"Indexing {repo_path}...")
     builder = CodePropertyGraphBuilder(repo_path=repo_path, client=client)
@@ -75,7 +105,7 @@ def init(repo_path: str):
 @click.option("--full", is_flag=True, help="Force full re-index instead of incremental")
 def index(repo_path: str, full: bool):
     """Re-index a repository (incremental by default)."""
-    client = _make_client()
+    client = _ensure_falkordb()
     client.ensure_schema()
 
     bookmark = get_last_indexed_sha(repo_path)
@@ -120,7 +150,7 @@ def index(repo_path: str, full: bool):
 @click.argument("question")
 def query(question: str):
     """Query the graph for structural context about your codebase."""
-    client = _make_client()
+    client = _ensure_falkordb()
     engine = GraphQueryEngine(client)
 
     from synapcode.pipelines.graphrag_inlet import build_graph_context
@@ -147,7 +177,7 @@ def query(question: str):
 @click.option("--depth", default=5, help="Maximum traversal depth")
 def impact(function_name: str, depth: int):
     """Analyze cascading impact of changing a function."""
-    client = _make_client()
+    client = _ensure_falkordb()
     engine = GraphQueryEngine(client)
 
     result = engine.impact_analysis(function_name, max_depth=depth)
@@ -177,7 +207,7 @@ def impact(function_name: str, depth: int):
 @click.argument("pattern")
 def search(pattern: str):
     """Search for functions and classes by name pattern."""
-    client = _make_client()
+    client = _ensure_falkordb()
     engine = GraphQueryEngine(client)
 
     results = engine.search_by_pattern(pattern)
@@ -242,7 +272,7 @@ def gc(repo_path: str):
     """Run garbage collection on the graph."""
     from synapcode.graph.gc import GraphGarbageCollector
 
-    client = _make_client()
+    client = _ensure_falkordb()
     collector = GraphGarbageCollector(client)
     report = collector.run_full_gc(repo_path)
 
@@ -276,7 +306,7 @@ def snapshot_restore(repo_path: str):
     from synapcode.sync.bootstrap import restore_snapshot
 
     if restore_snapshot(repo_path):
-        client = _make_client()
+        client = _ensure_falkordb()
         click.echo(f"Graph restored: {client.node_count()} nodes, {client.edge_count()} edges")
     else:
         click.echo("No snapshot found. Run 'synapcode snapshot create' first.", err=True)
