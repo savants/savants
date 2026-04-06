@@ -114,12 +114,16 @@ class CodePropertyGraphBuilder:
         return result
 
     def _extract_nodes(
-        self, node: Any, file_path: str, result: dict, source: bytes
+        self, node: Any, file_path: str, result: dict, source: bytes,
+        enclosing_function: str = "",
     ) -> None:
         """Recursively walk the AST and extract functions, classes, imports."""
+        current_function = enclosing_function
+
         if node.type in ("function_definition", "function_declaration", "method_definition"):
             name_node = node.child_by_field_name("name")
             name = name_node.text.decode() if name_node else "<anonymous>"
+            current_function = name
 
             params = []
             params_node = node.child_by_field_name("parameters")
@@ -159,16 +163,21 @@ class CodePropertyGraphBuilder:
         elif node.type == "call":
             fn_node = node.child_by_field_name("function")
             if fn_node:
+                callee = fn_node.text.decode()
+                # For method calls like self.validate(), extract just the method name
+                if "." in callee:
+                    callee = callee.rsplit(".", 1)[-1]
                 result["calls"].append(
                     {
                         "caller_file": file_path,
-                        "callee_name": fn_node.text.decode(),
+                        "caller_function": current_function,
+                        "callee_name": callee,
                         "line": node.start_point[0] + 1,
                     }
                 )
 
         for child in node.children:
-            self._extract_nodes(child, file_path, result, source)
+            self._extract_nodes(child, file_path, result, source, current_function)
 
     def build(self) -> dict[str, int]:
         """Build the full Code Property Graph. Returns counts of nodes created."""
@@ -177,7 +186,9 @@ class CodePropertyGraphBuilder:
         logger.info("Discovered %d source files in %s", len(files), self.repo_path)
 
         stats = {"files": 0, "functions": 0, "classes": 0, "edges": 0}
+        all_calls: list[dict] = []
 
+        # Pass 1: Create all nodes and CONTAINS edges
         for file_path in files:
             try:
                 parsed = self.parse_file(file_path)
@@ -219,18 +230,23 @@ class CodePropertyGraphBuilder:
                 self.client.query(cypher, params)
                 stats["edges"] += 1
 
-            # Create CALLS edges
-            for call in parsed["calls"]:
-                cypher, params = create_edge_query(
-                    "File", "path", call["caller_file"],
-                    "Function", "name", call["callee_name"],
-                    "CALLS",
-                )
-                try:
-                    self.client.query(cypher, params)
-                    stats["edges"] += 1
-                except Exception:
-                    pass  # Target function may not exist in the graph yet
+            # Collect calls for pass 2
+            all_calls.extend(parsed["calls"])
+
+        # Pass 2: Create CALLS edges (all function nodes exist now)
+        for call in all_calls:
+            if not call.get("caller_function"):
+                continue
+            cypher, params = create_edge_query(
+                "Function", "name", call["caller_function"],
+                "Function", "name", call["callee_name"],
+                "CALLS",
+            )
+            try:
+                self.client.query(cypher, params)
+                stats["edges"] += 1
+            except Exception:
+                pass  # Target function may be external (not in this repo)
 
         logger.info("CPG build complete: %s", stats)
         return stats

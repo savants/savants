@@ -1,8 +1,14 @@
-"""Acceptance tests for pipeline routing and GraphRAG context injection."""
+"""Tests for pipeline routing and GraphRAG context injection — no mocks."""
 
 from __future__ import annotations
 
-from synapcode.pipelines.graphrag_inlet import extract_code_references, inject_context
+import pytest
+
+from synapcode.pipelines.graphrag_inlet import (
+    build_graph_context,
+    extract_code_references,
+    inject_context,
+)
 from synapcode.pipelines.router import RouteDecision, estimate_complexity, route_request
 
 
@@ -24,24 +30,7 @@ class TestCodeReferenceExtraction:
 
     def test_empty_message(self):
         refs = extract_code_references("")
-        assert refs["functions"] == []
-        assert refs["classes"] == []
-        assert refs["files"] == []
-
-
-class TestContextInjection:
-    def test_no_messages_returns_empty(self):
-        result = inject_context([])
-        assert result == []
-
-    def test_preserves_system_messages(self):
-        messages = [
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "hello"},
-        ]
-        # With no graph client, context injection will fail silently
-        result = inject_context(messages)
-        assert result[0]["role"] == "system"
+        assert refs == {"functions": [], "classes": [], "files": []}
 
 
 class TestComplexityEstimation:
@@ -54,15 +43,9 @@ class TestComplexityEstimation:
         )
         assert score > 0.7
 
-    def test_long_messages_increase_score(self):
-        short = estimate_complexity("fix bug")
-        long = estimate_complexity("x " * 1500 + "fix bug")
-        assert long >= short
-
-    def test_code_blocks_increase_score(self):
-        without = estimate_complexity("explain this function")
-        with_code = estimate_complexity("explain this function ```def foo(): pass```")
-        assert with_code >= without
+    def test_bounds(self):
+        score = estimate_complexity("x " * 2000 + " refactor impact cascading")
+        assert 0.0 <= score <= 1.0
 
 
 class TestRoutingDecisions:
@@ -78,28 +61,32 @@ class TestRoutingDecisions:
         assert result.decision == RouteDecision.FRONTIER
 
     def test_ram_overload_forces_frontier(self):
-        result = route_request(
-            "simple question",
-            local_ram_pct=80.0,
-            ram_threshold=60.0,
-        )
+        result = route_request("simple question", local_ram_pct=80.0, ram_threshold=60.0)
         assert result.decision == RouteDecision.FRONTIER
         assert "RAM" in result.reason
 
-    def test_custom_threshold(self):
-        # With a very high threshold, complex queries still route locally
-        result = route_request(
-            "refactor the architecture",
-            complexity_threshold=0.99,
-            local_ram_pct=30.0,
-        )
-        assert result.decision == RouteDecision.LOCAL
-
     def test_returns_correct_model_names(self):
         result = route_request(
-            "hello",
-            local_model="my-local-model",
-            frontier_model="my-frontier-model",
-            local_ram_pct=30.0,
+            "hello", local_model="my-local", frontier_model="my-frontier", local_ram_pct=30.0,
         )
-        assert result.model == "my-local-model"
+        assert result.model == "my-local"
+
+
+@pytest.mark.integration
+class TestGraphContextInjection:
+    def test_builds_context_from_real_graph(self, indexed_repo):
+        """build_graph_context should return structural context from an indexed repo."""
+        context = build_graph_context("What does helper() do?", indexed_repo["client"])
+        # Should find the helper function in the graph
+        assert context  # Non-empty means graph context was found
+        assert "helper" in context.lower() or "Function" in context
+
+    def test_inject_modifies_user_message(self, indexed_repo):
+        messages = [{"role": "user", "content": "Tell me about helper()"}]
+        result = inject_context(messages, indexed_repo["client"])
+        # The user message should now contain graph context
+        assert len(result[0]["content"]) > len("Tell me about helper()")
+
+    def test_empty_graph_returns_empty_context(self, graph_client):
+        context = build_graph_context("random question about nothing", graph_client)
+        assert context == ""

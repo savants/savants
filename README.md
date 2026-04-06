@@ -47,41 +47,95 @@ A local-first AI cognitive stack that leverages **FalkorDB** for GraphRAG, **Tem
 
 - Python 3.11+
 - Docker & Docker Compose
-- Git LFS
 
-### 1. Start Infrastructure
+### 1. Start FalkorDB
 
 ```bash
-docker compose up -d
+docker compose up -d falkordb
 ```
 
-This starts FalkorDB and Temporal Server locally.
-
-### 2. Install Python Dependencies
+### 2. Install
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-### 3. Start the Temporal Worker
+### 3. Index a Repository
 
 ```bash
-python -m synapcode.temporal.worker
+synapcode init /path/to/your/repo
 ```
 
-### 4. Index a Repository
+### 4. Explore Your Codebase
+
+```bash
+# Search for functions/classes
+synapcode search "authenticate"
+
+# Cascading impact analysis
+synapcode impact process_data
+
+# Query with natural language
+synapcode query "What functions call authenticate?"
+
+# Check system health
+synapcode status
+```
+
+### 5. Keep the Graph in Sync
+
+```bash
+# Install git hooks for automatic sync on pull
+./scripts/install-hooks.sh /path/to/repo
+
+# Or manually re-index after changes
+synapcode index /path/to/repo
+```
+
+### 6. Connect to Claude Code / Cursor (MCP)
+
+```bash
+# Register as an MCP server
+claude mcp add-json synapcode --scope user '{
+  "command": "python",
+  "args": ["-m", "synapcode.mcp"],
+  "env": {"FALKORDB_HOST": "localhost", "FALKORDB_PORT": "6379"}
+}'
+```
+
+### Full CLI Reference
+
+```
+synapcode init <repo>              First-time index + setup
+synapcode index <repo> [--full]    Re-index (incremental by default)
+synapcode query "<question>"       Query graph for structural context
+synapcode impact <function_name>   Cascading impact analysis
+synapcode search <pattern>         Search functions/classes by name
+synapcode status                   Service health + graph stats
+synapcode gc <repo>                Garbage collection
+synapcode snapshot create <repo>   Serialize graph for Git LFS
+synapcode snapshot restore <repo>  Restore from snapshot
+synapcode serve                    Start MCP server
+synapcode worker                   Start Temporal worker
+```
+
+### Programmatic Usage
 
 ```python
+from synapcode.graph.client import GraphClient
 from synapcode.graph.cpg import CodePropertyGraphBuilder
+from synapcode.graph.query import GraphQueryEngine
 
-builder = CodePropertyGraphBuilder(repo_path="/path/to/repo")
-await builder.build()
-```
+# Index a repo
+client = GraphClient()
+builder = CodePropertyGraphBuilder(repo_path="/path/to/repo", client=client)
+stats = builder.build()
+print(f"Indexed {stats['files']} files, {stats['functions']} functions")
 
-### 5. Install Git Hooks (for incremental sync)
-
-```bash
-./scripts/install-hooks.sh /path/to/repo
+# Query the graph
+engine = GraphQueryEngine(client)
+impact = engine.impact_analysis("my_function", max_depth=5)
+print(f"Affected files: {impact.affected_files}")
 ```
 
 ## Features

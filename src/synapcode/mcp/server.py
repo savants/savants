@@ -66,8 +66,8 @@ def write_message(stream: IO[bytes], msg: dict) -> None:
 class SynapCodeMCPServer:
     """MCP-compliant server using Content-Length framed stdio transport."""
 
-    def __init__(self):
-        self.client = GraphClient()
+    def __init__(self, client: GraphClient | None = None):
+        self.client = client or GraphClient()
         self.engine = GraphQueryEngine(self.client)
         self._initialized = False
 

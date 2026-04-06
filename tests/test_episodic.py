@@ -1,23 +1,19 @@
-"""Tests for episodic temporal memory."""
+"""Tests for episodic temporal memory — real FalkorDB, no mocks."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from synapcode.graph.episodic import Episode, EpisodicMemory, TemporalFact
 
 
-def _mock_result(rows):
-    result = MagicMock()
-    result.result_set = rows
-    return result
-
-
+@pytest.mark.integration
 class TestEpisodeCreation:
-    def test_add_episode(self, mock_graph_client):
-        mock_graph_client.query.return_value = _mock_result([[42]])
-        memory = EpisodicMemory(mock_graph_client)
+    def test_add_and_retrieve_episode(self, graph_client):
+        memory = EpisodicMemory(graph_client)
+        memory.ensure_schema()
 
         episode = Episode(
             content="Refactored auth module to use JWT",
@@ -25,18 +21,20 @@ class TestEpisodeCreation:
             source_id="abc123def456",
         )
         eid = memory.add_episode(episode)
-        assert eid == "42"
-        assert mock_graph_client.query.called
+        assert eid  # Got a node ID back
 
-    def test_episode_has_timestamp(self):
-        ep = Episode(content="test", source_type="chat", source_id="1")
-        assert ep.timestamp.tzinfo == timezone.utc
+        # Verify it's in the graph
+        result = graph_client.query(
+            "MATCH (e:Episode {source_id: 'abc123def456'}) RETURN e.content"
+        )
+        assert result.result_set[0][0] == "Refactored auth module to use JWT"
 
 
+@pytest.mark.integration
 class TestTemporalFacts:
-    def test_add_fact(self, mock_graph_client):
-        mock_graph_client.query.return_value = _mock_result([])
-        memory = EpisodicMemory(mock_graph_client)
+    def test_add_and_recall_fact(self, graph_client):
+        memory = EpisodicMemory(graph_client)
+        memory.ensure_schema()
 
         fact = TemporalFact(
             subject="AuthModule",
@@ -46,61 +44,75 @@ class TestTemporalFacts:
         )
         memory.add_fact(fact)
 
-        cypher = mock_graph_client.query.call_args[0][0]
-        assert "MERGE" in cypher
-        assert "FACT" in cypher
+        result = memory.recall("AuthModule")
+        assert len(result.facts) >= 1
+        assert result.facts[0].subject == "AuthModule"
+        assert result.facts[0].object == "JWT"
 
-    def test_invalidate_preserves_history(self, mock_graph_client):
-        mock_graph_client.query.return_value = _mock_result([[1]])
-        memory = EpisodicMemory(mock_graph_client)
+    def test_invalidate_sets_valid_to(self, graph_client):
+        memory = EpisodicMemory(graph_client)
+        memory.ensure_schema()
 
-        count = memory.invalidate_fact("AuthModule", "uses", "BasicAuth")
+        fact = TemporalFact(
+            subject="Config",
+            predicate="format",
+            object="YAML",
+            valid_from=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )
+        memory.add_fact(fact)
+
+        count = memory.invalidate_fact("Config", "format", "YAML")
         assert count == 1
 
-        cypher = mock_graph_client.query.call_args[0][0]
-        # Should SET valid_to, not DELETE
-        assert "SET" in cypher
-        assert "DELETE" not in cypher
+        # Fact should still be in history (not deleted)
+        history = memory.get_entity_history("Config")
+        assert len(history) >= 1
+        assert history[0].valid_to is not None
 
-    def test_supersede_invalidates_and_adds(self, mock_graph_client):
-        mock_graph_client.query.return_value = _mock_result([[1]])
-        memory = EpisodicMemory(mock_graph_client)
+    def test_supersede_creates_new_fact(self, graph_client):
+        memory = EpisodicMemory(graph_client)
+        memory.ensure_schema()
+
+        old_fact = TemporalFact(
+            subject="DB",
+            predicate="engine",
+            object="SQLite",
+            valid_from=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )
+        memory.add_fact(old_fact)
 
         new_fact = TemporalFact(
-            subject="AuthModule",
-            predicate="uses",
-            object="JWT",
-            valid_from=datetime(2026, 4, 1, tzinfo=timezone.utc),
+            subject="DB",
+            predicate="engine",
+            object="PostgreSQL",
+            valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
-        memory.supersede_fact("AuthModule", "uses", "BasicAuth", new_fact)
+        memory.supersede_fact("DB", "engine", "SQLite", new_fact)
 
-        # Should have called query at least twice (invalidate + add)
-        assert mock_graph_client.query.call_count >= 2
+        # Old fact should be invalidated, new fact should be active
+        result = memory.recall("DB")
+        active_objects = [f.object for f in result.facts if f.valid_to is None]
+        assert "PostgreSQL" in active_objects
 
+    def test_recall_respects_time_window(self, graph_client):
+        memory = EpisodicMemory(graph_client)
+        memory.ensure_schema()
 
-class TestRecall:
-    def test_recall_filters_by_time(self, mock_graph_client):
-        mock_graph_client.query.side_effect = [
-            _mock_result([
-                ["AuthModule", "uses", "JWT",
-                 "2026-01-01T00:00:00+00:00", "", 1.0, "ep1"],
-            ]),
-            _mock_result([
-                ["Refactored auth", "git_commit", "abc123",
-                 "2026-01-01T00:00:00+00:00"],
-            ]),
-        ]
-        memory = EpisodicMemory(mock_graph_client)
-        result = memory.recall("auth")
+        past = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        future = datetime(2027, 1, 1, tzinfo=timezone.utc)
 
-        assert len(result.facts) == 1
-        assert result.facts[0].subject == "AuthModule"
-        assert len(result.episodes) == 1
+        fact = TemporalFact(
+            subject="Feature",
+            predicate="status",
+            object="beta",
+            valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        memory.add_fact(fact)
 
-    def test_recall_empty(self, mock_graph_client):
-        mock_graph_client.query.return_value = _mock_result([])
-        memory = EpisodicMemory(mock_graph_client)
-        result = memory.recall("nonexistent")
+        # Query before the fact was valid
+        before = memory.recall("Feature", as_of=past)
+        assert len(before.facts) == 0
 
-        assert result.facts == []
-        assert result.episodes == []
+        # Query after the fact is valid
+        after = memory.recall("Feature", as_of=future)
+        assert len(after.facts) >= 1

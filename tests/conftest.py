@@ -1,63 +1,113 @@
-"""Shared test fixtures."""
+"""Shared test fixtures — ALL tests hit real FalkorDB, no mocks."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import os
+import subprocess
+import uuid
 
 import pytest
+from falkordb import FalkorDB
 
-from synapcode.graph.schema import ClassNode, FileNode, FunctionNode
-
-
-@pytest.fixture
-def mock_graph_client():
-    """A mocked GraphClient that returns empty result sets by default."""
-    client = MagicMock()
-    mock_result = MagicMock()
-    mock_result.result_set = []
-    client.query.return_value = mock_result
-    client.node_count.return_value = 42
-    client.edge_count.return_value = 100
-    return client
+from synapcode.config import FalkorDBConfig
+from synapcode.graph.client import GraphClient
 
 
-@pytest.fixture
-def sample_file_node():
-    return FileNode(
-        path="src/main.py",
-        language="python",
-        line_count=150,
-        sha256="a1b2c3d4e5f6",
-        last_commit="abc123",
-    )
+@pytest.fixture(scope="session")
+def falkordb_connection():
+    """Session-scoped: verify FalkorDB is reachable, return the connection."""
+    host = os.environ.get("FALKORDB_HOST", "localhost")
+    port = int(os.environ.get("FALKORDB_PORT", "6379"))
+    try:
+        db = FalkorDB(host=host, port=port)
+        db.connection.ping()
+        return db
+    except Exception:
+        pytest.skip(
+            f"FalkorDB not reachable at {host}:{port}. "
+            "Start it with: docker compose up -d falkordb"
+        )
 
 
 @pytest.fixture
-def sample_function_node():
-    return FunctionNode(
-        name="process_data",
-        file_path="src/main.py",
-        start_line=10,
-        end_line=30,
-        parameters=["data", "config"],
-        return_type="dict",
-    )
+def graph_client(falkordb_connection):
+    """Per-test graph client with a unique graph name. Cleaned up after test."""
+    graph_name = f"test_{uuid.uuid4().hex[:8]}"
+    host = os.environ.get("FALKORDB_HOST", "localhost")
+    port = int(os.environ.get("FALKORDB_PORT", "6379"))
+    config = FalkorDBConfig(host=host, port=port, graph_name=graph_name)
+    client = GraphClient(config)
+    client.ensure_schema()
+    yield client
+    client.delete_graph()
 
 
 @pytest.fixture
-def sample_class_node():
-    return ClassNode(
-        name="DataProcessor",
-        file_path="src/processor.py",
-        start_line=5,
-        end_line=80,
-        bases=["BaseProcessor"],
+def test_repo(tmp_path):
+    """Create a minimal git repo with known Python files for testing.
+
+    Structure:
+        src/utils.py     -> def helper(): return 42
+        src/main.py      -> from utils import helper; def process(): helper()
+        src/models.py    -> class DataModel: def validate(self): ...
+    """
+    repo = tmp_path / "test_repo"
+    repo.mkdir()
+
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+        check=True, capture_output=True,
     )
 
+    src = repo / "src"
+    src.mkdir()
 
-# Marker for tests requiring a live FalkorDB instance
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "integration: tests requiring live FalkorDB (deselect with -m 'not integration')",
+    (src / "utils.py").write_text(
+        "def helper():\n"
+        "    return 42\n"
+        "\n"
+        "def unused_util():\n"
+        "    pass\n"
     )
+    (src / "main.py").write_text(
+        "from utils import helper\n"
+        "\n"
+        "def process():\n"
+        "    return helper()\n"
+        "\n"
+        "def entry_point():\n"
+        "    result = process()\n"
+        "    return result\n"
+    )
+    (src / "models.py").write_text(
+        "class DataModel:\n"
+        "    def validate(self):\n"
+        "        return True\n"
+        "\n"
+        "    def transform(self):\n"
+        "        self.validate()\n"
+        "        return {}\n"
+    )
+
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "initial"],
+        check=True, capture_output=True,
+    )
+
+    return repo
+
+
+@pytest.fixture
+def indexed_repo(test_repo, graph_client):
+    """A test repo that has already been indexed into the graph."""
+    from synapcode.graph.cpg import CodePropertyGraphBuilder
+
+    builder = CodePropertyGraphBuilder(repo_path=test_repo, client=graph_client)
+    stats = builder.build()
+    return {"repo": test_repo, "client": graph_client, "stats": stats}
