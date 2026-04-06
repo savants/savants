@@ -43,28 +43,29 @@ A local-first AI cognitive stack that leverages **FalkorDB** for GraphRAG, **Tem
 
 ## Quick Start
 
-### Prerequisites
+### Option A: Desktop App (recommended — zero config)
 
-- Python 3.11+
-- Docker & Docker Compose
-
-### 1. Start FalkorDB
+Download the SynapCode desktop app. It manages FalkorDB, Temporal, and the
+worker automatically as native sidecars. No Docker, no manual setup.
 
 ```bash
-docker compose up -d falkordb
+cd desktop && npm install && npm run build
 ```
 
-### 2. Install
+### Option B: CLI only
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-### 3. Index a Repository
+### Index a Repository
 
 ```bash
 synapcode init /path/to/your/repo
 ```
+
+FalkorDB starts automatically if not already running (native `redis-server`,
+no Docker required). The desktop app manages this for you.
 
 ### 4. Explore Your Codebase
 

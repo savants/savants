@@ -28,32 +28,57 @@ from synapcode.sync.git_hooks import get_current_head, get_last_indexed_sha, sav
 
 
 def _ensure_falkordb() -> GraphClient:
-    """Connect to FalkorDB, auto-starting it via Docker if needed."""
+    """Connect to FalkorDB, auto-starting it as a native process if needed.
+
+    Tauri manages the FalkorDB sidecar in desktop mode. In CLI-only mode,
+    we try to start redis-server with the FalkorDB module directly —
+    no Docker required.
+    """
+    import shutil
     import subprocess
     import time
 
     config = load_config()
     client = GraphClient(config.falkordb)
 
+    # Already running? Great.
     try:
         client.ensure_schema()
         return client
     except Exception:
-        pass  # Not running, try to start it
+        pass
 
-    click.echo("FalkorDB not running. Starting via Docker...")
-    try:
-        subprocess.run(
-            ["docker", "run", "-d", "--name", "synapcode-falkordb",
-             "-p", "6379:6379", "falkordb/falkordb:latest"],
-            capture_output=True, check=True,
+    # Try to start redis-server natively with FalkorDB module
+    redis_bin = shutil.which("redis-server")
+    if not redis_bin:
+        click.echo(
+            "FalkorDB not running and redis-server not found on PATH.\n"
+            "Install redis + FalkorDB module, or use the SynapCode desktop app.",
+            err=True,
         )
-    except subprocess.CalledProcessError:
-        # Container might already exist but be stopped
-        subprocess.run(
-            ["docker", "start", "synapcode-falkordb"],
-            capture_output=True,
+        sys.exit(1)
+
+    # Locate the FalkorDB module
+    module_paths = [
+        "/usr/lib/redis/modules/falkordb.so",
+        "/usr/local/lib/redis/modules/falkordb.so",
+        "/opt/homebrew/lib/redis/modules/falkordb.so",
+        "/usr/lib/falkordb/falkordb.so",
+    ]
+    module = next((p for p in module_paths if __import__("os").path.exists(p)), None)
+
+    cmd = [redis_bin, "--port", str(config.falkordb.port), "--daemonize", "no", "--save", ""]
+    if module:
+        cmd.extend(["--loadmodule", module])
+    else:
+        click.echo(
+            "Warning: FalkorDB module not found. Starting plain Redis — "
+            "graph queries will fail. Install FalkorDB or use the desktop app.",
+            err=True,
         )
+
+    click.echo(f"Starting FalkorDB (redis-server) on port {config.falkordb.port}...")
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # Wait for it
     for _ in range(20):
@@ -61,12 +86,14 @@ def _ensure_falkordb() -> GraphClient:
         try:
             client = GraphClient(config.falkordb)
             client.ensure_schema()
-            click.echo("FalkorDB started.")
+            click.echo(f"FalkorDB started (PID {proc.pid}).")
             return client
         except Exception:
+            if proc.poll() is not None:
+                break
             continue
 
-    click.echo("Could not start FalkorDB. Install Docker or start it manually.", err=True)
+    click.echo("Could not start FalkorDB.", err=True)
     sys.exit(1)
 
 
