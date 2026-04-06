@@ -1,13 +1,13 @@
 """MCP Server: exposes FalkorDB graph queries to external AI tools.
 
-This server implements the Model Context Protocol, allowing tools like
-Claude Code, Cursor, and VS Code Copilot to query the local Code Property
-Graph for structural context.
+Implements the Model Context Protocol with proper Content-Length framed
+stdio transport, allowing Claude Code, Cursor, and VS Code to query
+the local Code Property Graph for structural context.
 
 Usage:
     claude mcp add-json synapcode --scope user '{
       "command": "python",
-      "args": ["-m", "synapcode.mcp.server"],
+      "args": ["-m", "synapcode.mcp"],
       "env": {"FALKORDB_HOST": "localhost", "FALKORDB_PORT": "6379"}
     }'
 """
@@ -17,37 +17,101 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from typing import IO
 
 from synapcode.graph.client import GraphClient
 from synapcode.graph.query import GraphQueryEngine
 
 logger = logging.getLogger(__name__)
 
+MCP_PROTOCOL_VERSION = "2024-11-05"
+
+
+def read_message(stream: IO[bytes]) -> dict | None:
+    """Read a Content-Length framed JSON-RPC message from a byte stream."""
+    content_length = -1
+
+    while True:
+        line = stream.readline()
+        if not line:
+            return None  # EOF
+
+        line_str = line.decode("utf-8").rstrip("\r\n")
+
+        if line_str == "":
+            # Empty line = end of headers
+            break
+
+        if line_str.lower().startswith("content-length:"):
+            content_length = int(line_str.split(":", 1)[1].strip())
+
+    if content_length < 0:
+        return None
+
+    body = stream.read(content_length)
+    if len(body) < content_length:
+        return None
+
+    return json.loads(body.decode("utf-8"))
+
+
+def write_message(stream: IO[bytes], msg: dict) -> None:
+    """Write a Content-Length framed JSON-RPC message to a byte stream."""
+    body = json.dumps(msg).encode("utf-8")
+    header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
+    stream.write(header + body)
+    stream.flush()
+
 
 class SynapCodeMCPServer:
-    """Minimal MCP server that reads JSON-RPC from stdin and writes to stdout."""
+    """MCP-compliant server using Content-Length framed stdio transport."""
 
     def __init__(self):
         self.client = GraphClient()
         self.engine = GraphQueryEngine(self.client)
+        self._initialized = False
 
-    def handle_request(self, request: dict) -> dict:
-        method = request.get("method", "")
-        params = request.get("params", {})
-        req_id = request.get("id")
+    def handle_message(self, message: dict) -> dict | None:
+        """Handle a JSON-RPC message. Returns None for notifications."""
+        method = message.get("method", "")
+        params = message.get("params", {})
+        req_id = message.get("id")  # None for notifications
 
+        # Notifications (no id) — handle silently
+        if req_id is None:
+            if method == "notifications/initialized":
+                self._initialized = True
+                logger.info("Client confirmed initialization")
+            elif method == "notifications/cancelled":
+                logger.info("Client cancelled request")
+            return None  # No response for notifications
+
+        # Requests (have id) — must respond
         if method == "initialize":
             return self._response(req_id, {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {"listChanged": False}},
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                    "resources": {},
+                    "prompts": {},
+                },
                 "serverInfo": {"name": "synapcode", "version": "0.1.0"},
             })
+
+        elif method == "ping":
+            return self._response(req_id, {})
 
         elif method == "tools/list":
             return self._response(req_id, {"tools": self._list_tools()})
 
         elif method == "tools/call":
             return self._handle_tool_call(req_id, params)
+
+        elif method == "resources/list":
+            return self._response(req_id, {"resources": []})
+
+        elif method == "prompts/list":
+            return self._response(req_id, {"prompts": []})
 
         return self._error(req_id, -32601, f"Unknown method: {method}")
 
@@ -62,7 +126,10 @@ class SynapCodeMCPServer:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "function_name": {"type": "string", "description": "Name of the function to analyze"},
+                        "function_name": {
+                            "type": "string",
+                            "description": "Name of the function to analyze",
+                        },
                         "max_depth": {"type": "integer", "default": 5},
                     },
                     "required": ["function_name"],
@@ -74,7 +141,10 @@ class SynapCodeMCPServer:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "pattern": {"type": "string", "description": "Search pattern"},
+                        "pattern": {
+                            "type": "string",
+                            "description": "Search pattern",
+                        },
                     },
                     "required": ["pattern"],
                 },
@@ -112,7 +182,27 @@ class SynapCodeMCPServer:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Cypher query string"},
+                        "query": {
+                            "type": "string",
+                            "description": "Cypher query string",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "recall_history",
+                "description": (
+                    "Recall historical facts and episodes from episodic memory. "
+                    "Useful for understanding why code was written a certain way."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Topic or entity to recall history for",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -141,7 +231,9 @@ class SynapCodeMCPServer:
                 text = json.dumps(results, indent=2)
 
             elif tool_name == "dependency_chain":
-                chain = self.engine.find_dependency_chain(args["from_file"], args["to_file"])
+                chain = self.engine.find_dependency_chain(
+                    args["from_file"], args["to_file"]
+                )
                 text = " -> ".join(chain) if chain else "No dependency chain found."
 
             elif tool_name == "community_summary":
@@ -156,6 +248,18 @@ class SynapCodeMCPServer:
             elif tool_name == "cypher_query":
                 result = self.client.query(args["query"])
                 text = str(result.result_set)
+
+            elif tool_name == "recall_history":
+                from synapcode.graph.episodic import EpisodicMemory
+
+                memory = EpisodicMemory(self.client)
+                recall = memory.recall(args["query"])
+                parts = []
+                for f in recall.facts[:15]:
+                    parts.append(f"{f.subject} -{f.predicate}-> {f.object}")
+                for e in recall.episodes[:10]:
+                    parts.append(f"[{e.source_type}] {e.content[:200]}")
+                text = "\n".join(parts) if parts else "No relevant history found."
 
             else:
                 return self._error(req_id, -32602, f"Unknown tool: {tool_name}")
@@ -177,21 +281,28 @@ class SynapCodeMCPServer:
         return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
     def run(self) -> None:
-        """Run the MCP server, reading JSON-RPC from stdin."""
-        logger.info("SynapCode MCP server started")
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
+        """Run the MCP server using Content-Length framed stdio transport."""
+        logger.info("SynapCode MCP server started (Content-Length framed)")
+        stdin = sys.stdin.buffer
+        stdout = sys.stdout.buffer
+
+        while True:
             try:
-                request = json.loads(line)
-                response = self.handle_request(request)
-                sys.stdout.write(json.dumps(response) + "\n")
-                sys.stdout.flush()
+                message = read_message(stdin)
+                if message is None:
+                    break  # EOF
+
+                response = self.handle_message(message)
+                if response is not None:
+                    write_message(stdout, response)
+
             except json.JSONDecodeError:
                 error = self._error(None, -32700, "Parse error")
-                sys.stdout.write(json.dumps(error) + "\n")
-                sys.stdout.flush()
+                write_message(stdout, error)
+            except Exception as e:
+                logger.error("Unexpected error: %s", e)
+                error = self._error(None, -32603, f"Internal error: {e}")
+                write_message(stdout, error)
 
 
 def main():

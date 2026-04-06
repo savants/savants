@@ -58,6 +58,13 @@ services:
     environment:
       - FALKORDB_HOST=falkordb
       - FALKORDB_PORT=6379
+      - TEMPORAL_HOST=temporal:7233
+      - TEMPORAL_NAMESPACE=default
+    depends_on:
+      falkordb:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
 
 volumes:
   falkordb_data:

@@ -13,6 +13,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from synapcode.config import load_config
+from synapcode.agents.base import DurableAgentWorkflow, run_pydantic_agent
 from synapcode.temporal.activities import (
     call_llm,
     compute_git_diff,
@@ -20,6 +21,7 @@ from synapcode.temporal.activities import (
     remove_file_from_graph,
     snapshot_graph,
 )
+from synapcode.temporal.gc_workflow import GraphGCWorkflow, run_gc_activity
 from synapcode.temporal.workflows import (
     AgentReasoningWorkflow,
     FullIndexWorkflow,
@@ -46,6 +48,8 @@ async def main() -> None:
             IncrementalSyncWorkflow,
             SnapshotWorkflow,
             AgentReasoningWorkflow,
+            GraphGCWorkflow,
+            DurableAgentWorkflow,
         ],
         activities=[
             index_file,
@@ -53,6 +57,8 @@ async def main() -> None:
             call_llm,
             snapshot_graph,
             remove_file_from_graph,
+            run_gc_activity,
+            run_pydantic_agent,
         ],
     )
 
