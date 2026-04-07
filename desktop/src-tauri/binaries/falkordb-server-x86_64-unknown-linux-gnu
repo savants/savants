@@ -1,2 +1,33 @@
 #!/usr/bin/env bash
-exec redis-server --port 16379 --daemonize no --save "" "$@"
+# SynapCode FalkorDB sidecar wrapper.
+# Spawns redis-server with the bundled FalkorDB module loaded.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PORT="${FALKORDB_PORT:-6379}"
+
+# Use the bundled redis-server if it works on this system,
+# otherwise fall back to the system redis-server.
+if "$DIR/redis-server-bundled" --version >/dev/null 2>&1; then
+    REDIS="$DIR/redis-server-bundled"
+else
+    REDIS="$(command -v redis-server)"
+    if [ -z "$REDIS" ]; then
+        echo "FATAL: bundled redis-server is incompatible with this system " \
+             "and no system redis-server found." >&2
+        exit 1
+    fi
+fi
+
+# Ensure libgomp is reachable for the FalkorDB .so module
+if ! ldconfig -p 2>/dev/null | grep -q libgomp.so.1; then
+    GOMP_DIR="$(find /nix/store /usr/lib /usr/local/lib -maxdepth 4 -name 'libgomp.so.1' 2>/dev/null | head -1 | xargs -r dirname)"
+    if [ -n "$GOMP_DIR" ]; then
+        export LD_LIBRARY_PATH="$GOMP_DIR:${LD_LIBRARY_PATH:-}"
+    fi
+fi
+
+exec "$REDIS" \
+    --port "$PORT" \
+    --daemonize no \
+    --save "" \
+    --loadmodule "$DIR/falkordb.so" \
+    "$@"

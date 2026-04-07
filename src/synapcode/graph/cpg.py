@@ -86,7 +86,7 @@ class CodePropertyGraphBuilder:
         ext = file_path.suffix
         language = SUPPORTED_EXTENSIONS.get(ext)
         if not language:
-            return {"functions": [], "classes": [], "imports": []}
+            return {"file": None, "functions": [], "classes": [], "imports": [], "calls": []}
 
         content = file_path.read_text(errors="replace")
         rel_path = str(file_path.relative_to(self.repo_path))
@@ -255,7 +255,19 @@ class CodePropertyGraphBuilder:
         """Incrementally update the graph based on a git diff.
 
         Only re-parses changed files and removes nodes for deleted files.
+        Filters out unsupported files and excluded directories.
         """
+        excluded_parts = {"node_modules", ".git", "__pycache__", "venv", ".venv", "dist", "build", ".synapcode"}
+
+        def _is_indexable(rel_path: str) -> bool:
+            parts = Path(rel_path).parts
+            if any(p in excluded_parts for p in parts):
+                return False
+            return Path(rel_path).suffix in SUPPORTED_EXTENSIONS
+
+        changed_files = [p for p in changed_files if _is_indexable(p)]
+        deleted_files = [p for p in deleted_files if _is_indexable(p)]
+
         stats = {"updated": 0, "deleted": 0}
 
         # Remove deleted files and their children
@@ -312,6 +324,20 @@ class CodePropertyGraphBuilder:
                         "CONTAINS",
                     )
                     self.client.query(cypher, params)
+
+                # Create CALLS edges for the newly-parsed file
+                for call in parsed.get("calls", []):
+                    if not call.get("caller_function"):
+                        continue
+                    cypher, params = create_edge_query(
+                        "Function", "name", call["caller_function"],
+                        "Function", "name", call["callee_name"],
+                        "CALLS",
+                    )
+                    try:
+                        self.client.query(cypher, params)
+                    except Exception:
+                        pass
 
                 stats["updated"] += 1
             except Exception as e:

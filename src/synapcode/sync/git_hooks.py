@@ -19,9 +19,23 @@ from synapcode.temporal.workflows import IncrementalSyncInput, IncrementalSyncWo
 logger = logging.getLogger(__name__)
 
 
+def _bookmark_path(repo_path: str) -> Path:
+    """Return the bookmark file path, stored OUTSIDE the repo under ~/.synapcode.
+
+    Keeping it out of the repo prevents it from showing up in git diffs
+    and being mistaken for a source file by the incremental indexer.
+    """
+    import hashlib
+
+    repo_id = hashlib.sha256(str(Path(repo_path).resolve()).encode()).hexdigest()[:16]
+    home = Path.home() / ".synapcode" / "bookmarks"
+    home.mkdir(parents=True, exist_ok=True)
+    return home / f"{repo_id}.sha"
+
+
 def get_last_indexed_sha(repo_path: str) -> str:
     """Read the last indexed commit SHA from the bookmark file."""
-    bookmark = Path(repo_path) / ".synapcode" / "last_indexed_sha"
+    bookmark = _bookmark_path(repo_path)
     if bookmark.exists():
         return bookmark.read_text().strip()
     return ""
@@ -29,9 +43,7 @@ def get_last_indexed_sha(repo_path: str) -> str:
 
 def save_last_indexed_sha(repo_path: str, sha: str) -> None:
     """Persist the last indexed commit SHA."""
-    bookmark_dir = Path(repo_path) / ".synapcode"
-    bookmark_dir.mkdir(exist_ok=True)
-    (bookmark_dir / "last_indexed_sha").write_text(sha)
+    _bookmark_path(repo_path).write_text(sha)
 
 
 def get_current_head(repo_path: str) -> str:
