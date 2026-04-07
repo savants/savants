@@ -233,20 +233,64 @@ class CodePropertyGraphBuilder:
             # Collect calls for pass 2
             all_calls.extend(parsed["calls"])
 
-        # Pass 2: Create CALLS edges (all function nodes exist now)
+        # Pass 2: Create CALLS edges (all function nodes exist now).
+        #
+        # Disambiguation order — for each call, find the callee target this way:
+        #   1. Same-file match: caller's file has a function with the callee name
+        #   2. Globally unique: exactly one function in the repo has that name
+        #   3. Otherwise: skip (cross-product would explode the graph)
+        #
+        # This avoids the bug where 6 functions named create_app produce
+        # a 6× cross-product of edges per call site.
+        callee_index: dict[str, list[str]] = {}  # callee_name -> [file_paths]
+        for file_path in [str(f.relative_to(self.repo_path)) for f in files]:
+            pass  # populated below
+        # Build the index by re-querying the graph for known functions
+        idx_result = self.client.query(
+            "MATCH (fn:Function) RETURN fn.name, fn.file_path"
+        )
+        for row in idx_result.result_set:
+            name, fpath = row[0], row[1]
+            callee_index.setdefault(name, []).append(fpath)
+
         for call in all_calls:
-            if not call.get("caller_function"):
+            caller_fn = call.get("caller_function")
+            if not caller_fn:
                 continue
-            cypher, params = create_edge_query(
-                "Function", "name", call["caller_function"],
-                "Function", "name", call["callee_name"],
-                "CALLS",
+            callee = call["callee_name"]
+            caller_file = call["caller_file"]
+
+            candidates = callee_index.get(callee, [])
+            if not candidates:
+                continue  # external function, not indexed
+
+            # 1. Prefer same-file match
+            target_file: str | None = None
+            if caller_file in candidates:
+                target_file = caller_file
+            # 2. Globally unique
+            elif len(candidates) == 1:
+                target_file = candidates[0]
+            # 3. Ambiguous — skip this call
+            else:
+                continue
+
+            cypher = (
+                "MATCH (a:Function {name: $caller_name, file_path: $caller_file}) "
+                "MATCH (b:Function {name: $callee_name, file_path: $target_file}) "
+                "MERGE (a)-[:CALLS]->(b)"
             )
+            params = {
+                "caller_name": caller_fn,
+                "caller_file": caller_file,
+                "callee_name": callee,
+                "target_file": target_file,
+            }
             try:
                 self.client.query(cypher, params)
                 stats["edges"] += 1
             except Exception:
-                pass  # Target function may be external (not in this repo)
+                pass
 
         logger.info("CPG build complete: %s", stats)
         return stats
