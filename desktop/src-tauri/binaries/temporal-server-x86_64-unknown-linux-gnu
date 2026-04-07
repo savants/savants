@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# SynapCode bundled Temporal sidecar wrapper.
+exec temporal "$@"

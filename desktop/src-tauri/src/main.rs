@@ -306,25 +306,32 @@ fn main() {
 
             Ok(())
         })
-        .on_event(|app, event| {
+        .invoke_handler(tauri::generate_handler![get_health, restart_service])
+        .build(tauri::generate_context!())
+        .expect("error while building SynapCode")
+        .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 let procs = app.state::<ManagedProcesses>();
                 // Graceful shutdown in reverse order
-                if let Some(ref mut child) = *procs.worker.lock().unwrap() {
+                let mut worker = procs.worker.lock().unwrap();
+                if let Some(child) = worker.as_mut() {
                     tracing::info!("Stopping Python worker");
-                    let _ = child.kill();
+                    let _: std::io::Result<()> = child.kill();
                 }
-                if let Some(ref mut child) = *procs.temporal.lock().unwrap() {
+                drop(worker);
+
+                let mut temporal = procs.temporal.lock().unwrap();
+                if let Some(child) = temporal.as_mut() {
                     tracing::info!("Stopping Temporal");
-                    let _ = child.kill();
+                    let _: std::io::Result<()> = child.kill();
                 }
-                if let Some(ref mut child) = *procs.falkordb.lock().unwrap() {
+                drop(temporal);
+
+                let mut falkordb = procs.falkordb.lock().unwrap();
+                if let Some(child) = falkordb.as_mut() {
                     tracing::info!("Stopping FalkorDB");
-                    let _ = child.kill();
+                    let _: std::io::Result<()> = child.kill();
                 }
             }
-        })
-        .invoke_handler(tauri::generate_handler![get_health, restart_service])
-        .run(tauri::generate_context!())
-        .expect("error while running SynapCode");
+        });
 }
