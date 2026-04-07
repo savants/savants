@@ -207,6 +207,120 @@ class SynapCodeMCPServer:
                     "required": ["query"],
                 },
             },
+            # --- Grounding tools (for AI agent use) -------------------------
+            {
+                "name": "find_references_structured",
+                "description": (
+                    "Replacement for grep / IDE 'Find References'. Returns the "
+                    "structural callers of a function with metadata: who, where, "
+                    "co-change partners, and the file each lives in. Use this "
+                    "instead of text search whenever you need to find where a "
+                    "function is actually called from."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "function_name": {"type": "string"},
+                        "include_tests": {"type": "boolean", "default": True},
+                    },
+                    "required": ["function_name"],
+                },
+            },
+            {
+                "name": "function_xray",
+                "description": (
+                    "Composite query: returns the full structural and historical "
+                    "profile of a function in one call. Includes definition site, "
+                    "current callers, callees, classes that contain it, and "
+                    "(if history is loaded) recent contributors and last touch."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "function_name": {"type": "string"},
+                        "file_path": {
+                            "type": "string",
+                            "description": "Optional — disambiguate when name is shared across files",
+                        },
+                    },
+                    "required": ["function_name"],
+                },
+            },
+            {
+                "name": "co_change_partners",
+                "description": (
+                    "Find functions that historically change in the same commits "
+                    "as the target. Reveals hidden coupling that the static call "
+                    "graph alone cannot show. Requires history to be loaded."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "function_name": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10},
+                    },
+                    "required": ["function_name"],
+                },
+            },
+            {
+                "name": "coupling_check",
+                "description": (
+                    "Check whether a new dependency between two modules would "
+                    "violate the codebase's existing architectural boundaries. "
+                    "Returns the historical edge count between the two modules "
+                    "and warns if it has been zero. Use before introducing a "
+                    "new import or call across module boundaries."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "from_module": {
+                            "type": "string",
+                            "description": "Source module path prefix (e.g., 'src/payments/')",
+                        },
+                        "to_module": {
+                            "type": "string",
+                            "description": "Target module path prefix (e.g., 'src/admin/')",
+                        },
+                    },
+                    "required": ["from_module", "to_module"],
+                },
+            },
+            {
+                "name": "pre_change_warning",
+                "description": (
+                    "Before modifying a function, check the structural and "
+                    "historical risk of the change. Returns a warning text that "
+                    "an AI agent should consider before suggesting edits. "
+                    "Includes blast radius, maintainer concentration, and "
+                    "stale-knowledge alerts."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "function_name": {"type": "string"},
+                        "file_path": {"type": "string"},
+                    },
+                    "required": ["function_name"],
+                },
+            },
+            {
+                "name": "risk_score",
+                "description": (
+                    "Compute a 0-10 risk score for modifying a function. "
+                    "Combines call-graph blast radius, historical bug correlation, "
+                    "maintainer bus factor, and recency-of-last-touch into a single "
+                    "number suitable for PR review heuristics."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "function_name": {"type": "string"},
+                        "file_path": {"type": "string"},
+                    },
+                    "required": ["function_name"],
+                },
+            },
         ]
 
     def _handle_tool_call(self, req_id: int | str, params: dict) -> dict:
@@ -261,6 +375,44 @@ class SynapCodeMCPServer:
                     parts.append(f"[{e.source_type}] {e.content[:200]}")
                 text = "\n".join(parts) if parts else "No relevant history found."
 
+            # --- Grounding tools ---------------------------------------
+
+            elif tool_name == "find_references_structured":
+                text = self._tool_find_references(
+                    args["function_name"],
+                    args.get("include_tests", True),
+                )
+
+            elif tool_name == "function_xray":
+                text = self._tool_function_xray(
+                    args["function_name"],
+                    args.get("file_path"),
+                )
+
+            elif tool_name == "co_change_partners":
+                text = self._tool_co_change(
+                    args["function_name"],
+                    args.get("limit", 10),
+                )
+
+            elif tool_name == "coupling_check":
+                text = self._tool_coupling_check(
+                    args["from_module"],
+                    args["to_module"],
+                )
+
+            elif tool_name == "pre_change_warning":
+                text = self._tool_pre_change_warning(
+                    args["function_name"],
+                    args.get("file_path"),
+                )
+
+            elif tool_name == "risk_score":
+                text = self._tool_risk_score(
+                    args["function_name"],
+                    args.get("file_path"),
+                )
+
             else:
                 return self._error(req_id, -32602, f"Unknown tool: {tool_name}")
 
@@ -273,6 +425,295 @@ class SynapCodeMCPServer:
                 "content": [{"type": "text", "text": f"Error: {e}"}],
                 "isError": True,
             })
+
+    # --- Grounding tool implementations ----------------------------------
+
+    def _tool_find_references(self, function_name: str, include_tests: bool) -> str:
+        """Smart find-references: structural callers with metadata."""
+        where = "" if include_tests else "AND NOT caller.file_path STARTS WITH 'tests/'"
+        result = self.client.query(
+            f"MATCH (caller:Function)-[:CALLS]->(target:Function {{name: $name}}) "
+            f"WHERE 1=1 {where} "
+            "RETURN caller.name, caller.file_path "
+            "ORDER BY caller.file_path LIMIT 50",
+            {"name": function_name},
+        )
+        rows = result.result_set
+        if not rows:
+            return f"No structural callers found for '{function_name}'."
+
+        # Group by file
+        by_file: dict[str, list[str]] = {}
+        for caller_name, caller_file in rows:
+            by_file.setdefault(caller_file, []).append(caller_name)
+
+        lines = [f"{len(rows)} references to '{function_name}':"]
+        lines.append("")
+        for file in sorted(by_file):
+            lines.append(f"  {file}")
+            for cn in sorted(by_file[file]):
+                lines.append(f"    └─ {cn}")
+        return "\n".join(lines)
+
+    def _tool_function_xray(self, function_name: str, file_path: str | None) -> str:
+        """Composite query: structural + historical profile of a function."""
+        # Find the function (disambiguate by file_path if given)
+        if file_path:
+            fn_result = self.client.query(
+                "MATCH (fn:Function {name: $name, file_path: $fp}) "
+                "RETURN fn.name, fn.file_path, fn.start_line, fn.end_line, fn.parameters",
+                {"name": function_name, "fp": file_path},
+            )
+        else:
+            fn_result = self.client.query(
+                "MATCH (fn:Function {name: $name}) "
+                "RETURN fn.name, fn.file_path, fn.start_line, fn.end_line, fn.parameters "
+                "LIMIT 5",
+                {"name": function_name},
+            )
+
+        if not fn_result.result_set:
+            return f"Function '{function_name}' not found in graph."
+
+        lines = [f"╔═══ X-Ray: {function_name} ═══"]
+        for row in fn_result.result_set:
+            name, fp, start, end, params = row
+            lines.append(f"║  {fp}:{start}")
+            lines.append(f"║  parameters: {params or '(none)'}")
+            lines.append("║")
+
+            # Callers
+            callers = self.client.query(
+                "MATCH (c:Function)-[:CALLS]->(t:Function {name: $name, file_path: $fp}) "
+                "RETURN c.name, c.file_path LIMIT 25",
+                {"name": name, "fp": fp},
+            ).result_set
+            lines.append(f"║  Direct callers: {len(callers)}")
+            for cn, cf in callers[:8]:
+                lines.append(f"║    - {cn} ({cf})")
+            if len(callers) > 8:
+                lines.append(f"║    ... and {len(callers) - 8} more")
+
+            # Callees
+            callees = self.client.query(
+                "MATCH (t:Function {name: $name, file_path: $fp})-[:CALLS]->(c:Function) "
+                "RETURN c.name LIMIT 15",
+                {"name": name, "fp": fp},
+            ).result_set
+            lines.append(f"║  Direct callees: {len(callees)}")
+            for (cn,) in callees[:6]:
+                lines.append(f"║    - {cn}")
+
+            # Episodes (history)
+            episodes = self.client.query(
+                "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name, file_path: $fp}) "
+                "RETURN e.timestamp, e.author, e.message "
+                "ORDER BY e.timestamp DESC LIMIT 5",
+                {"name": name, "fp": fp},
+            ).result_set
+            if episodes:
+                lines.append(f"║  Recent commits ({len(episodes)} shown):")
+                for ts, author, msg in episodes:
+                    short_author = author.split("<")[0].strip() if author else "?"
+                    short_msg = (msg[:60] + "...") if msg and len(msg) > 60 else (msg or "")
+                    lines.append(f"║    {ts[:10]}  {short_author}  {short_msg}")
+            else:
+                lines.append("║  Recent commits: (history not loaded)")
+
+            lines.append("║")
+        lines.append("╚════════════════════════════")
+        return "\n".join(lines)
+
+    def _tool_co_change(self, function_name: str, limit: int) -> str:
+        """Functions that historically change in the same commits."""
+        result = self.client.query(
+            "MATCH (e:Episode)-[:CHANGES]->(fn1:Function {name: $name}) "
+            "MATCH (e)-[:CHANGES]->(fn2:Function) "
+            "WHERE fn1.name <> fn2.name "
+            "RETURN fn2.name, count(e) AS co "
+            "ORDER BY co DESC "
+            f"LIMIT {limit}",
+            {"name": function_name},
+        )
+        rows = result.result_set
+        if not rows:
+            return (
+                f"No co-change history for '{function_name}'. "
+                f"(Either the function is new, or git history hasn't been walked.)"
+            )
+
+        lines = [f"Functions that change with '{function_name}' historically:"]
+        for name, co in rows:
+            lines.append(f"  {co:>4}× — {name}")
+        return "\n".join(lines)
+
+    def _tool_coupling_check(self, from_module: str, to_module: str) -> str:
+        """Check whether a new dependency would violate existing boundaries."""
+        # How many CALLS edges currently cross from from_module → to_module?
+        result = self.client.query(
+            "MATCH (a:Function)-[:CALLS]->(b:Function) "
+            "WHERE a.file_path STARTS WITH $from_mod "
+            "  AND b.file_path STARTS WITH $to_mod "
+            "RETURN count(*) AS edge_count",
+            {"from_mod": from_module, "to_mod": to_module},
+        )
+        edge_count = result.result_set[0][0] if result.result_set else 0
+
+        if edge_count == 0:
+            return (
+                f"⚠️  COUPLING WARNING\n"
+                f"   {from_module} -> {to_module}\n"
+                f"   Current edges: 0\n\n"
+                f"   These two modules currently have NO call edges between them. "
+                f"Introducing a new dependency would be the first.\n\n"
+                f"   This pattern often indicates:\n"
+                f"   - The modules were intentionally kept separate\n"
+                f"   - You may be violating an implicit architectural boundary\n"
+                f"   - Code review will likely push back\n\n"
+                f"   If intentional, document why in the commit message."
+            )
+        else:
+            return (
+                f"OK — coupling already exists.\n"
+                f"   {from_module} -> {to_module}\n"
+                f"   Existing call edges: {edge_count}\n"
+                f"   Adding another is consistent with current architecture."
+            )
+
+    def _tool_pre_change_warning(self, function_name: str, file_path: str | None) -> str:
+        """Generate a warning about modifying a function."""
+        # Get blast radius
+        callers = self.client.query(
+            "MATCH (c:Function)-[:CALLS]->(t:Function {name: $name}) "
+            "RETURN count(c)",
+            {"name": function_name},
+        ).result_set
+        direct = callers[0][0] if callers else 0
+
+        transitive = self.client.query(
+            "MATCH (c:Function)-[:CALLS*1..3]->(t:Function {name: $name}) "
+            "RETURN count(DISTINCT c)",
+            {"name": function_name},
+        ).result_set
+        trans = transitive[0][0] if transitive else 0
+
+        # Last touched in history
+        last_touch = self.client.query(
+            "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name}) "
+            "RETURN e.timestamp, e.author "
+            "ORDER BY e.timestamp DESC LIMIT 1",
+            {"name": function_name},
+        ).result_set
+
+        # Maintainer concentration
+        maintainers = self.client.query(
+            "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name}) "
+            "RETURN e.author, count(e) AS touches "
+            "ORDER BY touches DESC LIMIT 3",
+            {"name": function_name},
+        ).result_set
+
+        lines = [f"Pre-change warning for '{function_name}':"]
+        lines.append("")
+        lines.append(f"  Blast radius:")
+        lines.append(f"    Direct callers:     {direct}")
+        lines.append(f"    Transitive (3 hops): {trans}")
+        lines.append("")
+
+        if direct > 50 or trans > 200:
+            lines.append("  ⚠️  HIGH BLAST RADIUS — many things depend on this.")
+            lines.append("")
+
+        if last_touch:
+            ts, author = last_touch[0]
+            short_author = author.split("<")[0].strip() if author else "?"
+            lines.append(f"  Last touched: {ts[:10]} by {short_author}")
+            lines.append("")
+
+        if maintainers:
+            lines.append("  Recent maintainers:")
+            for author, touches in maintainers:
+                short = author.split("<")[0].strip() if author else "?"
+                lines.append(f"    {touches:>3}× — {short}")
+            if len(maintainers) == 1:
+                lines.append("")
+                lines.append("  ⚠️  BUS FACTOR 1 — only one person has touched this recently.")
+        else:
+            lines.append("  History: not loaded for this function.")
+
+        return "\n".join(lines)
+
+    def _tool_risk_score(self, function_name: str, file_path: str | None) -> str:
+        """Compute a 0-10 risk score for modifying a function."""
+        # Components:
+        #   blast (0-4)         based on transitive caller count
+        #   bus_factor (0-3)    based on maintainer concentration
+        #   recency (0-2)       based on staleness
+        #   incident (0-1)      based on history co-occurrence with "fix"/"hotfix" commits
+        score = 0.0
+        breakdown = []
+
+        # Blast
+        trans = self.client.query(
+            "MATCH (c:Function)-[:CALLS*1..3]->(t:Function {name: $name}) "
+            "RETURN count(DISTINCT c)",
+            {"name": function_name},
+        ).result_set
+        trans_count = trans[0][0] if trans else 0
+        if trans_count > 200:
+            blast = 4.0
+        elif trans_count > 50:
+            blast = 3.0
+        elif trans_count > 10:
+            blast = 2.0
+        elif trans_count > 0:
+            blast = 1.0
+        else:
+            blast = 0.0
+        score += blast
+        breakdown.append(f"  blast radius:  {blast}/4   ({trans_count} transitive callers)")
+
+        # Bus factor
+        maintainers = self.client.query(
+            "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name}) "
+            "RETURN e.author, count(e) AS t "
+            "ORDER BY t DESC",
+            {"name": function_name},
+        ).result_set
+        if not maintainers:
+            bus = 0.0
+            bus_note = "(no history loaded)"
+        elif len(maintainers) == 1:
+            bus = 3.0
+            bus_note = f"only 1 contributor ({maintainers[0][0].split('<')[0].strip()})"
+        elif len(maintainers) == 2:
+            bus = 2.0
+            bus_note = "2 contributors"
+        else:
+            bus = 1.0
+            bus_note = f"{len(maintainers)} contributors"
+        score += bus
+        breakdown.append(f"  bus factor:    {bus}/3   {bus_note}")
+
+        # Incident correlation: did any commit touching this function have "fix" in the message?
+        fix_commits = self.client.query(
+            "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name}) "
+            "WHERE toLower(e.message) CONTAINS 'fix' OR toLower(e.message) CONTAINS 'hotfix' "
+            "RETURN count(e)",
+            {"name": function_name},
+        ).result_set
+        fix_count = fix_commits[0][0] if fix_commits else 0
+        incident = 1.0 if fix_count >= 2 else 0.5 if fix_count == 1 else 0.0
+        score += incident
+        breakdown.append(f"  incidents:     {incident}/1   ({fix_count} fix-related commits)")
+
+        verdict = "LOW" if score < 3 else "MEDIUM" if score < 6 else "HIGH" if score < 8 else "VERY HIGH"
+        emoji = "🟢" if score < 3 else "🟡" if score < 6 else "🟠" if score < 8 else "🔴"
+
+        return (
+            f"{emoji} Risk score for '{function_name}': {score:.1f} / 10 — {verdict}\n\n"
+            + "\n".join(breakdown)
+        )
 
     def _response(self, req_id: int | str | None, result: dict) -> dict:
         return {"jsonrpc": "2.0", "id": req_id, "result": result}

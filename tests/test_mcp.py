@@ -129,3 +129,101 @@ class TestMCPToolCalls:
         ))
         content = resp["result"]["content"][0]["text"]
         assert "Impact analysis" in content or "Error" in content
+
+
+@pytest.mark.integration
+class TestGroundingTools:
+    """Tests for the AI agent grounding tools."""
+
+    def test_find_references_structured(self, indexed_repo):
+        server = SynapCodeMCPServer(client=indexed_repo["client"])
+        resp = server.handle_message(_req(
+            "tools/call",
+            {"name": "find_references_structured",
+             "arguments": {"function_name": "helper"}},
+        ))
+        text = resp["result"]["content"][0]["text"]
+        # Should either find structured callers or report none
+        assert "references" in text.lower() or "no structural callers" in text.lower()
+
+    def test_function_xray(self, indexed_repo):
+        server = SynapCodeMCPServer(client=indexed_repo["client"])
+        resp = server.handle_message(_req(
+            "tools/call",
+            {"name": "function_xray", "arguments": {"function_name": "helper"}},
+        ))
+        text = resp["result"]["content"][0]["text"]
+        assert "X-Ray" in text or "not found" in text.lower()
+
+    def test_co_change_partners_no_history(self, indexed_repo):
+        server = SynapCodeMCPServer(client=indexed_repo["client"])
+        resp = server.handle_message(_req(
+            "tools/call",
+            {"name": "co_change_partners",
+             "arguments": {"function_name": "helper"}},
+        ))
+        text = resp["result"]["content"][0]["text"]
+        # No history walked → should report missing
+        assert "co-change" in text.lower() or "history" in text.lower()
+
+    def test_coupling_check_existing(self, indexed_repo):
+        server = SynapCodeMCPServer(client=indexed_repo["client"])
+        resp = server.handle_message(_req(
+            "tools/call",
+            {"name": "coupling_check",
+             "arguments": {"from_module": "src/", "to_module": "src/"}},
+        ))
+        text = resp["result"]["content"][0]["text"]
+        # src/ -> src/ should have edges (the test repo's intra-module calls)
+        assert "OK" in text or "WARNING" in text
+
+    def test_coupling_check_zero_edges(self, indexed_repo):
+        server = SynapCodeMCPServer(client=indexed_repo["client"])
+        resp = server.handle_message(_req(
+            "tools/call",
+            {"name": "coupling_check",
+             "arguments": {
+                 "from_module": "non_existent_module/",
+                 "to_module": "another_imaginary/",
+             }},
+        ))
+        text = resp["result"]["content"][0]["text"]
+        assert "WARNING" in text or "0" in text
+
+    def test_pre_change_warning(self, indexed_repo):
+        server = SynapCodeMCPServer(client=indexed_repo["client"])
+        resp = server.handle_message(_req(
+            "tools/call",
+            {"name": "pre_change_warning",
+             "arguments": {"function_name": "helper"}},
+        ))
+        text = resp["result"]["content"][0]["text"]
+        assert "Pre-change warning" in text
+        assert "Blast radius" in text or "blast" in text.lower()
+
+    def test_risk_score_returns_score(self, indexed_repo):
+        server = SynapCodeMCPServer(client=indexed_repo["client"])
+        resp = server.handle_message(_req(
+            "tools/call",
+            {"name": "risk_score",
+             "arguments": {"function_name": "helper"}},
+        ))
+        text = resp["result"]["content"][0]["text"]
+        assert "Risk score" in text
+        # Should produce a numeric score
+        assert "/ 10" in text
+
+    def test_grounding_tools_listed_in_tools_list(self, graph_client):
+        server = SynapCodeMCPServer(client=graph_client)
+        resp = server.handle_message(_req("tools/list"))
+        names = {t["name"] for t in resp["result"]["tools"]}
+        # All 6 grounding tools should be advertised
+        for tool in [
+            "find_references_structured",
+            "function_xray",
+            "co_change_partners",
+            "coupling_check",
+            "pre_change_warning",
+            "risk_score",
+        ]:
+            assert tool in names, f"missing tool: {tool}"
