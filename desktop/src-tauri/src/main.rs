@@ -43,27 +43,74 @@ struct SystemHealth {
 }
 
 /// Resolve the path to a bundled sidecar binary.
+///
+/// Looks in three places:
+///   1. Tauri resource_dir (production install)
+///   2. <exe_dir>/../binaries (running from target/release/)
+///   3. <exe_dir>/binaries (alongside the binary)
 fn sidecar_path(app: &AppHandle, name: &str) -> PathBuf {
-    app.path()
-        .resource_dir()
-        .unwrap_or_default()
-        .join("binaries")
-        .join(name)
+    let triple = std::env::consts::ARCH.to_string()
+        + match std::env::consts::OS {
+            "linux" => "-unknown-linux-gnu",
+            "macos" => "-apple-darwin",
+            "windows" => "-pc-windows-msvc",
+            _ => "",
+        };
+    let suffixed = format!("{name}-{triple}");
+
+    if let Ok(rd) = app.path().resource_dir() {
+        let p = rd.join("binaries").join(&suffixed);
+        if p.exists() {
+            return p;
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // src-tauri/target/release/ → src-tauri/binaries/
+            let p = dir.join("..").join("..").join("binaries").join(&suffixed);
+            if p.exists() {
+                return p;
+            }
+            let p = dir.join("binaries").join(&suffixed);
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+
+    PathBuf::from(name) // last-resort fallback
 }
 
-/// Check if FalkorDB is reachable at localhost:6379.
+fn falkordb_port() -> u16 {
+    std::env::var("FALKORDB_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6379)
+}
+
+fn temporal_port() -> u16 {
+    std::env::var("TEMPORAL_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7233)
+}
+
+/// Check if FalkorDB is reachable.
 fn falkordb_is_healthy() -> bool {
+    let addr = format!("127.0.0.1:{}", falkordb_port());
     std::net::TcpStream::connect_timeout(
-        &"127.0.0.1:6379".parse().unwrap(),
+        &addr.parse().unwrap(),
         Duration::from_secs(1),
     )
     .is_ok()
 }
 
-/// Check if Temporal is reachable at localhost:7233.
+/// Check if Temporal is reachable.
 fn temporal_is_healthy() -> bool {
+    let addr = format!("127.0.0.1:{}", temporal_port());
     std::net::TcpStream::connect_timeout(
-        &"127.0.0.1:7233".parse().unwrap(),
+        &addr.parse().unwrap(),
         Duration::from_secs(1),
     )
     .is_ok()
@@ -72,26 +119,30 @@ fn temporal_is_healthy() -> bool {
 /// Start FalkorDB (redis-server with falkordb module).
 fn start_falkordb(app: &AppHandle) -> Result<Child, String> {
     let bin = sidecar_path(app, "falkordb-server");
+    let port = falkordb_port().to_string();
 
     // Try bundled binary first, fall back to system redis-server
     let (cmd, args): (String, Vec<String>) = if bin.exists() {
         (bin.to_string_lossy().into(), vec![])
     } else {
-        // Fall back: assume redis-server is on PATH with FalkorDB module
-        (
-            "redis-server".into(),
-            vec![
-                "--port".into(),
-                "6379".into(),
-                "--loadmodule".into(),
-                find_falkordb_module().unwrap_or_else(|| "/usr/lib/redis/modules/falkordb.so".into()),
-                "--save".into(),
-                "60".into(),
-                "1".into(),
-                "--daemonize".into(),
-                "no".into(),
-            ],
-        )
+        let mut args = vec![
+            "--port".into(),
+            port.clone(),
+            "--save".into(),
+            "".into(),
+            "--daemonize".into(),
+            "no".into(),
+        ];
+        if let Some(module) = find_falkordb_module() {
+            args.push("--loadmodule".into());
+            args.push(module);
+        } else {
+            tracing::warn!(
+                "FalkorDB module not found — starting plain redis-server. \
+                 Graph queries will fail. Bundle the module for production."
+            );
+        }
+        ("redis-server".into(), args)
     };
 
     tracing::info!("Starting FalkorDB: {} {:?}", cmd, args);

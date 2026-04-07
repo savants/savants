@@ -1,4 +1,2 @@
 #!/usr/bin/env bash
-# SynapCode bundled FalkorDB sidecar wrapper.
-# Replace this with a real bundled binary for production releases.
-exec redis-server "$@"
+exec redis-server --port 16379 --daemonize no --save "" "$@"

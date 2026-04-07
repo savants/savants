@@ -18,11 +18,7 @@
         "fullscreen": false
       }
     ],
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true,
-      "tooltip": "SynapCode"
-    }
+    "macOSPrivateApi": false
   },
   "bundle": {
     "active": true,
@@ -37,19 +33,7 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "scope": [
-        {
-          "name": "python-worker",
-          "cmd": "python",
-          "args": ["-m", "synapcode.temporal.worker"]
-        },
-        {
-          "name": "python-mcp",
-          "cmd": "python",
-          "args": ["-m", "synapcode.mcp"]
-        }
-      ]
+      "open": true
     }
   }
 }
