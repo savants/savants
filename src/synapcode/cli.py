@@ -27,6 +27,25 @@ from synapcode.graph.query import GraphQueryEngine
 from synapcode.sync.git_hooks import get_current_head, get_last_indexed_sha, save_last_indexed_sha
 
 
+def _find_bundled_binary(filename: str) -> str | None:
+    """Walk up from this file to find a binary bundled in desktop/src-tauri/binaries/.
+
+    Works from a monorepo git checkout and (eventually) from wheel-installed
+    package_data. Falls through to None if not found.
+    """
+    import os
+    from pathlib import Path
+
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "desktop" / "src-tauri" / "binaries" / filename
+        if candidate.exists() and os.access(candidate, os.X_OK | os.R_OK):
+            return str(candidate)
+        if (parent / ".git").exists() or parent == parent.parent:
+            break
+    return None
+
+
 def _find_falkordb_module() -> str | None:
     """Locate the FalkorDB Redis module binary.
 
@@ -41,15 +60,9 @@ def _find_falkordb_module() -> str | None:
     if env and os.path.exists(env):
         return env
 
-    # Walk up from this file looking for desktop/src-tauri/binaries/falkordb.so
-    from pathlib import Path
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        bundled = parent / "desktop" / "src-tauri" / "binaries" / "falkordb.so"
-        if bundled.exists():
-            return str(bundled)
-        if (parent / ".git").exists() or parent == parent.parent:
-            break
+    bundled = _find_bundled_binary("falkordb.so")
+    if bundled:
+        return bundled
 
     for p in (
         "/usr/lib/redis/modules/falkordb.so",
@@ -60,6 +73,38 @@ def _find_falkordb_module() -> str | None:
         if os.path.exists(p):
             return p
     return None
+
+
+def _is_nixos() -> bool:
+    """NixOS can't run generic dynamic ELFs without nix-ld. We detect it
+    so we can skip the bundled redis-server and use the nix-provided one.
+    """
+    import os
+    return os.path.exists("/etc/NIXOS") or os.path.exists("/run/current-system/sw")
+
+
+def _find_redis_binary() -> str | None:
+    """Locate a redis-server binary.
+
+    Search order:
+      1. $REDIS_SERVER env var (explicit override)
+      2. Bundled `redis-server-bundled` in desktop/src-tauri/binaries/
+         (skipped on NixOS — generic ELFs can't run there without nix-ld)
+      3. `redis-server` on PATH
+    """
+    import os
+    import shutil
+
+    env = os.environ.get("REDIS_SERVER")
+    if env and os.access(env, os.X_OK):
+        return env
+
+    if not _is_nixos():
+        bundled = _find_bundled_binary("redis-server-bundled")
+        if bundled:
+            return bundled
+
+    return shutil.which("redis-server")
 
 
 def _falkordb_env() -> dict:
@@ -89,15 +134,17 @@ def _falkordb_pidfile():
 
 def _start_falkordb_process(port: int, verbose: bool = True) -> int | None:
     """Start redis-server + FalkorDB module. Returns PID on success."""
-    import shutil
     import subprocess
     import time
 
-    redis_bin = shutil.which("redis-server")
+    redis_bin = _find_redis_binary()
     if not redis_bin:
         if verbose:
             click.echo(
-                "redis-server not found on PATH. Install Redis or use the desktop app.",
+                "No redis-server found. Options:\n"
+                "  - Install Redis via your package manager\n"
+                "  - Set REDIS_SERVER=/path/to/redis-server\n"
+                "  - Use the bundled binary (desktop/src-tauri/binaries/redis-server-bundled)",
                 err=True,
             )
         return None
@@ -687,10 +734,11 @@ def doctor():
 
     # 3. redis-server binary
     click.echo("\nredis-server:")
-    rbin = shutil.which("redis-server")
-    click.echo(f"  path:          {rbin or 'NOT FOUND'}")
+    rbin = _find_redis_binary()
+    source = "bundled" if rbin and "binaries/redis-server-bundled" in rbin else "system"
+    click.echo(f"  path:          {rbin or 'NOT FOUND'}  ({source})")
     if not rbin:
-        problems.append("redis-server not on PATH.")
+        problems.append("No redis-server found (bundled or system).")
 
     # 4. libgomp (NixOS gotcha)
     click.echo("\nlibgomp (OpenMP, required by FalkorDB):")
