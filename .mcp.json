@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "synapcode": {
+      "command": "/home/miguel/git/bernadinm/synapcode/.venv/bin/python",
+      "args": ["-m", "synapcode.mcp"],
+      "env": {
+        "FALKORDB_HOST": "localhost",
+        "FALKORDB_PORT": "16379",
+        "FALKORDB_GRAPH": "synapcode",
+        "LD_LIBRARY_PATH": "/nix/store/mdck89nsfisflwjv6xv8ydj7dj0sj2pn-gcc-11.3.0-lib/lib"
+      }
+    }
+  }
+}

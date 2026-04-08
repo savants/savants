@@ -1,4 +1,4 @@
-"""Tests for MCP server — Content-Length framing is pure IO, tool calls hit real FalkorDB."""
+"""Tests for MCP server — newline-delimited JSON-RPC stdio, real FalkorDB for tool calls."""
 
 from __future__ import annotations
 
@@ -15,8 +15,36 @@ from synapcode.mcp.server import (
 
 
 def _frame(msg: dict) -> bytes:
-    body = json.dumps(msg).encode("utf-8")
-    return f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8") + body
+    """Encode a single MCP stdio message: one JSON object per line."""
+    return json.dumps(msg).encode("utf-8") + b"\n"
+
+
+def test_transport_roundtrip_uses_newline_delimited_json():
+    """Regression test: MCP stdio is newline-delimited JSON, NOT Content-Length framed.
+
+    This bug took an entire night to find — the original implementation used
+    LSP-style Content-Length headers, which Claude Code does not send. The
+    server would block on stdin waiting for a Content-Length header that
+    never arrived, then time out after 30s. This test ensures we never
+    regress to the wrong framing.
+    """
+    msg = {"jsonrpc": "2.0", "method": "initialize", "id": 1}
+    encoded = _frame(msg)
+    # Must end in a newline, must NOT contain "Content-Length"
+    assert encoded.endswith(b"\n"), "messages must be newline-terminated"
+    assert b"Content-Length" not in encoded, "MCP stdio is NOT Content-Length framed"
+    # Round-trip through read_message
+    stream = io.BytesIO(encoded)
+    decoded = read_message(stream)
+    assert decoded == msg
+
+    # write_message also uses newline-delimited format
+    out = io.BytesIO()
+    write_message(out, msg)
+    out_bytes = out.getvalue()
+    assert out_bytes.endswith(b"\n")
+    assert b"Content-Length" not in out_bytes
+    assert json.loads(out_bytes.strip()) == msg
 
 
 def _req(method: str, params: dict | None = None, req_id: int = 1) -> dict:

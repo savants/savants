@@ -1,8 +1,11 @@
 """MCP Server: exposes structural graph queries to external AI tools.
 
-Implements the Model Context Protocol with proper Content-Length framed
-stdio transport, allowing Claude Code, Cursor, and VS Code to query
-the local Code Property Graph for structural context.
+Implements the Model Context Protocol stdio transport using
+newline-delimited JSON-RPC, per the MCP specification. One JSON
+message per line, no framing headers. This is the transport Claude
+Code, Cursor, and Continue actually use — not the LSP-style
+Content-Length framing that an earlier version of this server (and
+this docstring) used incorrectly.
 
 Usage:
     claude mcp add-json synapcode --scope user '{
@@ -28,43 +31,40 @@ MCP_PROTOCOL_VERSION = "2024-11-05"
 
 
 def read_message(stream: IO[bytes]) -> dict | None:
-    """Read a Content-Length framed JSON-RPC message from a byte stream."""
-    content_length = -1
+    """Read one newline-delimited JSON-RPC message from a byte stream.
 
+    MCP stdio transport uses line-delimited JSON: each message is a
+    single line, terminated by `\\n`. Blank lines are skipped. Returns
+    None on EOF.
+    """
     while True:
         line = stream.readline()
         if not line:
             return None  # EOF
-
-        line_str = line.decode("utf-8").rstrip("\r\n")
-
-        if line_str == "":
-            # Empty line = end of headers
-            break
-
-        if line_str.lower().startswith("content-length:"):
-            content_length = int(line_str.split(":", 1)[1].strip())
-
-    if content_length < 0:
-        return None
-
-    body = stream.read(content_length)
-    if len(body) < content_length:
-        return None
-
-    return json.loads(body.decode("utf-8"))
+        stripped = line.strip()
+        if not stripped:
+            continue  # blank line, skip
+        try:
+            return json.loads(stripped.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            logger.warning("Skipping malformed line on stdin: %s", e)
+            continue
 
 
 def write_message(stream: IO[bytes], msg: dict) -> None:
-    """Write a Content-Length framed JSON-RPC message to a byte stream."""
-    body = json.dumps(msg).encode("utf-8")
-    header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
-    stream.write(header + body)
+    """Write one JSON-RPC message followed by a newline.
+
+    MCP stdio transport: one JSON object per line, `\\n` terminator,
+    no embedded newlines in the body. json.dumps with default settings
+    never produces embedded newlines so we're safe.
+    """
+    body = json.dumps(msg, separators=(",", ":")).encode("utf-8")
+    stream.write(body + b"\n")
     stream.flush()
 
 
 class SynapCodeMCPServer:
-    """MCP-compliant server using Content-Length framed stdio transport."""
+    """MCP-compliant server using newline-delimited JSON-RPC stdio transport."""
 
     def __init__(self, client: GraphClient | None = None):
         self.client = client or GraphClient()
@@ -871,8 +871,8 @@ class SynapCodeMCPServer:
         return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
     def run(self) -> None:
-        """Run the MCP server using Content-Length framed stdio transport."""
-        logger.info("SynapCode MCP server started (Content-Length framed)")
+        """Run the MCP server using newline-delimited JSON-RPC stdio transport."""
+        logger.info("SynapCode MCP server started (newline-delimited JSON-RPC)")
         stdin = sys.stdin.buffer
         stdout = sys.stdout.buffer
 
