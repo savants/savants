@@ -87,36 +87,56 @@ the moat-building tool.
 
 A generalist competitor optimized for "all code" can never beat a
 specialist optimized for "this specific shape of code." Cursor will
-not spend an engineer-quarter on Temporal-specific extraction.
-Mazkir can. **The vertical owns you, you own the vertical.**
+not spend an engineer-quarter on a specific vertical's extraction
+patterns. Mazkir can. **The vertical owns you, you own the vertical.**
 
-Right early choice for Mazkir specifically:
+**The right early choice (revised after the cloud-as-vertical
+insight from the 2026-04-08 onboarding-story session):**
 
-> **"The structural intelligence layer for Temporal-based
-> distributed systems."**
+> **"The structural intelligence layer for Live Infrastructure —
+> code joined with K8s, AWS, GCP, and Azure runtime state."**
 
-Why this vertical:
+This is a 50× larger TAM than the Temporal-only vertical originally
+proposed:
 
-- Mazkir already proved it on the Stephen / `HandleTsCoinTransfer`
-  question this session — that question is uniquely hard for grep
-  and uniquely easy for Mazkir
-- Temporal's customer base is expensive enterprises (Stripe, DoorDash,
-  Coinbase, Box, Datadog, Snap)
-- Total addressable market in this vertical: ~$50-200M ARR ceiling
-  but reachable in 18 months if focused
-- Temporal Inc. is a strategic partner candidate, not a competitor
-- The "is this safe to delete from a Temporal workflow" query is the
-  exact shape of question Mazkir was built for
+| Vertical | Customers | TAM | Why |
+|---|---|---|---|
+| Temporal only | ~1k companies | ~$50-200M | Niche, deep |
+| Kubernetes only | ~50k companies | ~$500M-2B | Universal pain |
+| **Live Infrastructure (cloud + K8s)** | **~5M companies running anything in cloud** | **~$5-20B+** | **Everyone has cloud, nobody has good visibility** |
 
-After Temporal, expand sequence:
-1. FastAPI / Pydantic ecosystems (the AI/ML startup stack)
-2. Strawberry / GraphQL Python (we found 246 `@strawberry.type`
-   classes in zora alone)
-3. ML pipelines (Prefect, Dagster, Airflow, Metaflow)
-4. Then generalize
+Not everyone runs K8s, but everyone runs *something* in AWS/GCP/Azure.
+The "what's actually running, where, owned by whom, hit by which
+production traffic" question is universal across every company that
+has more than one developer. Today the answer involves CloudTrail
+logs, AWS Resource Explorer, Terraform state, custom inventory
+Lambdas, and a lot of `aws cli` calls. **Mazkir collapses it to one
+MCP query** that joins source structure + git history + K8s state +
+cloud state + production liveness.
+
+**Nobody else does this join.** Not Cursor, not Glean, not
+Sourcegraph, not Steampipe, not Wiz, not Datadog APM. Each one does
+a piece. Mazkir is the only thing that does the cross-cutting join.
+
+The full architecture lives in
+`docs/live-infrastructure-layer.md`. The customer onboarding journey
+is in `docs/onboarding-story.md`. The connectivity architecture
+(EventBridge API destinations vs in-VPC vs S3 polling vs full
+self-hosted) is documented there too.
+
+**After Live Infrastructure dominates, the depth-first vertical
+expansion sequence is:**
+
+1. **Temporal-shaped distributed systems** — Mazkir already nailed
+   the killer query (`HandleTsCoinTransfer`) in this session
+2. FastAPI / Pydantic ecosystems (the AI/ML startup stack)
+3. Strawberry / GraphQL Python (246 `@strawberry.type` classes in
+   zora alone)
+4. ML pipelines (Prefect, Dagster, Airflow, Metaflow)
+5. Then generalize
 
 **Do not try to be "Mazkir for everything" until you are "Mazkir for
-this specific thing" first.** Generalism is what kills startups in
+Live Infrastructure" first.** Generalism is what kills startups in
 crowded categories.
 
 ### Tier 2: The architectural moat that takes years to copy

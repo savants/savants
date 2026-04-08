@@ -153,7 +153,11 @@ Two parallel tracks:
 
 | Deliverable | Detail |
 |---|---|
-| Self-hosted | Helm chart for customer VPC deployment |
+| **AWS Marketplace listing** | **Container product + CloudFormation template. The strategic GTM unlock that collapses enterprise sales cycles from 6-9 months to 2-4 weeks.** |
+| **GCP Marketplace listing** | Same pattern, GCP-specific Deployment Manager template |
+| **Azure Marketplace listing** | Same pattern, Azure-specific ARM template |
+| Marketplace metering integration | AWS Marketplace Metering API + equivalents for usage-based billing through cloud bills |
+| Self-hosted Helm chart | Fallback for FedRAMP/sovereign-cloud customers who can't use Marketplace |
 | TEE / Confidential Compute | Nitro Enclaves for paranoid customers |
 | Compliance certifications | SOC 2 Type II, ISO 27001 |
 | Identity / audit | SAML SSO, SCIM provisioning, SIEM export |
