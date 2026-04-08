@@ -1,21 +1,51 @@
-MIT License
+SynapCode Proprietary License
+==============================
 
-Copyright (c) 2026 SynapCode Contributors
+Copyright (c) 2026 Miguel Bernadin. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This software and its source code are proprietary and confidential.
+No part of this software may be reproduced, distributed, modified,
+publicly displayed, or used to create derivative works without the
+express written permission of the copyright holder.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Permitted uses
+--------------
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+The compiled SynapCode binaries (CLI, desktop app, and bundled
+sidecars) are distributed under a separate end-user license that
+permits free local use on a single machine. See the EULA bundled
+with the binary distribution for terms.
+
+Source-available enterprise audit
+---------------------------------
+
+For enterprise procurement and security audits, the source code may
+be made available to authorized representatives of a prospective or
+existing customer under a separate, signed Non-Disclosure Agreement.
+Source access under such an agreement is strictly read-only and does
+NOT grant any right to:
+
+  - Redistribute the source code, in whole or in part
+  - Self-host SynapCode infrastructure
+  - Create derivative works
+  - Use the source code outside of the audit scope
+
+Such access is granted at the copyright holder's sole discretion.
+
+Trademark
+---------
+
+"SynapCode" is a trademark of Miguel Bernadin. Use of the trademark
+in derivative works, reviews, or competing products is prohibited
+without prior written permission.
+
+No warranty
+-----------
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

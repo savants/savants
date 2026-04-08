@@ -1,4 +1,4 @@
-"""MCP Server: exposes FalkorDB graph queries to external AI tools.
+"""MCP Server: exposes structural graph queries to external AI tools.
 
 Implements the Model Context Protocol with proper Content-Length framed
 stdio transport, allowing Claude Code, Cursor, and VS Code to query
@@ -177,14 +177,20 @@ class SynapCodeMCPServer:
                 "inputSchema": {"type": "object", "properties": {}},
             },
             {
-                "name": "cypher_query",
-                "description": "Execute a raw Cypher query against the graph.",
+                "name": "advanced_graph_query",
+                "description": (
+                    "Power-user escape hatch: run a raw graph query against "
+                    "the underlying engine. Most agents should prefer the "
+                    "higher-level tools (function_xray, find_references_structured, "
+                    "etc.) which return structured results without requiring "
+                    "knowledge of the query language."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Cypher query string",
+                            "description": "Graph query string",
                         },
                     },
                     "required": ["query"],

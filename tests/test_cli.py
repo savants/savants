@@ -144,7 +144,7 @@ class TestCLIStatus:
     def test_status_shows_connection(self, runner):
         result = runner.invoke(cli, ["status"])
         assert result.exit_code == 0
-        assert "FalkorDB:" in result.output
+        assert "Index backend:" in result.output
         assert "connected" in result.output
         assert "RAM:" in result.output
 

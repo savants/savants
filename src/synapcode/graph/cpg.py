@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from synapcode.graph.client import GraphClient
+from synapcode.security.secret_scrub import (
+    scrub as _scrub_secret,
+    scrub_config_value as _scrub_config_value,
+    is_secret_value,
+)
 from synapcode.graph.schema import (
     ClassNode,
     ConfigKeyNode,
@@ -77,6 +82,10 @@ def _looks_like_symbol(s: str) -> bool:
     strings with whitespace, and anything that isn't a valid identifier shape.
     The goal is to catch registry keys like "HandleTsCoinTransfer" or
     "handlers.coin.Handle" without capturing every string in the codebase.
+
+    Also rejects anything that looks like a secret. This is the second of
+    three secret-scrubbing checkpoints in the parser ingest path — see
+    src/synapcode/security/secret_scrub.py for the full pattern list.
     """
     if not s or len(s) > 120 or " " in s or "\n" in s:
         return False
@@ -84,7 +93,14 @@ def _looks_like_symbol(s: str) -> bool:
     # common lowercase words like "utf-8", "get", "post", etc.
     if not any(c.isupper() for c in s) and "." not in s:
         return False
-    return bool(_IDENT_RE.match(s))
+    if not _IDENT_RE.match(s):
+        return False
+    # Final check: even if the shape passes, never index something
+    # that looks like a credential. AWS keys (AKIA...) and Stripe live
+    # keys (sk_live_...) for example will pass _IDENT_RE but must be skipped.
+    if is_secret_value(s):
+        return False
+    return True
 
 
 def _flatten_config(
@@ -115,8 +131,9 @@ def _flatten_config(
         # so we don't explode into 50 meaningless entries.
         if all(not isinstance(x, (dict, list)) for x in node):
             value = ", ".join(str(x) for x in node)[:_VALUE_MAX_LEN]
+            scrubbed, _ = _scrub_config_value(prefix, value)
             if prefix:
-                out.append(ConfigKeyNode(name=prefix, file_path=file_path, value=value, format=fmt))
+                out.append(ConfigKeyNode(name=prefix, file_path=file_path, value=scrubbed, format=fmt))
         else:
             for i, item in enumerate(node):
                 new_prefix = f"{prefix}[{i}]" if prefix else f"[{i}]"
@@ -125,11 +142,14 @@ def _flatten_config(
         # Leaf: scalar
         if prefix:
             value = "" if node is None else str(node)
+            # Use the key-aware scrubber so values at keys like
+            # `database.password` are redacted regardless of content shape.
+            scrubbed, _ = _scrub_config_value(prefix, value)
             out.append(
                 ConfigKeyNode(
                     name=prefix,
                     file_path=file_path,
-                    value=value[:_VALUE_MAX_LEN],
+                    value=scrubbed[:_VALUE_MAX_LEN],
                     format=fmt,
                 )
             )
@@ -208,7 +228,11 @@ def _extract_env_var_call(full_callee: str, call_node: Any) -> tuple[str | None,
     # Sanity: env vars are [A-Z_][A-Z0-9_]* mostly
     if not name or len(name) > 100 or " " in name:
         return (None, "")
-    return (name, default[:200])
+    # Scrub the default value — `os.getenv("KEY", "real-secret-default")`
+    # is a real pattern in legacy code and we don't want to capture the
+    # secret as the EnvVar's default_value.
+    cleaned_default, _ = _scrub_secret(default)
+    return (name, cleaned_default[:200])
 
 
 def _decorator_name(dec_node: object) -> str:

@@ -28,14 +28,33 @@ from synapcode.sync.git_hooks import get_current_head, get_last_indexed_sha, sav
 
 
 def _find_bundled_binary(filename: str) -> str | None:
-    """Walk up from this file to find a binary bundled in desktop/src-tauri/binaries/.
+    """Locate a binary bundled with the synapcode distribution.
 
-    Works from a monorepo git checkout and (eventually) from wheel-installed
-    package_data. Falls through to None if not found.
+    Search order:
+      1. Wheel/sdist install: src/synapcode/binaries/<filename> via importlib.resources
+      2. Monorepo dev checkout: walk up to find desktop/src-tauri/binaries/<filename>
+      3. None if neither matches
     """
     import os
     from pathlib import Path
 
+    # 1. Wheel-installed location. importlib.resources is the supported
+    #    way to read package_data from an installed wheel; it works whether
+    #    the wheel was unpacked, zipped, or installed via pip.
+    try:
+        from importlib.resources import files as _resource_files
+        bundled = _resource_files("synapcode") / "binaries" / filename
+        if bundled.is_file():
+            path_str = str(bundled)
+            # Some package layouts return a Traversable that resolves
+            # to a real path; only return if the underlying file is
+            # actually executable + readable.
+            if os.access(path_str, os.X_OK | os.R_OK):
+                return path_str
+    except (ImportError, ModuleNotFoundError, FileNotFoundError, OSError):
+        pass
+
+    # 2. Monorepo dev checkout. Walk up looking for desktop/src-tauri/binaries.
     here = Path(__file__).resolve()
     for parent in here.parents:
         candidate = parent / "desktop" / "src-tauri" / "binaries" / filename
@@ -156,13 +175,13 @@ def _start_falkordb_process(port: int, verbose: bool = True) -> int | None:
     else:
         if verbose:
             click.echo(
-                "Warning: FalkorDB module not found. Graph queries will fail. "
-                "Set FALKORDB_MODULE=/path/to/falkordb.so.",
+                "Warning: index backend module not found. Queries will fail. "
+                "Set FALKORDB_MODULE=/path/to/module.so.",
                 err=True,
             )
 
     if verbose:
-        click.echo(f"Starting FalkorDB on port {port}...")
+        click.echo(f"Starting index backend on port {port}...")
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
@@ -179,16 +198,16 @@ def _start_falkordb_process(port: int, verbose: bool = True) -> int | None:
             r.ping()
             _falkordb_pidfile().write_text(str(proc.pid))
             if verbose:
-                click.echo(f"FalkorDB started (PID {proc.pid}, port {port}).")
+                click.echo(f"Index backend started (PID {proc.pid}, port {port}).")
             return proc.pid
         except Exception:
             if proc.poll() is not None:
                 if verbose:
-                    click.echo("FalkorDB process exited during startup.", err=True)
+                    click.echo("Index backend exited during startup.", err=True)
                 return None
             continue
     if verbose:
-        click.echo("Timed out waiting for FalkorDB.", err=True)
+        click.echo("Timed out waiting for index backend.", err=True)
     return None
 
 
@@ -211,7 +230,7 @@ def _ensure_falkordb() -> GraphClient:
         client.ensure_schema()
         return client
     except Exception as e:
-        click.echo(f"Could not connect after starting FalkorDB: {e}", err=True)
+        click.echo(f"Could not connect to index backend: {e}", err=True)
         sys.exit(1)
 
 
@@ -438,7 +457,7 @@ def status():
     config = load_config()
 
     # FalkorDB health
-    click.echo("FalkorDB:")
+    click.echo("Index backend:")
     try:
         client = GraphClient(config.falkordb)
         nodes = client.node_count()
@@ -709,7 +728,7 @@ def doctor():
     click.echo("=" * 50)
 
     # 1. FalkorDB reachable?
-    click.echo("\nFalkorDB:")
+    click.echo("\nIndex backend:")
     try:
         client = GraphClient(config.falkordb)
         n = client.node_count()
@@ -719,21 +738,21 @@ def doctor():
         click.echo(f"  nodes:         {n}")
         click.echo(f"  edges:         {e}")
         if n == 0:
-            problems.append("FalkorDB is up but graph is empty. Run 'synapcode init <repo>'.")
+            problems.append("Backend is up but graph is empty. Run 'synapcode init <repo>'.")
     except Exception as exc:
         click.echo(f"  reachable:     NO ({exc})")
-        problems.append(f"FalkorDB unreachable: {exc}")
+        problems.append(f"Backend unreachable: {exc}")
         client = None
 
     # 2. Module discovery
-    click.echo("\nFalkorDB module:")
+    click.echo("\nIndex backend module:")
     module = _find_falkordb_module()
     click.echo(f"  path:          {module or 'NOT FOUND'}")
     if not module:
-        problems.append("FalkorDB .so module not found. Set FALKORDB_MODULE or install the bundled binary.")
+        problems.append("Backend module not found. Set FALKORDB_MODULE or reinstall the wheel.")
 
-    # 3. redis-server binary
-    click.echo("\nredis-server:")
+    # 3. backend host binary
+    click.echo("\nBackend host:")
     rbin = _find_redis_binary()
     source = "bundled" if rbin and "binaries/redis-server-bundled" in rbin else "system"
     click.echo(f"  path:          {rbin or 'NOT FOUND'}  ({source})")
@@ -741,7 +760,7 @@ def doctor():
         problems.append("No redis-server found (bundled or system).")
 
     # 4. libgomp (NixOS gotcha)
-    click.echo("\nlibgomp (OpenMP, required by FalkorDB):")
+    click.echo("\nlibgomp (OpenMP runtime):")
     gomp = glob("/nix/store/*-gcc-*-lib/lib/libgomp.so.1") or glob("/usr/lib*/libgomp.so.1")
     if gomp:
         click.echo(f"  path:          {gomp[0]}")
