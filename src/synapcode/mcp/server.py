@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from typing import IO
 
@@ -344,6 +345,33 @@ class SynapCodeMCPServer:
                 },
             },
             {
+                "name": "reindex",
+                "description": (
+                    "Rebuild the graph for a repository. By default does a "
+                    "full rebuild (drops the existing graph and re-parses "
+                    "every file); pass incremental=true to only re-parse "
+                    "changed files since the last bookmark. This is the "
+                    "self-heal tool: if an agent detects the graph is stale "
+                    "or missing data, it can call this directly via MCP "
+                    "without dropping to the CLI."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": {
+                            "type": "string",
+                            "description": "Absolute path to the repository to index",
+                        },
+                        "full": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": "Drop and rebuild the entire graph (default true)",
+                        },
+                    },
+                    "required": ["repo_path"],
+                },
+            },
+            {
                 "name": "diff_impact",
                 "description": (
                     "Structural blast radius for a git ref or range. "
@@ -487,6 +515,12 @@ class SynapCodeMCPServer:
                 text = self._tool_diff_impact(
                     args["ref"],
                     args.get("repo_path", "."),
+                )
+
+            elif tool_name == "reindex":
+                text = self._tool_reindex(
+                    args["repo_path"],
+                    args.get("full", True),
                 )
 
             else:
@@ -795,37 +829,62 @@ class SynapCodeMCPServer:
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
     def _tool_decorated_with(self, decorator_name: str) -> str:
-        """List functions whose `decorators` property contains decorator_name.
+        """List functions decorated with `decorator_name`.
 
-        Matches are loose: the decorator list stores expressions like
-        'workflow.defn' or 'app.route'; we match on exact, trailing segment,
-        and dotted-prefix to keep the tool forgiving.
+        Uses the indexed Decorator node + DECORATED_BY edge added in the
+        decorator-perf fix. The Decorator.name property is indexed, so
+        the exact-equality clause is an O(1) index lookup, and the
+        suffix-match clause scans only the (typically small) set of
+        distinct decorator names — never the full Function table.
+
+        Matching semantics: caller passes either a dotted name
+        ('workflow.defn') or a bare name ('command'). We match against
+        decorators that are either exactly that name OR end with
+        '.{name}'. So:
+
+          - decorator_name='workflow.defn' matches '@workflow.defn' AND
+            '@temporalio.workflow.defn' but NOT '@activity.defn'
+          - decorator_name='command' matches '@command' AND '@cli.command'
+            AND '@click.command' but NOT '@cli.commands'
+
+        We deliberately do NOT do tail-segment broadening (no
+        'workflow.defn' → 'defn' fallback). Earlier versions did, and it
+        caused workflow.defn and activity.defn to both return the same
+        ~73 results because both end in '.defn'. The current rule:
+        what the caller asks for is what they get.
         """
-        rows = self.client.query(
-            "MATCH (f:Function) WHERE f.decorators IS NOT NULL "
-            "RETURN f.name, f.file_path, f.decorators"
-        ).result_set
-
         needle = decorator_name.strip()
-        tail = needle.rsplit(".", 1)[-1]
+        # Match BOTH Function-level decorators (e.g. @app.route, @cli.command)
+        # AND Class-level decorators (e.g. @workflow.defn, @dataclass,
+        # @strawberry.type). Class-level decorators on Temporal workflow
+        # classes were invisible until the parser was extended to walk
+        # decorated_definition wrappers around class_definition nodes.
+        params = {"needle": needle, "dot_needle": "." + needle}
+        fn_rows = self.client.query(
+            "MATCH (f:Function)-[:DECORATED_BY]->(d:Decorator) "
+            "WHERE d.name = $needle OR d.name ENDS WITH $dot_needle "
+            "RETURN DISTINCT 'Function' AS kind, f.name AS name, f.file_path AS fp, d.name AS dec "
+            "ORDER BY fp, name",
+            params,
+        ).result_set
+        cls_rows = self.client.query(
+            "MATCH (c:Class)-[:DECORATED_BY]->(d:Decorator) "
+            "WHERE d.name = $needle OR d.name ENDS WITH $dot_needle "
+            "RETURN DISTINCT 'Class' AS kind, c.name AS name, c.file_path AS fp, d.name AS dec "
+            "ORDER BY fp, name",
+            params,
+        ).result_set
+        rows = fn_rows + cls_rows
 
-        matches: list[tuple[str, str, str]] = []
-        for name, fpath, decs in rows:
-            if not decs:
-                continue
-            for d in decs:
-                if d == needle or d.endswith("." + needle) or d == tail or d.endswith("." + tail):
-                    matches.append((name, fpath, d))
-                    break
+        if not rows:
+            return f"No functions or classes decorated with '{decorator_name}'."
 
-        if not matches:
-            return f"No functions decorated with '{decorator_name}'."
-
-        lines = [f"{len(matches)} function(s) decorated with '{decorator_name}':"]
-        for name, fpath, d in matches[:50]:
-            lines.append(f"  @{d:<25} {name}  ({fpath})")
-        if len(matches) > 50:
-            lines.append(f"  ... and {len(matches) - 50} more")
+        lines = [f"{len(rows)} symbol(s) decorated with '{decorator_name}':"]
+        for kind, name, fpath, d in rows[:50]:
+            tag = "fn" if kind == "Function" else "cls"
+            lines.append(f"  [{tag}] @{d:<25} {name}  ({fpath})")
+        if len(rows) > 50:
+            lines.append(f"  ... and {len(rows) - 50} more")
         return "\n".join(lines)
 
     def _tool_resolves_to(self, symbol: str) -> str:
@@ -866,6 +925,66 @@ class SynapCodeMCPServer:
 
         report = diff_impact(repo_path=repo_path, ref=ref, client=self.client)
         return format_report(report)
+
+    def _tool_reindex(self, repo_path: str, full: bool) -> str:
+        """Self-heal tool: rebuild the graph from a repo without leaving MCP.
+
+        Agents call this when they detect stale or missing data. It runs
+        the same builder the CLI uses, against the same graph the MCP
+        server is currently connected to. Returns a summary of what was
+        indexed so the caller can verify success.
+        """
+        import time
+        from synapcode.graph.cpg import CodePropertyGraphBuilder
+
+        if not os.path.isdir(repo_path):
+            return f"Error: repo_path '{repo_path}' is not a directory."
+
+        t0 = time.time()
+        try:
+            if full:
+                try:
+                    self.client.delete_graph()
+                except Exception:
+                    pass
+                self.client.ensure_schema()
+                builder = CodePropertyGraphBuilder(repo_path=repo_path, client=self.client)
+                stats = builder.build()
+            else:
+                # Incremental reindex via the existing CLI helper paths
+                from synapcode.sync.diff import compute_diff
+                from synapcode.sync.git_hooks import get_current_head, get_last_indexed_sha
+                bookmark = get_last_indexed_sha(repo_path)
+                head = get_current_head(repo_path)
+                if bookmark and bookmark != head:
+                    diff = compute_diff(repo_path, bookmark, head)
+                    builder = CodePropertyGraphBuilder(repo_path=repo_path, client=self.client)
+                    stats = builder.build_incremental(
+                        changed_files=diff.changed_files + diff.added_files,
+                        deleted_files=diff.deleted_files,
+                    )
+                else:
+                    return f"Incremental reindex skipped: no diff between bookmark and HEAD."
+        except Exception as e:
+            return f"Reindex failed: {e}"
+
+        elapsed = time.time() - t0
+        n_nodes = self.client.node_count()
+        n_edges = self.client.edge_count()
+
+        lines = [
+            f"Reindex of {repo_path} complete in {elapsed:.1f}s ({'full' if full else 'incremental'})",
+            f"  Files:        {stats.get('files', stats.get('updated', 0))}",
+            f"  Functions:    {stats.get('functions', 0)}",
+            f"  Classes:      {stats.get('classes', 0)}",
+            f"  Edges:        {stats.get('edges', 0)}",
+            f"  Config keys:  {stats.get('config_keys', 0)}",
+            f"  Env vars:     {stats.get('env_vars', 0)}",
+            f"  Symbol refs:  {stats.get('references_symbol', 0)}",
+            f"",
+            f"  Graph total:  {n_nodes} nodes / {n_edges} edges",
+        ]
+        return "\n".join(lines)
 
     def _error(self, req_id: int | str | None, code: int, message: str) -> dict:
         return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}

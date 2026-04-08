@@ -52,6 +52,7 @@ SCHEMA_INDICES = [
     "CREATE INDEX FOR (k:ConfigKey) ON (k.file_path)",
     "CREATE INDEX FOR (fn:Function) ON (fn.class_name)",
     "CREATE INDEX FOR (e:EnvVar) ON (e.name)",
+    "CREATE INDEX FOR (d:Decorator) ON (d.name)",
 ]
 
 
@@ -85,6 +86,7 @@ class ClassNode:
     end_line: int
     bases: list[str] = field(default_factory=list)
     docstring: str = ""
+    decorators: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -100,6 +102,21 @@ class EnvVarNode:
     name: str  # the env var name (e.g. "FALKORDB_HOST")
     file_path: str
     default_value: str = ""  # if os.getenv("X", "default"), capture the default
+
+
+@dataclass
+class DecoratorNode:
+    """A decorator name interned as a graph node.
+
+    Functions decorated with the same decorator share the same
+    Decorator node (MERGE on name). The DECORATED_BY edge from
+    Function to Decorator is what `decorated_with` queries — using
+    the indexed `name` property turns the lookup from a full Function
+    scan (~173ms on zora_backend) into an O(matches) indexed query
+    (~5ms).
+    """
+
+    name: str  # the decorator's callable name, e.g. "workflow.defn"
 
 
 @dataclass
@@ -167,7 +184,8 @@ def create_class_query(node: ClassNode) -> tuple[str, dict]:
     return (
         "MERGE (c:Class {name: $name, file_path: $file_path}) "
         "SET c.start_line = $start_line, c.end_line = $end_line, "
-        "c.bases = $bases, c.docstring = $docstring",
+        "c.bases = $bases, c.docstring = $docstring, "
+        "c.decorators = $decorators",
         {
             "name": node.name,
             "file_path": node.file_path,
@@ -175,6 +193,7 @@ def create_class_query(node: ClassNode) -> tuple[str, dict]:
             "end_line": node.end_line,
             "bases": node.bases,
             "docstring": node.docstring,
+            "decorators": node.decorators,
         },
     )
 
@@ -185,6 +204,14 @@ def create_env_var_query(node: EnvVarNode) -> tuple[str, dict]:
         "SET e.default_value = COALESCE(e.default_value, $default_value)",
         {"name": node.name, "default_value": node.default_value},
     )
+
+
+def create_decorator_query(name: str) -> tuple[str, dict]:
+    """MERGE a Decorator node by name. The name is the canonical key —
+    every function decorated with `@workflow.defn` shares the same
+    Decorator{name:'workflow.defn'} node.
+    """
+    return ("MERGE (d:Decorator {name: $name})", {"name": name})
 
 
 def create_config_key_query(node: ConfigKeyNode) -> tuple[str, dict]:
