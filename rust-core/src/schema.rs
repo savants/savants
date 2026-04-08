@@ -22,6 +22,34 @@ pub struct FunctionNode {
     pub parameters: Vec<String>,
     #[serde(default)]
     pub return_type: String,
+    #[serde(default)]
+    pub decorators: Vec<String>,
+}
+
+/// A string literal that looks like a symbol reference (registry key,
+/// Temporal activity name, Celery task, URL route, config key, etc.).
+/// Captured during AST walk and later resolved to Function/Class targets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StringRef {
+    pub caller_file: String,
+    pub caller_function: String,
+    pub value: String,
+    pub line: u32,
+}
+
+/// A leaf key in a config file (YAML / TOML / JSON).
+///
+/// `name` is the dotted path (e.g. `operationProfiling.mode`) so that
+/// pattern-search over node.name finds it. Mirrors
+/// `ConfigKeyNode` in `src/synapcode/graph/schema.py`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConfigKeyNode {
+    pub name: String,
+    pub file_path: String,
+    pub value: String,
+    pub format: String, // "yaml" | "toml" | "json"
+    #[serde(default)]
+    pub line: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

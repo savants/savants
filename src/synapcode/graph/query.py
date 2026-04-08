@@ -143,14 +143,25 @@ class GraphQueryEngine:
         ]
 
     def search_by_pattern(self, pattern: str) -> list[dict]:
-        """Search for functions/classes matching a name pattern."""
+        """Search for functions/classes/config keys matching a name pattern.
+
+        Matches on the `name` property, which for ConfigKey is the dotted
+        path (e.g. `operationProfiling.mode`). ConfigKey hits also return
+        their stringified value so callers can see what's set without
+        re-reading the file.
+        """
         result = self.client.query(
             "MATCH (n) WHERE n.name CONTAINS $pattern "
             "RETURN labels(n)[0] AS type, n.name AS name, "
-            "n.file_path AS file ORDER BY type, name",
+            "n.file_path AS file, "
+            "CASE WHEN n:ConfigKey THEN n.value ELSE NULL END AS value "
+            "ORDER BY type, name",
             {"pattern": pattern},
         )
-        return [
-            {"type": row[0], "name": row[1], "file": row[2]}
-            for row in result.result_set
-        ]
+        out: list[dict] = []
+        for row in result.result_set:
+            entry = {"type": row[0], "name": row[1], "file": row[2]}
+            if row[3] is not None:
+                entry["value"] = row[3]
+            out.append(entry)
+        return out

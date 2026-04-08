@@ -12,6 +12,7 @@
 //!      so the existing Python code can opt into the Rust indexer with one
 //!      import change
 
+pub mod config;
 pub mod cpg;
 pub mod cpg_walk;
 pub mod delta;
@@ -22,4 +23,4 @@ pub mod python_bindings;
 
 pub use cpg::{CodePropertyGraphBuilder, ParseStats};
 pub use delta::{compute_file_delta, Delta, DeltaScope, Operation};
-pub use schema::{ClassNode, FileNode, FunctionNode};
+pub use schema::{ClassNode, ConfigKeyNode, FileNode, FunctionNode};

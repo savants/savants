@@ -189,6 +189,12 @@ fn emit_added_file(delta: &mut Delta, parsed: &ParsedFile) {
                     fn_node.parameters.iter().map(|p| serde_json::Value::String(p.clone())).collect(),
                 ),
             );
+            props.insert(
+                "decorators".into(),
+                serde_json::Value::Array(
+                    fn_node.decorators.iter().map(|d| serde_json::Value::String(d.clone())).collect(),
+                ),
+            );
             delta.operations.push(Operation::AddNode {
                 id: fn_id.clone(),
                 label: "Function".to_string(),

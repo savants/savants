@@ -47,6 +47,9 @@ SCHEMA_INDICES = [
     "CREATE INDEX FOR (e:Episode) ON (e.author)",
     "CREATE INDEX FOR (e:Episode) ON (e.branch)",
     "CREATE INDEX FOR (e:Episode) ON (e.source_type)",
+    "CREATE INDEX FOR (fn:Function) ON (fn.decorators)",
+    "CREATE INDEX FOR (k:ConfigKey) ON (k.name)",
+    "CREATE INDEX FOR (k:ConfigKey) ON (k.file_path)",
 ]
 
 
@@ -67,6 +70,7 @@ class FunctionNode:
     end_line: int
     parameters: list[str] = field(default_factory=list)
     return_type: str = ""
+    decorators: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +80,21 @@ class ClassNode:
     start_line: int
     end_line: int
     bases: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ConfigKeyNode:
+    """A leaf key in a config file (YAML/TOML/JSON).
+
+    `name` is the dotted key path (e.g. 'operationProfiling.mode') so that
+    `search_code` — which matches on `name CONTAINS pattern` — finds it.
+    """
+
+    name: str  # dotted key path, used as the searchable identifier
+    file_path: str
+    value: str  # stringified leaf value (truncated)
+    format: str  # 'yaml' | 'toml' | 'json'
+    line: int = 0
 
 
 @dataclass
@@ -107,7 +126,8 @@ def create_function_query(node: FunctionNode) -> tuple[str, dict]:
     return (
         "MERGE (fn:Function {name: $name, file_path: $file_path}) "
         "SET fn.start_line = $start_line, fn.end_line = $end_line, "
-        "fn.parameters = $parameters, fn.return_type = $return_type",
+        "fn.parameters = $parameters, fn.return_type = $return_type, "
+        "fn.decorators = $decorators",
         {
             "name": node.name,
             "file_path": node.file_path,
@@ -115,6 +135,7 @@ def create_function_query(node: FunctionNode) -> tuple[str, dict]:
             "end_line": node.end_line,
             "parameters": node.parameters,
             "return_type": node.return_type,
+            "decorators": node.decorators,
         },
     )
 
@@ -130,6 +151,23 @@ def create_class_query(node: ClassNode) -> tuple[str, dict]:
             "start_line": node.start_line,
             "end_line": node.end_line,
             "bases": node.bases,
+        },
+    )
+
+
+def create_config_key_query(node: ConfigKeyNode) -> tuple[str, dict]:
+    """MERGE a ConfigKey by (file_path, name). Multiple files can declare the
+    same key path — they're separate nodes.
+    """
+    return (
+        "MERGE (k:ConfigKey {file_path: $file_path, name: $name}) "
+        "SET k.value = $value, k.format = $format, k.line = $line",
+        {
+            "name": node.name,
+            "file_path": node.file_path,
+            "value": node.value,
+            "format": node.format,
+            "line": node.line,
         },
     )
 

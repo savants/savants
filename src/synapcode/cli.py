@@ -27,74 +27,145 @@ from synapcode.graph.query import GraphQueryEngine
 from synapcode.sync.git_hooks import get_current_head, get_last_indexed_sha, save_last_indexed_sha
 
 
-def _ensure_falkordb() -> GraphClient:
-    """Connect to FalkorDB, auto-starting it as a native process if needed.
+def _find_falkordb_module() -> str | None:
+    """Locate the FalkorDB Redis module binary.
 
-    Tauri manages the FalkorDB sidecar in desktop mode. In CLI-only mode,
-    we try to start redis-server with the FalkorDB module directly —
-    no Docker required.
+    Search order:
+      1. $FALKORDB_MODULE env var (explicit override)
+      2. Bundled binary in desktop/src-tauri/binaries/ (monorepo checkout)
+      3. System standard paths
     """
+    import os
+
+    env = os.environ.get("FALKORDB_MODULE")
+    if env and os.path.exists(env):
+        return env
+
+    # Walk up from this file looking for desktop/src-tauri/binaries/falkordb.so
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        bundled = parent / "desktop" / "src-tauri" / "binaries" / "falkordb.so"
+        if bundled.exists():
+            return str(bundled)
+        if (parent / ".git").exists() or parent == parent.parent:
+            break
+
+    for p in (
+        "/usr/lib/redis/modules/falkordb.so",
+        "/usr/local/lib/redis/modules/falkordb.so",
+        "/opt/homebrew/lib/redis/modules/falkordb.so",
+        "/usr/lib/falkordb/falkordb.so",
+    ):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _falkordb_env() -> dict:
+    """Build env for the FalkorDB subprocess, injecting libgomp on NixOS.
+
+    FalkorDB links against libgomp.so.1 which isn't on NixOS's default
+    loader path. If we can find a suitable libgomp via nix-store, prepend it.
+    """
+    import os
+    env = os.environ.copy()
+    # Try a few known-good nix paths; silently skip if none exist.
+    from glob import glob
+    candidates = glob("/nix/store/*-gcc-*-lib/lib/libgomp.so.1")
+    if candidates:
+        gomp_dir = os.path.dirname(candidates[0])
+        existing = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{gomp_dir}:{existing}" if existing else gomp_dir
+    return env
+
+
+def _falkordb_pidfile():
+    from pathlib import Path
+    d = Path.home() / ".synapcode"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "falkordb.pid"
+
+
+def _start_falkordb_process(port: int, verbose: bool = True) -> int | None:
+    """Start redis-server + FalkorDB module. Returns PID on success."""
     import shutil
     import subprocess
     import time
 
+    redis_bin = shutil.which("redis-server")
+    if not redis_bin:
+        if verbose:
+            click.echo(
+                "redis-server not found on PATH. Install Redis or use the desktop app.",
+                err=True,
+            )
+        return None
+
+    module = _find_falkordb_module()
+    cmd = [redis_bin, "--port", str(port), "--daemonize", "no", "--save", ""]
+    if module:
+        cmd.extend(["--loadmodule", module])
+    else:
+        if verbose:
+            click.echo(
+                "Warning: FalkorDB module not found. Graph queries will fail. "
+                "Set FALKORDB_MODULE=/path/to/falkordb.so.",
+                err=True,
+            )
+
+    if verbose:
+        click.echo(f"Starting FalkorDB on port {port}...")
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=_falkordb_env(),
+    )
+
+    # Wait for it
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            import redis
+            r = redis.Redis(host="127.0.0.1", port=port, socket_connect_timeout=0.5)
+            r.ping()
+            _falkordb_pidfile().write_text(str(proc.pid))
+            if verbose:
+                click.echo(f"FalkorDB started (PID {proc.pid}, port {port}).")
+            return proc.pid
+        except Exception:
+            if proc.poll() is not None:
+                if verbose:
+                    click.echo("FalkorDB process exited during startup.", err=True)
+                return None
+            continue
+    if verbose:
+        click.echo("Timed out waiting for FalkorDB.", err=True)
+    return None
+
+
+def _ensure_falkordb() -> GraphClient:
+    """Connect to FalkorDB, auto-starting it as a native process if needed."""
     config = load_config()
     client = GraphClient(config.falkordb)
 
-    # Already running? Great.
     try:
         client.ensure_schema()
         return client
     except Exception:
         pass
 
-    # Try to start redis-server natively with FalkorDB module
-    redis_bin = shutil.which("redis-server")
-    if not redis_bin:
-        click.echo(
-            "FalkorDB not running and redis-server not found on PATH.\n"
-            "Install redis + FalkorDB module, or use the SynapCode desktop app.",
-            err=True,
-        )
+    if _start_falkordb_process(config.falkordb.port) is None:
         sys.exit(1)
 
-    # Locate the FalkorDB module
-    module_paths = [
-        "/usr/lib/redis/modules/falkordb.so",
-        "/usr/local/lib/redis/modules/falkordb.so",
-        "/opt/homebrew/lib/redis/modules/falkordb.so",
-        "/usr/lib/falkordb/falkordb.so",
-    ]
-    module = next((p for p in module_paths if __import__("os").path.exists(p)), None)
-
-    cmd = [redis_bin, "--port", str(config.falkordb.port), "--daemonize", "no", "--save", ""]
-    if module:
-        cmd.extend(["--loadmodule", module])
-    else:
-        click.echo(
-            "Warning: FalkorDB module not found. Starting plain Redis — "
-            "graph queries will fail. Install FalkorDB or use the desktop app.",
-            err=True,
-        )
-
-    click.echo(f"Starting FalkorDB (redis-server) on port {config.falkordb.port}...")
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # Wait for it
-    for _ in range(20):
-        time.sleep(0.5)
-        try:
-            client = GraphClient(config.falkordb)
-            client.ensure_schema()
-            click.echo(f"FalkorDB started (PID {proc.pid}).")
-            return client
-        except Exception:
-            if proc.poll() is not None:
-                break
-            continue
-
-    click.echo("Could not start FalkorDB.", err=True)
-    sys.exit(1)
+    client = GraphClient(config.falkordb)
+    try:
+        client.ensure_schema()
+        return client
+    except Exception as e:
+        click.echo(f"Could not connect after starting FalkorDB: {e}", err=True)
+        sys.exit(1)
 
 
 @click.group()
@@ -356,3 +427,116 @@ def worker():
     from synapcode.temporal.worker import main as worker_main
 
     asyncio.run(worker_main())
+
+
+# --- FalkorDB lifecycle -----------------------------------------------------
+
+
+@cli.group()
+def falkordb():
+    """Manage the FalkorDB sidecar (start/stop/status)."""
+
+
+@falkordb.command("start")
+def falkordb_start():
+    """Start redis-server with the FalkorDB module."""
+    config = load_config()
+    # If already up, do nothing.
+    try:
+        GraphClient(config.falkordb).ensure_schema()
+        click.echo(f"Already running on port {config.falkordb.port}.")
+        return
+    except Exception:
+        pass
+    if _start_falkordb_process(config.falkordb.port) is None:
+        sys.exit(1)
+
+
+@falkordb.command("stop")
+def falkordb_stop():
+    """Stop the FalkorDB sidecar started by `synapcode falkordb start`."""
+    import os
+    import signal
+
+    pidfile = _falkordb_pidfile()
+    if not pidfile.exists():
+        click.echo("No pidfile — not started via synapcode, or already stopped.")
+        return
+    pid = int(pidfile.read_text().strip())
+    try:
+        os.kill(pid, signal.SIGTERM)
+        click.echo(f"Sent SIGTERM to {pid}.")
+    except ProcessLookupError:
+        click.echo("Process already gone.")
+    pidfile.unlink(missing_ok=True)
+
+
+@falkordb.command("status")
+def falkordb_status():
+    """Report FalkorDB health and bundled module path."""
+    config = load_config()
+    module = _find_falkordb_module()
+    click.echo(f"Module:  {module or '(not found)'}")
+    click.echo(f"Port:    {config.falkordb.port}")
+    try:
+        c = GraphClient(config.falkordb)
+        n = c.node_count()
+        e = c.edge_count()
+        click.echo(f"Status:  up  ({n} nodes, {e} edges)")
+    except Exception as exc:
+        click.echo(f"Status:  down  ({exc})")
+
+
+# --- Convenience: ask a composite question about a symbol -------------------
+
+
+@cli.command()
+@click.argument("name")
+def ask(name: str):
+    """One-shot structural trace for a symbol: callers, references, decorators."""
+    client = _ensure_falkordb()
+
+    # 1. Locate it
+    rows = client.query(
+        "MATCH (n) WHERE (n:Function OR n:Class) AND n.name = $name "
+        "RETURN labels(n)[0], n.name, n.file_path LIMIT 10",
+        {"name": name},
+    ).result_set
+    if not rows:
+        click.echo(f"'{name}' not found in graph.")
+        return
+    click.echo(f"Found {len(rows)} definition(s):")
+    for r in rows:
+        click.echo(f"  [{r[0]}] {r[1]}  ({r[2]})")
+
+    # 2. Structural callers (CALLS)
+    callers = client.query(
+        "MATCH (c:Function)-[:CALLS]->(t:Function {name: $name}) "
+        "RETURN DISTINCT c.name, c.file_path LIMIT 20",
+        {"name": name},
+    ).result_set
+    click.echo(f"\nDirect callers ({len(callers)}):")
+    for c in callers:
+        click.echo(f"  {c[0]}  ({c[1]})")
+
+    # 3. String-literal references (REFERENCES_SYMBOL)
+    refs = client.query(
+        "MATCH (c:Function)-[:REFERENCES_SYMBOL]->(t) WHERE t.name = $name "
+        "RETURN DISTINCT c.name, c.file_path LIMIT 20",
+        {"name": name},
+    ).result_set
+    click.echo(f"\nString-literal references ({len(refs)}):")
+    for c in refs:
+        click.echo(f"  {c[0]}  ({c[1]})")
+
+    # 4. Decorators on the symbol itself (if Function)
+    decs = client.query(
+        "MATCH (f:Function {name: $name}) RETURN f.decorators LIMIT 5",
+        {"name": name},
+    ).result_set
+    for row in decs:
+        if row[0]:
+            click.echo(f"\nDecorators on {name}: {row[0]}")
+
+    if not callers and not refs:
+        click.echo("\n(No structural or string-literal references — likely dead code or external entry point.)")

@@ -321,6 +321,39 @@ class SynapCodeMCPServer:
                     "required": ["function_name"],
                 },
             },
+            {
+                "name": "decorated_with",
+                "description": (
+                    "List all functions decorated with a given decorator name, "
+                    "e.g. 'workflow.defn', 'app.route', 'lru_cache'. "
+                    "Matches on the decorator's callable expression "
+                    "(trailing segment or full dotted path)."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "decorator_name": {"type": "string"},
+                    },
+                    "required": ["decorator_name"],
+                },
+            },
+            {
+                "name": "resolves_to",
+                "description": (
+                    "Given a string literal (e.g. a registry key, Temporal "
+                    "activity name, or config value), find any Function or "
+                    "Class in the graph whose name matches — plus every "
+                    "function that mentions the string. Closes the "
+                    "registry-dispatch blind spot that grep handles poorly."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string"},
+                    },
+                    "required": ["symbol"],
+                },
+            },
         ]
 
     def _handle_tool_call(self, req_id: int | str, params: dict) -> dict:
@@ -412,6 +445,12 @@ class SynapCodeMCPServer:
                     args["function_name"],
                     args.get("file_path"),
                 )
+
+            elif tool_name == "decorated_with":
+                text = self._tool_decorated_with(args["decorator_name"])
+
+            elif tool_name == "resolves_to":
+                text = self._tool_resolves_to(args["symbol"])
 
             else:
                 return self._error(req_id, -32602, f"Unknown tool: {tool_name}")
@@ -717,6 +756,73 @@ class SynapCodeMCPServer:
 
     def _response(self, req_id: int | str | None, result: dict) -> dict:
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+    def _tool_decorated_with(self, decorator_name: str) -> str:
+        """List functions whose `decorators` property contains decorator_name.
+
+        Matches are loose: the decorator list stores expressions like
+        'workflow.defn' or 'app.route'; we match on exact, trailing segment,
+        and dotted-prefix to keep the tool forgiving.
+        """
+        rows = self.client.query(
+            "MATCH (f:Function) WHERE f.decorators IS NOT NULL "
+            "RETURN f.name, f.file_path, f.decorators"
+        ).result_set
+
+        needle = decorator_name.strip()
+        tail = needle.rsplit(".", 1)[-1]
+
+        matches: list[tuple[str, str, str]] = []
+        for name, fpath, decs in rows:
+            if not decs:
+                continue
+            for d in decs:
+                if d == needle or d.endswith("." + needle) or d == tail or d.endswith("." + tail):
+                    matches.append((name, fpath, d))
+                    break
+
+        if not matches:
+            return f"No functions decorated with '{decorator_name}'."
+
+        lines = [f"{len(matches)} function(s) decorated with '{decorator_name}':"]
+        for name, fpath, d in matches[:50]:
+            lines.append(f"  @{d:<25} {name}  ({fpath})")
+        if len(matches) > 50:
+            lines.append(f"  ... and {len(matches) - 50} more")
+        return "\n".join(lines)
+
+    def _tool_resolves_to(self, symbol: str) -> str:
+        """Resolve a string literal to any matching Function/Class + callers."""
+        terminal = symbol.rsplit(".", 1)[-1]
+
+        defs = self.client.query(
+            "MATCH (n) WHERE (n:Function OR n:Class) AND n.name = $t "
+            "RETURN labels(n)[0], n.name, n.file_path LIMIT 20",
+            {"t": terminal},
+        ).result_set
+
+        refs = self.client.query(
+            "MATCH (c:Function)-[:REFERENCES_SYMBOL]->(t) WHERE t.name = $t "
+            "RETURN DISTINCT c.name, c.file_path LIMIT 30",
+            {"t": terminal},
+        ).result_set
+
+        lines = [f"Resolving '{symbol}' (terminal: '{terminal}'):"]
+        lines.append(f"\nDefinitions ({len(defs)}):")
+        if defs:
+            for label, n, fp in defs:
+                lines.append(f"  [{label}] {n}  ({fp})")
+        else:
+            lines.append("  (none — may be external, dynamic, or not indexed)")
+
+        lines.append(f"\nString-literal references ({len(refs)}):")
+        if refs:
+            for n, fp in refs:
+                lines.append(f"  {n}  ({fp})")
+        else:
+            lines.append("  (none)")
+
+        return "\n".join(lines)
 
     def _error(self, req_id: int | str | None, code: int, message: str) -> dict:
         return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
