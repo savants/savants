@@ -50,6 +50,8 @@ SCHEMA_INDICES = [
     "CREATE INDEX FOR (fn:Function) ON (fn.decorators)",
     "CREATE INDEX FOR (k:ConfigKey) ON (k.name)",
     "CREATE INDEX FOR (k:ConfigKey) ON (k.file_path)",
+    "CREATE INDEX FOR (fn:Function) ON (fn.class_name)",
+    "CREATE INDEX FOR (e:EnvVar) ON (e.name)",
 ]
 
 
@@ -71,6 +73,8 @@ class FunctionNode:
     parameters: list[str] = field(default_factory=list)
     return_type: str = ""
     decorators: list[str] = field(default_factory=list)
+    docstring: str = ""
+    class_name: str = ""  # populated for methods; "" for top-level functions
 
 
 @dataclass
@@ -80,6 +84,22 @@ class ClassNode:
     start_line: int
     end_line: int
     bases: list[str] = field(default_factory=list)
+    docstring: str = ""
+
+
+@dataclass
+class EnvVarNode:
+    """Environment variable referenced from application code.
+
+    Captured from os.getenv(...), os.environ[...], and process.env.X.
+    Lets us answer "what env vars does this service read?" which
+    ConfigKey indexing can't answer alone (env vars live in Secrets,
+    Helm values, .env files — often not in the repo at all).
+    """
+
+    name: str  # the env var name (e.g. "FALKORDB_HOST")
+    file_path: str
+    default_value: str = ""  # if os.getenv("X", "default"), capture the default
 
 
 @dataclass
@@ -127,7 +147,8 @@ def create_function_query(node: FunctionNode) -> tuple[str, dict]:
         "MERGE (fn:Function {name: $name, file_path: $file_path}) "
         "SET fn.start_line = $start_line, fn.end_line = $end_line, "
         "fn.parameters = $parameters, fn.return_type = $return_type, "
-        "fn.decorators = $decorators",
+        "fn.decorators = $decorators, fn.docstring = $docstring, "
+        "fn.class_name = $class_name",
         {
             "name": node.name,
             "file_path": node.file_path,
@@ -136,6 +157,8 @@ def create_function_query(node: FunctionNode) -> tuple[str, dict]:
             "parameters": node.parameters,
             "return_type": node.return_type,
             "decorators": node.decorators,
+            "docstring": node.docstring,
+            "class_name": node.class_name,
         },
     )
 
@@ -144,14 +167,23 @@ def create_class_query(node: ClassNode) -> tuple[str, dict]:
     return (
         "MERGE (c:Class {name: $name, file_path: $file_path}) "
         "SET c.start_line = $start_line, c.end_line = $end_line, "
-        "c.bases = $bases",
+        "c.bases = $bases, c.docstring = $docstring",
         {
             "name": node.name,
             "file_path": node.file_path,
             "start_line": node.start_line,
             "end_line": node.end_line,
             "bases": node.bases,
+            "docstring": node.docstring,
         },
+    )
+
+
+def create_env_var_query(node: EnvVarNode) -> tuple[str, dict]:
+    return (
+        "MERGE (e:EnvVar {name: $name}) "
+        "SET e.default_value = COALESCE(e.default_value, $default_value)",
+        {"name": node.name, "default_value": node.default_value},
     )
 
 

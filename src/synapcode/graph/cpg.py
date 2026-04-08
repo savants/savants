@@ -15,11 +15,13 @@ from synapcode.graph.client import GraphClient
 from synapcode.graph.schema import (
     ClassNode,
     ConfigKeyNode,
+    EnvVarNode,
     FileNode,
     FunctionNode,
     create_class_query,
     create_config_key_query,
     create_edge_query,
+    create_env_var_query,
     create_file_query,
     create_function_query,
 )
@@ -131,6 +133,82 @@ def _flatten_config(
                     format=fmt,
                 )
             )
+
+
+def _first_child(node: Any, type_name: str) -> Any:
+    """Return the first immediate child whose type matches, or None."""
+    for c in node.children:
+        if c.type == type_name:
+            return c
+    return None
+
+
+def _extract_docstring(node: Any) -> str:
+    """Pull the first string literal from a function/class body.
+
+    Works for Python (body → expression_statement → string) and is a noop
+    for other languages (JS/TS don't really do docstrings the same way).
+    Truncated to 500 chars so we don't bloat the graph.
+    """
+    body = node.child_by_field_name("body")
+    if body is None:
+        return ""
+    # First statement-ish child
+    for child in body.children:
+        if child.type == "expression_statement":
+            for grand in child.children:
+                if grand.type in ("string", "string_literal"):
+                    raw = grand.text.decode(errors="replace")
+                    # Strip triple/single/double quotes, common prefixes
+                    stripped = raw
+                    for marker in ('"""', "'''", '"', "'", "`"):
+                        if stripped.startswith(marker) and stripped.endswith(marker):
+                            stripped = stripped[len(marker):-len(marker)]
+                            break
+                    return stripped.strip()[:500]
+            # Statement was something else — no docstring
+            return ""
+        if child.type in ("comment", ":", "{", "\n", "newline"):
+            continue
+        # First real statement isn't a string → no docstring
+        return ""
+    return ""
+
+
+def _extract_env_var_call(full_callee: str, call_node: Any) -> tuple[str | None, str]:
+    """Recognize os.getenv / os.environ.get / process.env getters.
+
+    Returns (env_var_name, default_value) or (None, "") if not an env call.
+    """
+    # Normalize: both "os.getenv" and "getenv" count; same for environ.get
+    tail = full_callee.rsplit(".", 2)
+    last = tail[-1]
+    parent = tail[-2] if len(tail) >= 2 else ""
+
+    is_env = (
+        last == "getenv"
+        or (last == "get" and parent in ("environ", "os.environ"))
+    )
+    if not is_env:
+        return (None, "")
+
+    # Grab the argument list
+    args_node = call_node.child_by_field_name("arguments")
+    if args_node is None:
+        return (None, "")
+
+    strings: list[str] = []
+    for child in args_node.children:
+        if child.type in ("string", "string_literal"):
+            strings.append(child.text.decode(errors="replace").strip("'\"`"))
+    if not strings:
+        return (None, "")
+    name = strings[0]
+    default = strings[1] if len(strings) > 1 else ""
+    # Sanity: env vars are [A-Z_][A-Z0-9_]* mostly
+    if not name or len(name) > 100 or " " in name:
+        return (None, "")
+    return (name, default[:200])
 
 
 def _decorator_name(dec_node: object) -> str:
@@ -268,6 +346,7 @@ class CodePropertyGraphBuilder:
             "imports": [],
             "calls": [],
             "string_refs": [],  # {caller_file, caller_function, value, line}
+            "env_vars": [],  # EnvVarNode list (env vars read by this file)
         }
 
         parser = self._get_parser(language)
@@ -281,9 +360,11 @@ class CodePropertyGraphBuilder:
     def _extract_nodes(
         self, node: Any, file_path: str, result: dict, source: bytes,
         enclosing_function: str = "",
+        enclosing_class: str = "",
     ) -> None:
         """Recursively walk the AST and extract functions, classes, imports."""
         current_function = enclosing_function
+        current_class = enclosing_class
 
         if node.type in ("function_definition", "function_declaration", "method_definition"):
             name_node = node.child_by_field_name("name")
@@ -313,6 +394,8 @@ class CodePropertyGraphBuilder:
                 if child.type == "decorator":
                     decorators.append(_decorator_name(child))
 
+            docstring = _extract_docstring(node)
+
             result["functions"].append(
                 FunctionNode(
                     name=name,
@@ -321,18 +404,45 @@ class CodePropertyGraphBuilder:
                     end_line=node.end_point[0] + 1,
                     parameters=params,
                     decorators=decorators,
+                    docstring=docstring,
+                    class_name=enclosing_class,
                 )
             )
 
         elif node.type in ("class_definition", "class_declaration"):
             name_node = node.child_by_field_name("name")
             name = name_node.text.decode() if name_node else "<anonymous>"
+            current_class = name
+
+            # Extract base classes. In tree-sitter-python this is
+            # `superclasses` (argument_list); in JS/TS it's `class_heritage`.
+            bases: list[str] = []
+            superclasses = node.child_by_field_name("superclasses")
+            if superclasses is not None:
+                for child in superclasses.children:
+                    if child.type in ("identifier", "attribute", "dotted_name"):
+                        bases.append(child.text.decode(errors="replace"))
+            heritage = node.child_by_field_name("class_heritage") or node.child_by_field_name("superclass")
+            if heritage is not None:
+                text = heritage.text.decode(errors="replace").strip()
+                # "extends Foo" / "extends Foo, Bar" -> ["Foo", "Bar"]
+                if text.startswith("extends "):
+                    text = text[len("extends "):]
+                for part in text.split(","):
+                    p = part.strip()
+                    if p and p not in bases:
+                        bases.append(p)
+
+            docstring = _extract_docstring(node)
+
             result["classes"].append(
                 ClassNode(
                     name=name,
                     file_path=file_path,
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
+                    bases=bases,
+                    docstring=docstring,
                 )
             )
 
@@ -359,7 +469,8 @@ class CodePropertyGraphBuilder:
         elif node.type == "call":
             fn_node = node.child_by_field_name("function")
             if fn_node:
-                callee = fn_node.text.decode()
+                full_callee = fn_node.text.decode(errors="replace")
+                callee = full_callee
                 # For method calls like self.validate(), extract just the method name
                 if "." in callee:
                     callee = callee.rsplit(".", 1)[-1]
@@ -372,8 +483,48 @@ class CodePropertyGraphBuilder:
                     }
                 )
 
+                # Env var extraction: os.getenv("X") / os.environ.get("X") /
+                # process.env.X. Grab the first string argument as the key
+                # and (for getenv) the second as the default.
+                env_name, env_default = _extract_env_var_call(full_callee, node)
+                if env_name is not None:
+                    result["env_vars"].append(
+                        EnvVarNode(
+                            name=env_name,
+                            file_path=file_path,
+                            default_value=env_default,
+                        )
+                    )
+
+        # subscript: os.environ["X"]
+        elif node.type == "subscript":
+            var_node = node.child_by_field_name("value")
+            if var_node is not None:
+                var_text = var_node.text.decode(errors="replace")
+                if var_text in ("os.environ", "environ"):
+                    sub = node.child_by_field_name("subscript") or _first_child(node, "string")
+                    if sub is not None and sub.type in ("string", "string_literal"):
+                        name = sub.text.decode(errors="replace").strip("'\"`")
+                        if name:
+                            result["env_vars"].append(
+                                EnvVarNode(name=name, file_path=file_path)
+                            )
+
+        # member_expression: process.env.DATABASE_URL
+        elif node.type in ("member_expression", "attribute"):
+            text = node.text.decode(errors="replace")
+            if text.startswith("process.env."):
+                name = text[len("process.env."):].split(".")[0].split("[")[0]
+                if name and name.replace("_", "").isalnum():
+                    result["env_vars"].append(
+                        EnvVarNode(name=name, file_path=file_path)
+                    )
+
         for child in node.children:
-            self._extract_nodes(child, file_path, result, source, current_function)
+            self._extract_nodes(
+                child, file_path, result, source,
+                current_function, current_class,
+            )
 
     def build(self) -> dict[str, int]:
         """Build the full Code Property Graph. Returns counts of nodes created."""
@@ -381,9 +532,10 @@ class CodePropertyGraphBuilder:
         files = self.discover_files()
         logger.info("Discovered %d source files in %s", len(files), self.repo_path)
 
-        stats = {"files": 0, "functions": 0, "classes": 0, "edges": 0}
+        stats = {"files": 0, "functions": 0, "classes": 0, "edges": 0, "env_vars": 0}
         all_calls: list[dict] = []
         all_string_refs: list[dict] = []
+        seen_env_vars: set[tuple[str, str]] = set()  # (name, file_path)
 
         # Pass 1: Create all nodes and CONTAINS edges
         for file_path in files:
@@ -399,21 +551,8 @@ class CodePropertyGraphBuilder:
             self.client.query(cypher, params)
             stats["files"] += 1
 
-            # Create function nodes + CONTAINS edges
-            for fn in parsed["functions"]:
-                cypher, params = create_function_query(fn)
-                self.client.query(cypher, params)
-                stats["functions"] += 1
-
-                cypher, params = create_edge_query(
-                    "File", "path", fn.file_path,
-                    "Function", "name", fn.name,
-                    "CONTAINS",
-                )
-                self.client.query(cypher, params)
-                stats["edges"] += 1
-
-            # Create class nodes + CONTAINS edges
+            # Create class nodes first (so METHOD_OF edges can target them) +
+            # CONTAINS edges
             for cls in parsed["classes"]:
                 cypher, params = create_class_query(cls)
                 self.client.query(cypher, params)
@@ -427,9 +566,51 @@ class CodePropertyGraphBuilder:
                 self.client.query(cypher, params)
                 stats["edges"] += 1
 
+            # Create function nodes + CONTAINS edges + METHOD_OF if applicable
+            for fn in parsed["functions"]:
+                cypher, params = create_function_query(fn)
+                self.client.query(cypher, params)
+                stats["functions"] += 1
+
+                cypher, params = create_edge_query(
+                    "File", "path", fn.file_path,
+                    "Function", "name", fn.name,
+                    "CONTAINS",
+                )
+                self.client.query(cypher, params)
+                stats["edges"] += 1
+
+                # METHOD_OF edge if this function lives inside a class.
+                # Match by (class name, file path) since a file can have
+                # multiple classes with overlapping method names.
+                if fn.class_name:
+                    self.client.query(
+                        "MATCH (m:Function {name: $fn_name, file_path: $fp}) "
+                        "MATCH (c:Class {name: $cls, file_path: $fp}) "
+                        "MERGE (m)-[:METHOD_OF]->(c)",
+                        {"fn_name": fn.name, "fp": fn.file_path, "cls": fn.class_name},
+                    )
+                    stats["edges"] += 1
+
             # Collect calls for pass 2
             all_calls.extend(parsed["calls"])
             all_string_refs.extend(parsed.get("string_refs", []))
+
+            # EnvVar nodes + REFERENCES_ENV edges
+            for ev in parsed.get("env_vars", []):
+                key = (ev.name, ev.file_path)
+                if key in seen_env_vars:
+                    continue
+                seen_env_vars.add(key)
+                cypher, params = create_env_var_query(ev)
+                self.client.query(cypher, params)
+                stats["env_vars"] += 1
+                self.client.query(
+                    "MATCH (f:File {path: $fp}) "
+                    "MATCH (e:EnvVar {name: $name}) "
+                    "MERGE (f)-[:REFERENCES_ENV]->(e)",
+                    {"fp": ev.file_path, "name": ev.name},
+                )
 
         # Pass 2: Create CALLS edges (all function nodes exist now).
         #
@@ -598,69 +779,103 @@ class CodePropertyGraphBuilder:
         logger.info("CPG build complete: %s", stats)
         return stats
 
-    def build_incremental(self, changed_files: list[str], deleted_files: list[str]) -> dict[str, int]:
+    def build_incremental(
+        self, changed_files: list[str], deleted_files: list[str]
+    ) -> dict[str, int]:
         """Incrementally update the graph based on a git diff.
 
-        Only re-parses changed files and removes nodes for deleted files.
-        Filters out unsupported files and excluded directories.
+        Handles both code files (SUPPORTED_EXTENSIONS → Function/Class/CALLS/
+        REFERENCES_SYMBOL/METHOD_OF/EnvVar) and config files (CONFIG_EXTENSIONS
+        → ConfigKey). Re-parses changed files and removes nodes for deleted
+        files, including stale ConfigKey and REFERENCES_SYMBOL edges.
         """
         excluded_parts = {"node_modules", ".git", "__pycache__", "venv", ".venv", "dist", "build", ".synapcode"}
 
-        def _is_indexable(rel_path: str) -> bool:
+        def _classify(rel_path: str) -> str | None:
             parts = Path(rel_path).parts
             if any(p in excluded_parts for p in parts):
-                return False
-            return Path(rel_path).suffix in SUPPORTED_EXTENSIONS
+                return None
+            suffix = Path(rel_path).suffix
+            if suffix in SUPPORTED_EXTENSIONS:
+                return "code"
+            if suffix in CONFIG_EXTENSIONS:
+                return "config"
+            return None
 
-        changed_files = [p for p in changed_files if _is_indexable(p)]
-        deleted_files = [p for p in deleted_files if _is_indexable(p)]
+        changed = [(p, _classify(p)) for p in changed_files]
+        changed = [(p, k) for p, k in changed if k is not None]
+        deleted = [(p, _classify(p)) for p in deleted_files]
+        deleted = [(p, k) for p, k in deleted if k is not None]
 
-        stats = {"updated": 0, "deleted": 0}
+        stats = {"updated": 0, "deleted": 0, "config_keys": 0, "references_symbol": 0}
 
-        # Remove deleted files and their children
-        for rel_path in deleted_files:
+        def _purge_file(rel_path: str) -> None:
+            """Remove a File and every node that only lives under it."""
+            # ConfigKey, EnvVar, REFERENCES_SYMBOL — anything with file_path set
             self.client.query(
-                "MATCH (f:File {path: $path})-[r]->(n) DELETE r, n",
-                {"path": rel_path},
+                "MATCH (k:ConfigKey {file_path: $p}) DETACH DELETE k",
+                {"p": rel_path},
+            )
+            # Functions/Classes in this file: their CALLS/REFERENCES_SYMBOL/
+            # METHOD_OF edges go with them via DETACH DELETE.
+            self.client.query(
+                "MATCH (f:Function {file_path: $p}) DETACH DELETE f",
+                {"p": rel_path},
             )
             self.client.query(
-                "MATCH (f:File {path: $path}) DELETE f",
-                {"path": rel_path},
+                "MATCH (c:Class {file_path: $p}) DETACH DELETE c",
+                {"p": rel_path},
             )
+            self.client.query(
+                "MATCH (f:File {path: $p}) DETACH DELETE f",
+                {"p": rel_path},
+            )
+
+        # Remove deleted files completely
+        for rel_path, _ in deleted:
+            _purge_file(rel_path)
             stats["deleted"] += 1
 
         # Re-parse changed/added files
-        for rel_path in changed_files:
+        for rel_path, kind in changed:
             full_path = self.repo_path / rel_path
             if not full_path.exists():
                 continue
 
-            # Remove old nodes for this file first
-            self.client.query(
-                "MATCH (f:File {path: $path})-[r]->(n) DELETE r, n",
-                {"path": rel_path},
-            )
-            self.client.query(
-                "MATCH (f:File {path: $path}) DELETE f",
-                {"path": rel_path},
-            )
+            _purge_file(rel_path)
 
-            # Re-parse and insert
             try:
+                if kind == "config":
+                    keys = self.parse_config_file(full_path)
+                    if not keys:
+                        continue
+                    text = full_path.read_text(errors="replace")
+                    file_node = FileNode(
+                        path=rel_path,
+                        language=CONFIG_EXTENSIONS[full_path.suffix],
+                        line_count=text.count("\n") + 1,
+                        sha256=_sha256(text),
+                    )
+                    cypher, params = create_file_query(file_node)
+                    self.client.query(cypher, params)
+                    for key in keys:
+                        cypher, params = create_config_key_query(key)
+                        self.client.query(cypher, params)
+                        stats["config_keys"] += 1
+                        self.client.query(
+                            "MATCH (f:File {path: $fp}) "
+                            "MATCH (k:ConfigKey {file_path: $fp, name: $name}) "
+                            "MERGE (f)-[:CONTAINS]->(k)",
+                            {"fp": rel_path, "name": key.name},
+                        )
+                    stats["updated"] += 1
+                    continue
+
+                # kind == "code"
                 parsed = self.parse_file(full_path)
                 file_node = parsed["file"]
                 cypher, params = create_file_query(file_node)
                 self.client.query(cypher, params)
-
-                for fn in parsed["functions"]:
-                    cypher, params = create_function_query(fn)
-                    self.client.query(cypher, params)
-                    cypher, params = create_edge_query(
-                        "File", "path", fn.file_path,
-                        "Function", "name", fn.name,
-                        "CONTAINS",
-                    )
-                    self.client.query(cypher, params)
 
                 for cls in parsed["classes"]:
                     cypher, params = create_class_query(cls)
@@ -672,19 +887,104 @@ class CodePropertyGraphBuilder:
                     )
                     self.client.query(cypher, params)
 
-                # Create CALLS edges for the newly-parsed file
-                for call in parsed.get("calls", []):
-                    if not call.get("caller_function"):
-                        continue
+                for fn in parsed["functions"]:
+                    cypher, params = create_function_query(fn)
+                    self.client.query(cypher, params)
                     cypher, params = create_edge_query(
-                        "Function", "name", call["caller_function"],
-                        "Function", "name", call["callee_name"],
-                        "CALLS",
+                        "File", "path", fn.file_path,
+                        "Function", "name", fn.name,
+                        "CONTAINS",
                     )
+                    self.client.query(cypher, params)
+                    if fn.class_name:
+                        self.client.query(
+                            "MATCH (m:Function {name: $fn_name, file_path: $fp}) "
+                            "MATCH (c:Class {name: $cls, file_path: $fp}) "
+                            "MERGE (m)-[:METHOD_OF]->(c)",
+                            {"fn_name": fn.name, "fp": fn.file_path, "cls": fn.class_name},
+                        )
+
+                # CALLS edges — reuse the same disambiguation order as build()
+                callee_index: dict[str, list[str]] = {}
+                for row in self.client.query(
+                    "MATCH (fn:Function) RETURN fn.name, fn.file_path"
+                ).result_set:
+                    callee_index.setdefault(row[0], []).append(row[1])
+                for call in parsed.get("calls", []):
+                    caller_fn = call.get("caller_function")
+                    if not caller_fn:
+                        continue
+                    callee = call["callee_name"]
+                    caller_file = call["caller_file"]
+                    candidates = callee_index.get(callee, [])
+                    if not candidates:
+                        continue
+                    if caller_file in candidates:
+                        target_file = caller_file
+                    elif len(candidates) == 1:
+                        target_file = candidates[0]
+                    else:
+                        continue
                     try:
-                        self.client.query(cypher, params)
+                        self.client.query(
+                            "MATCH (a:Function {name: $c_name, file_path: $c_file}) "
+                            "MATCH (b:Function {name: $t_name, file_path: $t_file}) "
+                            "MERGE (a)-[:CALLS]->(b)",
+                            {"c_name": caller_fn, "c_file": caller_file,
+                             "t_name": callee, "t_file": target_file},
+                        )
                     except Exception:
                         pass
+
+                # REFERENCES_SYMBOL edges — rebuild for this file's string_refs
+                class_index: dict[str, list[str]] = {}
+                for row in self.client.query(
+                    "MATCH (c:Class) RETURN c.name, c.file_path"
+                ).result_set:
+                    class_index.setdefault(row[0], []).append(row[1])
+                for ref in parsed.get("string_refs", []):
+                    caller_fn = ref.get("caller_function")
+                    if not caller_fn:
+                        continue
+                    terminal = ref["value"].rsplit(".", 1)[-1]
+                    target_label = None
+                    candidates = callee_index.get(terminal, [])
+                    if candidates:
+                        target_label = "Function"
+                    else:
+                        candidates = class_index.get(terminal, [])
+                        if candidates:
+                            target_label = "Class"
+                    if not target_label or len(candidates) != 1:
+                        continue
+                    try:
+                        self.client.query(
+                            f"MATCH (a:Function {{name: $c_name, file_path: $c_file}}) "
+                            f"MATCH (b:{target_label} {{name: $t_name, file_path: $t_file}}) "
+                            f"MERGE (a)-[r:REFERENCES_SYMBOL]->(b) "
+                            f"SET r.via = 'string_literal'",
+                            {"c_name": caller_fn, "c_file": ref["caller_file"],
+                             "t_name": terminal, "t_file": candidates[0]},
+                        )
+                        stats["references_symbol"] += 1
+                    except Exception:
+                        pass
+
+                # Env vars
+                seen_env: set[tuple[str, str]] = set()
+                for ev in parsed.get("env_vars", []):
+                    key = (ev.name, ev.file_path)
+                    if key in seen_env:
+                        continue
+                    seen_env.add(key)
+                    cypher, params = create_env_var_query(ev)
+                    self.client.query(cypher, params)
+                    self.client.query(
+                        "MATCH (f:File {path: $fp}) "
+                        "MATCH (e:EnvVar {name: $name}) "
+                        "MERGE (f)-[:REFERENCES_ENV]->(e)",
+                        {"fp": ev.file_path, "name": ev.name},
+                    )
 
                 stats["updated"] += 1
             except Exception as e:

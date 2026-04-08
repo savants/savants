@@ -24,6 +24,12 @@ pub struct FunctionNode {
     pub return_type: String,
     #[serde(default)]
     pub decorators: Vec<String>,
+    #[serde(default)]
+    pub docstring: String,
+    /// Empty for top-level functions; populated for methods so the Python
+    /// side can emit METHOD_OF edges without re-walking the AST.
+    #[serde(default)]
+    pub class_name: String,
 }
 
 /// A string literal that looks like a symbol reference (registry key,
@@ -60,6 +66,19 @@ pub struct ClassNode {
     pub end_line: u32,
     #[serde(default)]
     pub bases: Vec<String>,
+    #[serde(default)]
+    pub docstring: String,
+}
+
+/// Environment variable referenced from application code (os.getenv,
+/// os.environ[], process.env.X). Paired with config-file indexing, this
+/// closes the "what knobs does this service read?" question.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EnvVarNode {
+    pub name: String,
+    pub file_path: String,
+    #[serde(default)]
+    pub default_value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

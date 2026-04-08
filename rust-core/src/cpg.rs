@@ -1,7 +1,7 @@
 //! Code Property Graph builder — native tree-sitter port of `cpg.py`.
 
 use crate::cpg_walk::walk_node_root;
-use crate::schema::{CallSite, ClassNode, FileNode, FunctionNode, StringRef};
+use crate::schema::{CallSite, ClassNode, EnvVarNode, FileNode, FunctionNode, StringRef};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tree_sitter::{Parser, Tree};
@@ -26,6 +26,7 @@ pub struct ParsedFile {
     pub imports: Vec<String>,
     pub calls: Vec<CallSite>,
     pub string_refs: Vec<StringRef>,
+    pub env_vars: Vec<EnvVarNode>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -246,6 +247,59 @@ mod tests {
             parsed.functions.iter().map(|f| (f.name.as_str(), f)).collect();
         assert!(by_name["cached"].decorators.iter().any(|d| d == "lru_cache"));
         assert!(by_name["health"].decorators.iter().any(|d| d == "app.route"));
+    }
+
+    #[test]
+    fn extract_method_class_name_and_docstring() {
+        let dir = write_temp_file(
+            "svc.py",
+            "class UserService:\n    \"\"\"Manages user records.\"\"\"\n    def get(self, id):\n        \"\"\"Fetch a user by id.\"\"\"\n        return None\n    def list(self):\n        return []\n\ndef module_level():\n    \"\"\"Top-level helper.\"\"\"\n    return 1\n",
+        );
+        let builder = CodePropertyGraphBuilder::new(dir.path());
+        let parsed = builder.parse_file(&dir.path().join("svc.py")).unwrap();
+        let by_name: std::collections::HashMap<&str, &FunctionNode> =
+            parsed.functions.iter().map(|f| (f.name.as_str(), f)).collect();
+        assert_eq!(by_name["get"].class_name, "UserService");
+        assert_eq!(by_name["list"].class_name, "UserService");
+        assert_eq!(by_name["module_level"].class_name, "");
+        assert_eq!(by_name["get"].docstring, "Fetch a user by id.");
+        assert_eq!(by_name["module_level"].docstring, "Top-level helper.");
+        let cls = parsed
+            .classes
+            .iter()
+            .find(|c| c.name == "UserService")
+            .unwrap();
+        assert_eq!(cls.docstring, "Manages user records.");
+    }
+
+    #[test]
+    fn extract_class_bases() {
+        let dir = write_temp_file(
+            "models.py",
+            "class BaseModel: pass\nclass User(BaseModel, Auditable):\n    pass\n",
+        );
+        let builder = CodePropertyGraphBuilder::new(dir.path());
+        let parsed = builder.parse_file(&dir.path().join("models.py")).unwrap();
+        let user = parsed.classes.iter().find(|c| c.name == "User").unwrap();
+        assert!(user.bases.contains(&"BaseModel".to_string()));
+        assert!(user.bases.contains(&"Auditable".to_string()));
+    }
+
+    #[test]
+    fn extract_env_vars_os_getenv() {
+        let dir = write_temp_file(
+            "cfg.py",
+            "import os\n\nHOST = os.getenv(\"DB_HOST\", \"localhost\")\nPORT = os.environ.get(\"DB_PORT\")\nUSER = os.environ[\"DB_USER\"]\n",
+        );
+        let builder = CodePropertyGraphBuilder::new(dir.path());
+        let parsed = builder.parse_file(&dir.path().join("cfg.py")).unwrap();
+        let names: Vec<&str> = parsed.env_vars.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"DB_HOST"), "got: {:?}", names);
+        assert!(names.contains(&"DB_PORT"), "got: {:?}", names);
+        assert!(names.contains(&"DB_USER"), "got: {:?}", names);
+        // Default captured
+        let host = parsed.env_vars.iter().find(|e| e.name == "DB_HOST").unwrap();
+        assert_eq!(host.default_value, "localhost");
     }
 
     #[test]

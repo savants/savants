@@ -23,4 +23,4 @@ pub mod python_bindings;
 
 pub use cpg::{CodePropertyGraphBuilder, ParseStats};
 pub use delta::{compute_file_delta, Delta, DeltaScope, Operation};
-pub use schema::{ClassNode, ConfigKeyNode, FileNode, FunctionNode};
+pub use schema::{ClassNode, ConfigKeyNode, EnvVarNode, FileNode, FunctionNode};

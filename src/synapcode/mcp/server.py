@@ -338,6 +338,31 @@ class SynapCodeMCPServer:
                 },
             },
             {
+                "name": "diff_impact",
+                "description": (
+                    "Structural blast radius for a git ref or range. "
+                    "Returns: changed files, changed functions, transitively "
+                    "reachable entry points (routes, workflows, CLI commands, "
+                    "tasks), and config keys in touched files. This is the "
+                    "PR-review killer query — the one humans actually want "
+                    "answered when deciding whether a change is safe to merge."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "ref": {
+                            "type": "string",
+                            "description": "git ref (HEAD, abc123), or range (main..branch, a...b)",
+                        },
+                        "repo_path": {
+                            "type": "string",
+                            "description": "Path to the git repo (defaults to cwd)",
+                        },
+                    },
+                    "required": ["ref"],
+                },
+            },
+            {
                 "name": "resolves_to",
                 "description": (
                     "Given a string literal (e.g. a registry key, Temporal "
@@ -451,6 +476,12 @@ class SynapCodeMCPServer:
 
             elif tool_name == "resolves_to":
                 text = self._tool_resolves_to(args["symbol"])
+
+            elif tool_name == "diff_impact":
+                text = self._tool_diff_impact(
+                    args["ref"],
+                    args.get("repo_path", "."),
+                )
 
             else:
                 return self._error(req_id, -32602, f"Unknown tool: {tool_name}")
@@ -823,6 +854,12 @@ class SynapCodeMCPServer:
             lines.append("  (none)")
 
         return "\n".join(lines)
+
+    def _tool_diff_impact(self, ref: str, repo_path: str) -> str:
+        from synapcode.analysis.diff_impact import diff_impact, format_report
+
+        report = diff_impact(repo_path=repo_path, ref=ref, client=self.client)
+        return format_report(report)
 
     def _error(self, req_id: int | str | None, code: int, message: str) -> dict:
         return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
