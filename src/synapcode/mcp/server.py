@@ -423,7 +423,7 @@ class SynapCodeMCPServer:
                 edges = self.client.edge_count()
                 text = f"Nodes: {nodes}, Edges: {edges}"
 
-            elif tool_name == "cypher_query":
+            elif tool_name == "advanced_graph_query":
                 result = self.client.query(args["query"])
                 text = str(result.result_set)
 
