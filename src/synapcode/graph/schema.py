@@ -53,6 +53,18 @@ SCHEMA_INDICES = [
     "CREATE INDEX FOR (fn:Function) ON (fn.class_name)",
     "CREATE INDEX FOR (e:EnvVar) ON (e.name)",
     "CREATE INDEX FOR (d:Decorator) ON (d.name)",
+    # K8s runtime layer indices
+    "CREATE INDEX FOR (c:K8sCluster) ON (c.name)",
+    "CREATE INDEX FOR (n:K8sNamespace) ON (n.name)",
+    "CREATE INDEX FOR (n:K8sNamespace) ON (n.cluster)",
+    "CREATE INDEX FOR (d:K8sDeployment) ON (d.name)",
+    "CREATE INDEX FOR (d:K8sDeployment) ON (d.namespace)",
+    "CREATE INDEX FOR (p:K8sPod) ON (p.name)",
+    "CREATE INDEX FOR (p:K8sPod) ON (p.namespace)",
+    "CREATE INDEX FOR (p:K8sPod) ON (p.status)",
+    "CREATE INDEX FOR (s:K8sService) ON (s.name)",
+    "CREATE INDEX FOR (cm:K8sConfigMap) ON (cm.name)",
+    "CREATE INDEX FOR (sec:K8sSecret) ON (sec.name)",
 ]
 
 
@@ -102,6 +114,116 @@ class EnvVarNode:
     name: str  # the env var name (e.g. "FALKORDB_HOST")
     file_path: str
     default_value: str = ""  # if os.getenv("X", "default"), capture the default
+
+
+@dataclass
+class K8sClusterNode:
+    """A Kubernetes cluster (top-level scope for the runtime layer).
+
+    Stable ID format: K8sCluster:{cluster_name}
+    The cluster_name matches the kubeconfig context (e.g. 'astra-k3s').
+    """
+
+    name: str
+    version: str = ""  # k8s server version
+    context: str = ""  # kubeconfig context
+
+
+@dataclass
+class K8sNamespaceNode:
+    """A Kubernetes namespace within a cluster.
+
+    Stable ID format: K8sNamespace:{cluster}/{namespace}
+    """
+
+    name: str
+    cluster: str
+    status: str = "Active"  # Active, Terminating
+    age_seconds: int = 0
+
+
+@dataclass
+class K8sDeploymentNode:
+    """A Kubernetes Deployment (or StatefulSet / DaemonSet — same node type
+    with a `kind` field to distinguish).
+
+    Stable ID format: K8sDeployment:{cluster}/{namespace}/{name}
+    """
+
+    name: str
+    namespace: str
+    cluster: str
+    kind: str = "Deployment"  # Deployment | StatefulSet | DaemonSet
+    replicas_desired: int = 0
+    replicas_ready: int = 0
+    replicas_available: int = 0
+    image: str = ""  # primary container image
+    labels: list[str] = field(default_factory=list)  # flattened key=value
+
+
+@dataclass
+class K8sPodNode:
+    """A running Kubernetes Pod instance.
+
+    Stable ID format: K8sPod:{cluster}/{namespace}/{name}
+    """
+
+    name: str
+    namespace: str
+    cluster: str
+    status: str = "Running"  # Running | Pending | Failed | Succeeded | CrashLoopBackOff
+    node_name: str = ""  # which k8s node is running this pod
+    restart_count: int = 0
+    ready: bool = False
+    image: str = ""
+    owner_kind: str = ""  # ReplicaSet, StatefulSet, DaemonSet, etc.
+    owner_name: str = ""
+
+
+@dataclass
+class K8sServiceNode:
+    """A Kubernetes Service.
+
+    Stable ID format: K8sService:{cluster}/{namespace}/{name}
+    """
+
+    name: str
+    namespace: str
+    cluster: str
+    type: str = "ClusterIP"  # ClusterIP | NodePort | LoadBalancer | ExternalName
+    cluster_ip: str = ""
+    ports: list[str] = field(default_factory=list)  # "80/TCP", "443/TCP"
+    selector: list[str] = field(default_factory=list)  # flattened key=value
+
+
+@dataclass
+class K8sConfigMapNode:
+    """A ConfigMap in a namespace. Stores only the key names, NOT the values
+    (values could contain secrets or customer data).
+
+    Stable ID format: K8sConfigMap:{cluster}/{namespace}/{name}
+    """
+
+    name: str
+    namespace: str
+    cluster: str
+    key_names: list[str] = field(default_factory=list)  # just the keys, no values
+
+
+@dataclass
+class K8sSecretNode:
+    """A Secret in a namespace. Stores ONLY the secret name and key names —
+    never the secret values. The whole point of the secret scrubber applies
+    doubly here.
+
+    Stable ID format: K8sSecret:{cluster}/{namespace}/{name}
+    """
+
+    name: str
+    namespace: str
+    cluster: str
+    type: str = "Opaque"  # Opaque | kubernetes.io/tls | kubernetes.io/dockerconfigjson
+    key_names: list[str] = field(default_factory=list)  # just the keys
 
 
 @dataclass
@@ -212,6 +334,116 @@ def create_decorator_query(name: str) -> tuple[str, dict]:
     Decorator{name:'workflow.defn'} node.
     """
     return ("MERGE (d:Decorator {name: $name})", {"name": name})
+
+
+# ---------------------------------------------------------------------------
+# K8s runtime layer query helpers
+# ---------------------------------------------------------------------------
+
+
+def create_k8s_cluster_query(node: K8sClusterNode) -> tuple[str, dict]:
+    return (
+        "MERGE (c:K8sCluster {name: $name}) "
+        "SET c.version = $version, c.context = $context",
+        {"name": node.name, "version": node.version, "context": node.context},
+    )
+
+
+def create_k8s_namespace_query(node: K8sNamespaceNode) -> tuple[str, dict]:
+    return (
+        "MERGE (n:K8sNamespace {name: $name, cluster: $cluster}) "
+        "SET n.status = $status, n.age_seconds = $age_seconds",
+        {
+            "name": node.name,
+            "cluster": node.cluster,
+            "status": node.status,
+            "age_seconds": node.age_seconds,
+        },
+    )
+
+
+def create_k8s_deployment_query(node: K8sDeploymentNode) -> tuple[str, dict]:
+    return (
+        "MERGE (d:K8sDeployment {name: $name, namespace: $namespace, cluster: $cluster}) "
+        "SET d.kind = $kind, d.replicas_desired = $rd, d.replicas_ready = $rr, "
+        "d.replicas_available = $ra, d.image = $image, d.labels = $labels",
+        {
+            "name": node.name,
+            "namespace": node.namespace,
+            "cluster": node.cluster,
+            "kind": node.kind,
+            "rd": node.replicas_desired,
+            "rr": node.replicas_ready,
+            "ra": node.replicas_available,
+            "image": node.image,
+            "labels": node.labels,
+        },
+    )
+
+
+def create_k8s_pod_query(node: K8sPodNode) -> tuple[str, dict]:
+    return (
+        "MERGE (p:K8sPod {name: $name, namespace: $namespace, cluster: $cluster}) "
+        "SET p.status = $status, p.node_name = $node_name, "
+        "p.restart_count = $rc, p.ready = $ready, p.image = $image, "
+        "p.owner_kind = $owner_kind, p.owner_name = $owner_name",
+        {
+            "name": node.name,
+            "namespace": node.namespace,
+            "cluster": node.cluster,
+            "status": node.status,
+            "node_name": node.node_name,
+            "rc": node.restart_count,
+            "ready": node.ready,
+            "image": node.image,
+            "owner_kind": node.owner_kind,
+            "owner_name": node.owner_name,
+        },
+    )
+
+
+def create_k8s_service_query(node: K8sServiceNode) -> tuple[str, dict]:
+    return (
+        "MERGE (s:K8sService {name: $name, namespace: $namespace, cluster: $cluster}) "
+        "SET s.type = $type, s.cluster_ip = $cluster_ip, "
+        "s.ports = $ports, s.selector = $selector",
+        {
+            "name": node.name,
+            "namespace": node.namespace,
+            "cluster": node.cluster,
+            "type": node.type,
+            "cluster_ip": node.cluster_ip,
+            "ports": node.ports,
+            "selector": node.selector,
+        },
+    )
+
+
+def create_k8s_configmap_query(node: K8sConfigMapNode) -> tuple[str, dict]:
+    return (
+        "MERGE (cm:K8sConfigMap {name: $name, namespace: $namespace, cluster: $cluster}) "
+        "SET cm.key_names = $keys",
+        {
+            "name": node.name,
+            "namespace": node.namespace,
+            "cluster": node.cluster,
+            "keys": node.key_names,
+        },
+    )
+
+
+def create_k8s_secret_query(node: K8sSecretNode) -> tuple[str, dict]:
+    return (
+        "MERGE (sec:K8sSecret {name: $name, namespace: $namespace, cluster: $cluster}) "
+        "SET sec.type = $type, sec.key_names = $keys",
+        {
+            "name": node.name,
+            "namespace": node.namespace,
+            "cluster": node.cluster,
+            "type": node.type,
+            "keys": node.key_names,
+        },
+    )
 
 
 def create_config_key_query(node: ConfigKeyNode) -> tuple[str, dict]:

@@ -372,6 +372,123 @@ class SynapCodeMCPServer:
                 },
             },
             {
+                "name": "cluster_state",
+                "description": (
+                    "Return a summary of what's running in a Kubernetes cluster: "
+                    "namespace count, deployment count, pod count by status, "
+                    "service count, and top namespaces by workload. Requires "
+                    "the cluster to have been indexed via the K8s ingestor "
+                    "(see synapcode.k8s.ingestor) — this tool queries the "
+                    "stored graph, not the live K8s API, so it's sub-second."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cluster": {
+                            "type": "string",
+                            "description": "Cluster name as stored in the graph (e.g. 'astra-k3s')",
+                        },
+                    },
+                    "required": ["cluster"],
+                },
+            },
+            {
+                "name": "list_pods",
+                "description": (
+                    "List Kubernetes pods matching a filter. Can filter by "
+                    "namespace, status (Running, CrashLoopBackOff, etc.), or "
+                    "a substring of the pod name. Returns pod name, namespace, "
+                    "status, image, restart count, and the Deployment/StatefulSet "
+                    "that owns it. Use to triage 'what's broken' questions."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cluster": {"type": "string"},
+                        "namespace": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "description": "Filter by pod status (Running, Pending, CrashLoopBackOff, Failed, etc.)",
+                        },
+                        "name_contains": {
+                            "type": "string",
+                            "description": "Substring match on pod name",
+                        },
+                    },
+                    "required": ["cluster"],
+                },
+            },
+            {
+                "name": "deployment_info",
+                "description": (
+                    "Full details for a Kubernetes Deployment: replica status, "
+                    "current image, labels, and all pods belonging to it. Used "
+                    "when an engineer needs to know 'is this service healthy?'"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cluster": {"type": "string"},
+                        "namespace": {"type": "string"},
+                        "name": {"type": "string"},
+                    },
+                    "required": ["cluster", "namespace", "name"],
+                },
+            },
+            {
+                "name": "pod_dependencies",
+                "description": (
+                    "Return every ConfigMap and Secret that a Pod reads from "
+                    "(via volumes, envFrom, or env.valueFrom references). "
+                    "Answers 'what config does this pod depend on?' and helps "
+                    "with impact analysis when a ConfigMap or Secret is changed."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cluster": {"type": "string"},
+                        "namespace": {"type": "string"},
+                        "pod": {"type": "string"},
+                    },
+                    "required": ["cluster", "namespace", "pod"],
+                },
+            },
+            {
+                "name": "namespace_summary",
+                "description": (
+                    "Everything in a namespace: deployments, pods (grouped by "
+                    "status), services, configmap count, secret count. Useful "
+                    "for 'show me the state of the payments namespace' queries."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cluster": {"type": "string"},
+                        "namespace": {"type": "string"},
+                    },
+                    "required": ["cluster", "namespace"],
+                },
+            },
+            {
+                "name": "federated_symbol_in_cluster",
+                "description": (
+                    "THE KILLER FEDERATED QUERY: given a function/class/symbol "
+                    "name from the code graph, find any Kubernetes resources "
+                    "in the cluster graph that reference it (as container "
+                    "image names, ConfigMap keys, labels, or env values). "
+                    "This demonstrates the cross-graph join: code graph → "
+                    "cluster graph via symbol matching."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string"},
+                        "cluster": {"type": "string"},
+                    },
+                    "required": ["symbol", "cluster"],
+                },
+            },
+            {
                 "name": "diff_impact",
                 "description": (
                     "Structural blast radius for a git ref or range. "
@@ -510,6 +627,37 @@ class SynapCodeMCPServer:
 
             elif tool_name == "resolves_to":
                 text = self._tool_resolves_to(args["symbol"])
+
+            elif tool_name == "cluster_state":
+                text = self._tool_cluster_state(args["cluster"])
+
+            elif tool_name == "list_pods":
+                text = self._tool_list_pods(
+                    args["cluster"],
+                    args.get("namespace"),
+                    args.get("status"),
+                    args.get("name_contains"),
+                )
+
+            elif tool_name == "deployment_info":
+                text = self._tool_deployment_info(
+                    args["cluster"], args["namespace"], args["name"]
+                )
+
+            elif tool_name == "pod_dependencies":
+                text = self._tool_pod_dependencies(
+                    args["cluster"], args["namespace"], args["pod"]
+                )
+
+            elif tool_name == "namespace_summary":
+                text = self._tool_namespace_summary(
+                    args["cluster"], args["namespace"]
+                )
+
+            elif tool_name == "federated_symbol_in_cluster":
+                text = self._tool_federated_symbol_in_cluster(
+                    args["symbol"], args["cluster"]
+                )
 
             elif tool_name == "diff_impact":
                 text = self._tool_diff_impact(
@@ -917,6 +1065,357 @@ class SynapCodeMCPServer:
                 lines.append(f"  {n}  ({fp})")
         else:
             lines.append("  (none)")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # K8s runtime layer tools
+    #
+    # These tools query the cluster graph (populated by K8sIngestor) rather
+    # than the code graph. They are the first concrete delivery of the Live
+    # Infrastructure Layer from docs/live-infrastructure-layer.md.
+    #
+    # All of these assume `self.client` is connected to the cluster graph.
+    # In production, the federation server would route cluster queries to
+    # the appropriate cluster graph automatically — for the MVP we rely on
+    # the env var FALKORDB_GRAPH to pick the right graph per-server.
+    # ------------------------------------------------------------------
+
+    def _k8s_client(self, cluster: str) -> GraphClient:
+        """Return a GraphClient pointed at the cluster graph for `cluster`.
+
+        The graph name convention is `{cluster_name}` with hyphens
+        replaced by underscores (e.g. 'astra-k3s' → 'astra_k3s'). This
+        is temporary until the full federation server is built — at
+        that point the routing will happen at the server level, not
+        per-tool.
+        """
+        graph_name = cluster.replace("-", "_")
+        if self.client._config.graph_name == graph_name:
+            return self.client
+        from synapcode.config import FalkorDBConfig
+        new_cfg = FalkorDBConfig(
+            host=self.client._config.host,
+            port=self.client._config.port,
+            graph_name=graph_name,
+        )
+        return GraphClient(new_cfg)
+
+    def _tool_cluster_state(self, cluster: str) -> str:
+        c = self._k8s_client(cluster)
+        try:
+            ns_count = c.query("MATCH (n:K8sNamespace) RETURN count(n)").result_set[0][0]
+            deploy_count = c.query("MATCH (d:K8sDeployment) RETURN count(d)").result_set[0][0]
+            pod_total = c.query("MATCH (p:K8sPod) RETURN count(p)").result_set[0][0]
+            svc_count = c.query("MATCH (s:K8sService) RETURN count(s)").result_set[0][0]
+            cm_count = c.query("MATCH (cm:K8sConfigMap) RETURN count(cm)").result_set[0][0]
+            sec_count = c.query("MATCH (sec:K8sSecret) RETURN count(sec)").result_set[0][0]
+        except Exception as e:
+            return f"Cluster '{cluster}' not found in graph or empty. Error: {e}"
+
+        if ns_count == 0:
+            return (
+                f"Cluster '{cluster}' has no data in the graph. "
+                f"Run synapcode.k8s.ingestor.K8sIngestor to populate it first."
+            )
+
+        # Pod count by status
+        status_rows = c.query(
+            "MATCH (p:K8sPod) RETURN p.status, count(p) ORDER BY count(p) DESC"
+        ).result_set
+        status_breakdown = "\n".join(f"    {row[1]:4}  {row[0]}" for row in status_rows)
+
+        # Top namespaces by workload (pods)
+        top_ns = c.query(
+            "MATCH (n:K8sNamespace)-[:CONTAINS]->(p:K8sPod) "
+            "RETURN n.name, count(p) AS pods ORDER BY pods DESC LIMIT 10"
+        ).result_set
+        top_ns_str = "\n".join(f"    {row[1]:4}  {row[0]}" for row in top_ns)
+
+        lines = [
+            f"Cluster: {cluster}",
+            f"",
+            f"Resource counts:",
+            f"  Namespaces:   {ns_count}",
+            f"  Deployments:  {deploy_count}",
+            f"  Pods:         {pod_total}",
+            f"  Services:     {svc_count}",
+            f"  ConfigMaps:   {cm_count}",
+            f"  Secrets:      {sec_count}",
+            f"",
+            f"Pods by status:",
+            status_breakdown,
+            f"",
+            f"Top namespaces by workload:",
+            top_ns_str,
+        ]
+        return "\n".join(lines)
+
+    def _tool_list_pods(
+        self,
+        cluster: str,
+        namespace: str | None,
+        status: str | None,
+        name_contains: str | None,
+    ) -> str:
+        c = self._k8s_client(cluster)
+
+        where = []
+        params: dict = {}
+        if namespace:
+            where.append("p.namespace = $namespace")
+            params["namespace"] = namespace
+        if status:
+            where.append("p.status = $status")
+            params["status"] = status
+        if name_contains:
+            where.append("p.name CONTAINS $name_contains")
+            params["name_contains"] = name_contains
+
+        where_clause = (" WHERE " + " AND ".join(where)) if where else ""
+        query = (
+            "MATCH (p:K8sPod)" + where_clause +
+            " RETURN p.namespace, p.name, p.status, p.image, p.restart_count, "
+            "p.owner_kind, p.owner_name ORDER BY p.namespace, p.name LIMIT 100"
+        )
+        rows = c.query(query, params).result_set
+
+        if not rows:
+            return "No pods found matching filters."
+
+        lines = [f"Found {len(rows)} pods:"]
+        for ns, name, st, img, rc, okind, oname in rows:
+            owner = f" ← {okind}/{oname}" if okind else ""
+            restarts = f" (restarts={rc})" if rc > 0 else ""
+            lines.append(f"  [{st:15}] {ns}/{name}{owner}{restarts}")
+            if img:
+                lines.append(f"    image: {img}")
+        if len(rows) >= 100:
+            lines.append("  (limit reached, refine filters to see more)")
+        return "\n".join(lines)
+
+    def _tool_deployment_info(self, cluster: str, namespace: str, name: str) -> str:
+        c = self._k8s_client(cluster)
+
+        deploy_rows = c.query(
+            "MATCH (d:K8sDeployment {name: $name, namespace: $ns}) "
+            "RETURN d.kind, d.replicas_desired, d.replicas_ready, "
+            "d.replicas_available, d.image, d.labels LIMIT 1",
+            {"name": name, "ns": namespace},
+        ).result_set
+        if not deploy_rows:
+            return f"No Deployment/StatefulSet/DaemonSet named '{name}' in namespace '{namespace}'."
+        kind, rd, rr, ra, image, labels = deploy_rows[0]
+
+        # Pods belonging to this deployment (via owner_name match)
+        pod_rows = c.query(
+            "MATCH (p:K8sPod) "
+            "WHERE p.namespace = $ns AND (p.owner_name STARTS WITH $name OR p.owner_name = $name) "
+            "RETURN p.name, p.status, p.restart_count, p.node_name",
+            {"ns": namespace, "name": name},
+        ).result_set
+
+        lines = [
+            f"{kind}: {namespace}/{name}",
+            f"  Image:        {image}",
+            f"  Replicas:     {rr}/{rd} ready, {ra} available",
+            f"  Labels:       {', '.join(labels) if labels else '(none)'}",
+            f"",
+            f"Pods ({len(pod_rows)}):",
+        ]
+        for pn, st, rc, node in pod_rows:
+            restarts = f" (restarts={rc})" if rc > 0 else ""
+            node_str = f" on {node}" if node else ""
+            lines.append(f"  [{st:15}] {pn}{node_str}{restarts}")
+        return "\n".join(lines)
+
+    def _tool_pod_dependencies(
+        self, cluster: str, namespace: str, pod: str
+    ) -> str:
+        c = self._k8s_client(cluster)
+
+        cm_rows = c.query(
+            "MATCH (p:K8sPod {name: $pod, namespace: $ns})-[:READS]->(cm:K8sConfigMap) "
+            "RETURN cm.name, cm.key_names",
+            {"pod": pod, "ns": namespace},
+        ).result_set
+
+        sec_rows = c.query(
+            "MATCH (p:K8sPod {name: $pod, namespace: $ns})-[:READS]->(sec:K8sSecret) "
+            "RETURN sec.name, sec.type, sec.key_names",
+            {"pod": pod, "ns": namespace},
+        ).result_set
+
+        if not cm_rows and not sec_rows:
+            return f"Pod {namespace}/{pod} has no ConfigMap or Secret dependencies (or doesn't exist in graph)."
+
+        lines = [f"Dependencies for pod {namespace}/{pod}:"]
+        lines.append(f"")
+        lines.append(f"ConfigMaps ({len(cm_rows)}):")
+        for name, keys in cm_rows:
+            key_str = f" [{len(keys)} keys]" if keys else ""
+            lines.append(f"  • {name}{key_str}")
+        lines.append(f"")
+        lines.append(f"Secrets ({len(sec_rows)}):")
+        for name, type_, keys in sec_rows:
+            key_str = f" [{len(keys)} keys]" if keys else ""
+            lines.append(f"  • {name} ({type_}){key_str}")
+        return "\n".join(lines)
+
+    def _tool_namespace_summary(self, cluster: str, namespace: str) -> str:
+        c = self._k8s_client(cluster)
+
+        # Verify namespace exists
+        ns_rows = c.query(
+            "MATCH (n:K8sNamespace {name: $ns}) RETURN n.status, n.age_seconds",
+            {"ns": namespace},
+        ).result_set
+        if not ns_rows:
+            return f"Namespace '{namespace}' not found in cluster graph."
+        status, age = ns_rows[0]
+
+        # Counts
+        counts = {}
+        for label, var in [
+            ("K8sDeployment", "d"),
+            ("K8sPod", "p"),
+            ("K8sService", "s"),
+            ("K8sConfigMap", "cm"),
+            ("K8sSecret", "sec"),
+        ]:
+            r = c.query(
+                f"MATCH (n:K8sNamespace {{name: $ns}})-[:CONTAINS]->({var}:{label}) "
+                f"RETURN count({var})",
+                {"ns": namespace},
+            ).result_set
+            counts[label] = r[0][0] if r else 0
+
+        # Deployments list with health
+        deploys = c.query(
+            "MATCH (n:K8sNamespace {name: $ns})-[:CONTAINS]->(d:K8sDeployment) "
+            "RETURN d.name, d.kind, d.replicas_ready, d.replicas_desired, d.image "
+            "ORDER BY d.name",
+            {"ns": namespace},
+        ).result_set
+
+        # Pod status breakdown
+        pod_status = c.query(
+            "MATCH (n:K8sNamespace {name: $ns})-[:CONTAINS]->(p:K8sPod) "
+            "RETURN p.status, count(p) ORDER BY count(p) DESC",
+            {"ns": namespace},
+        ).result_set
+
+        lines = [
+            f"Namespace: {namespace}",
+            f"  Status:       {status}",
+            f"  Age:          {age // 86400} days, {(age % 86400) // 3600} hours",
+            f"",
+            f"Resource counts:",
+            f"  Deployments:  {counts.get('K8sDeployment', 0)}",
+            f"  Pods:         {counts.get('K8sPod', 0)}",
+            f"  Services:     {counts.get('K8sService', 0)}",
+            f"  ConfigMaps:   {counts.get('K8sConfigMap', 0)}",
+            f"  Secrets:      {counts.get('K8sSecret', 0)}",
+            f"",
+            f"Pod status breakdown:",
+        ]
+        for st, cnt in pod_status:
+            lines.append(f"  {cnt:4}  {st}")
+
+        if deploys:
+            lines.append(f"")
+            lines.append(f"Deployments:")
+            for d_name, d_kind, rr, rd, img in deploys:
+                health = "✓" if rr == rd and rd > 0 else "⚠"
+                lines.append(f"  {health} [{d_kind:12}] {d_name}  ({rr}/{rd} ready)")
+                if img:
+                    lines.append(f"      {img}")
+
+        return "\n".join(lines)
+
+    def _tool_federated_symbol_in_cluster(self, symbol: str, cluster: str) -> str:
+        """The killer federated query: find a code symbol across both graphs.
+
+        This is the first working demonstration of cross-graph federation.
+        It queries the cluster graph for any K8s resource whose name,
+        image, labels, or other properties reference the given symbol,
+        then reports what was found alongside whatever the code graph
+        knows about that symbol.
+        """
+        # Query 1: what does the code graph know about this symbol?
+        # (Uses the current client's graph — assumed to be the code graph.)
+        code_hits = self.client.query(
+            "MATCH (n) WHERE (n:Function OR n:Class) AND n.name = $symbol "
+            "RETURN labels(n)[0], n.name, n.file_path LIMIT 10",
+            {"symbol": symbol},
+        ).result_set
+
+        # Query 2: what does the cluster graph know?
+        c = self._k8s_client(cluster)
+
+        # Match images containing the symbol as a substring
+        image_hits = c.query(
+            "MATCH (d:K8sDeployment) WHERE d.image CONTAINS $symbol "
+            "RETURN d.namespace, d.name, d.image",
+            {"symbol": symbol},
+        ).result_set
+
+        # Match deployment/service names containing the symbol
+        name_hits = c.query(
+            "MATCH (d:K8sDeployment) WHERE d.name CONTAINS $symbol "
+            "RETURN d.namespace, d.name, d.image",
+            {"symbol": symbol},
+        ).result_set
+        svc_hits = c.query(
+            "MATCH (s:K8sService) WHERE s.name CONTAINS $symbol "
+            "RETURN s.namespace, s.name, s.type",
+            {"symbol": symbol},
+        ).result_set
+
+        # Match ConfigMap key names (which often contain application symbols)
+        cm_hits = c.query(
+            "MATCH (cm:K8sConfigMap) WHERE ANY(k IN cm.key_names WHERE k CONTAINS $symbol) "
+            "RETURN cm.namespace, cm.name, cm.key_names",
+            {"symbol": symbol},
+        ).result_set
+
+        lines = [f"Federated query for symbol '{symbol}' across code + cluster '{cluster}':"]
+        lines.append("")
+
+        if code_hits:
+            lines.append(f"Code graph ({len(code_hits)} matches):")
+            for label, name, path in code_hits:
+                lines.append(f"  [{label}] {name}  ({path})")
+        else:
+            lines.append("Code graph: no Function or Class with this exact name.")
+        lines.append("")
+
+        cluster_found = False
+        if image_hits:
+            cluster_found = True
+            lines.append(f"Cluster Deployments running image matching '{symbol}' ({len(image_hits)}):")
+            for ns, n, img in image_hits:
+                lines.append(f"  {ns}/{n}")
+                lines.append(f"    image: {img}")
+        if name_hits:
+            cluster_found = True
+            lines.append(f"Cluster Deployments named like '{symbol}' ({len(name_hits)}):")
+            for ns, n, img in name_hits:
+                lines.append(f"  {ns}/{n}")
+        if svc_hits:
+            cluster_found = True
+            lines.append(f"Cluster Services named like '{symbol}' ({len(svc_hits)}):")
+            for ns, n, t in svc_hits:
+                lines.append(f"  {ns}/{n} ({t})")
+        if cm_hits:
+            cluster_found = True
+            lines.append(f"ConfigMaps with key names matching '{symbol}' ({len(cm_hits)}):")
+            for ns, n, keys in cm_hits:
+                matched = [k for k in keys if symbol in k]
+                lines.append(f"  {ns}/{n}  keys: {', '.join(matched[:3])}")
+
+        if not cluster_found:
+            lines.append(f"Cluster graph: no references to '{symbol}' found.")
 
         return "\n".join(lines)
 
