@@ -1,24 +1,34 @@
 # Mazkir Roadmap to $1B
 
-**Status:** Settled framework, decided 2026-04-08. The phase content
-is opinionated and prescriptive. The two questions at the end
-(ambition + capital strategy) determine which variant of this
-roadmap to actually execute.
+**Status:** Framework decided 2026-04-08, lead use case refined 2026-04-09
+to MTTR reduction. The phase content is opinionated and prescriptive.
+The two questions at the end (ambition + capital strategy) determine
+which variant of this roadmap to actually execute.
 
 This document complements `docs/strategy-and-business-model.md`
-(which covers licensing, pricing, trust framing) by adding the
+(which covers licensing, pricing, trust framing) and
+`docs/mttr-reduction-value-prop.md` (the lead use case) by adding the
 **timing, sequencing, and execution plan** for the maximum-ambition
 path.
+
+> **IMPORTANT (2026-04-09 update):** The lead value prop is now
+> **MTTR reduction via graph-based incident correlation**, not
+> generic "AI agent grounding." See `docs/mttr-reduction-value-prop.md`
+> for the full framing. The phases below are unchanged in build
+> order, but the marketing pitch and success metrics should be
+> read through the MTTR lens.
 
 ---
 
 ## The thesis
 
-> Mazkir becomes a $1B company by being **the structural memory
-> layer for AI coding agents** — Python first, then TS/Go/Rust/Java
-> to capture full-stack teams, then runtime state via K8s +
-> OpenTelemetry, then non-code knowledge sources (Slack, Jira,
-> Notion, meetings) to displace Glean for engineering use cases.
+> Mazkir becomes a $1B company by being **the incident correlation
+> layer that cuts MTTR by 75%** — joining code, runtime state,
+> deploy history, config changes, and past incidents in one graph
+> queryable by SRE teams via MCP and Slack. Python + AWS first, then
+> K8s + OpenTelemetry for the killer liveness/runtime story, then
+> GCP/Azure for multi-cloud parity, then non-code knowledge sources
+> (Slack, Jira, Notion, Gmail for the executive tier).
 
 The moat is **not** language support. Language support is necessary
 but not sufficient. The moat is the combination of:

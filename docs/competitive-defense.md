@@ -15,6 +15,35 @@ reaches escape velocity before they bother.
 
 ---
 
+## The competitive wedge: MTTR reduction via cross-layer join
+
+**Update 2026-04-09:** After working through the incident triage
+use case in detail, the clearest competitive wedge is **MTTR
+reduction via cross-layer graph joins that no existing tool can do**.
+
+Every existing observability / incident tool owns one layer:
+- Datadog / New Relic → metrics
+- PagerDuty → alert correlation
+- GitHub / GitLab → code changes
+- Argo CD / Flux → deployment history
+- Wiz / Orca → security posture
+- AWS CloudTrail / Config → infrastructure state
+
+**None of them joins across layers.** The SRE today is the one doing
+the join manually, in their head, at 2 AM, under pressure. That
+manual cross-tool correlation is 60-80% of every incident's MTTR.
+
+Mazkir's graph automates that join. A single query returns the
+unified timeline across code, runtime, config, IAM, and past
+incidents — the exact data an engineer currently has to assemble
+from 5-10 tools.
+
+**This is the single clearest "nobody else can do this" story**
+Mazkir has. See `docs/mttr-reduction-value-prop.md` for the full
+breakdown. Every other use case (AI agent grounding, code
+intelligence, cost optimization, compliance autopilot) is
+secondary — the wedge is incident triage.
+
 ## The brutal truth
 
 **There is no architectural moat against a competitor with
