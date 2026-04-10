@@ -2,12 +2,14 @@
   "mcpServers": {
     "savants": {
       "command": "/home/miguel/git/bernadinm/savants/.venv/bin/python",
-      "args": ["-m", "savants.mcp"],
+      "args": [
+        "-m",
+        "savants.mcp"
+      ],
       "env": {
         "FALKORDB_HOST": "localhost",
         "FALKORDB_PORT": "16379",
-        "FALKORDB_GRAPH": "savants",
-        "LD_LIBRARY_PATH": "/nix/store/mdck89nsfisflwjv6xv8ydj7dj0sj2pn-gcc-11.3.0-lib/lib"
+        "FALKORDB_GRAPH": "savants"
       }
     }
   }

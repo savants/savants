@@ -1,0 +1,49 @@
+---
+// This page serves the install script content-type when accessed as savants.sh
+// For the website (savants.dev/install), it shows a human-readable page
+import Base from '../layouts/Base.astro';
+---
+<Base title="Install Savants">
+<style>
+  .install-page { padding: 120px 0 80px; max-width: 640px; margin: 0 auto; }
+  .install-page h1 { font-size: 2rem; font-weight: 700; margin-bottom: 24px; }
+  .install-page .cmd { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 24px; margin: 24px 0; }
+  .install-page .cmd code { color: var(--accent); font-size: 1rem; }
+  .install-page p { color: var(--muted); margin-bottom: 16px; }
+  .install-page h2 { font-size: 1.3rem; margin-top: 32px; margin-bottom: 12px; }
+  .install-page pre { background: #0d0d0d; border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 0.85rem; color: var(--muted); }
+</style>
+
+<div class="container">
+  <div class="install-page">
+    <h1>Install Savants</h1>
+
+    <div class="cmd"><code class="mono">curl -fsSL savants.sh | sh</code></div>
+
+    <p>This downloads the Savants CLI and installs it to <code>~/.savants/bin/</code>.</p>
+
+    <h2>After install</h2>
+    <pre class="mono">
+# Auto-detect everything and show what's broken
+savants up
+
+# Set up MCP for Claude Code / Cursor
+savants mcp install
+
+# Live cluster monitoring
+savants k8s watch my-cluster --logs
+
+# Full diagnosis
+savants story</pre>
+
+    <h2>Requirements</h2>
+    <p>Linux x86_64 or aarch64. macOS support coming soon.</p>
+    <p>Optional: kubectl (for K8s features), Docker (for container monitoring).</p>
+
+    <h2>Manual install (pip)</h2>
+    <pre class="mono">pip install savants</pre>
+
+    <p><a href="https://savants.dev" style="color: var(--accent);">Back to savants.dev</a></p>
+  </div>
+</div>
+</Base>
