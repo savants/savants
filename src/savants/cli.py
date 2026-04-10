@@ -729,6 +729,227 @@ def serve():
     mcp_main()
 
 
+@cli.group("mcp")
+def mcp_group():
+    """Configure Savants as an MCP server for AI tools."""
+
+
+@mcp_group.command("install")
+@click.option("--scope", type=click.Choice(["project", "user"]), default="project",
+              help="Where to install: 'project' writes .mcp.json in cwd, 'user' registers globally")
+@click.option("--tool", type=click.Choice(["claude", "cursor", "auto"]), default="auto",
+              help="Target AI tool (auto-detects)")
+def mcp_install(scope: str, tool: str):
+    """One command to make Savants work with your AI assistant.
+
+    \b
+    Detects which AI tools you have (Claude Code, Cursor), finds the
+    savants binary, and writes the config so the MCP server just works.
+    No JSON editing. No copy-pasting. No env vars to remember.
+
+    \b
+    Examples:
+        savants mcp install                    # auto-detect, project scope
+        savants mcp install --scope user       # register globally for all projects
+        savants mcp install --tool cursor      # force Cursor config
+    """
+    import json
+    import shutil
+    from pathlib import Path
+
+    # Find the savants binary/script
+    savants_bin = shutil.which("savants")
+    if not savants_bin:
+        # Fallback: use python -m savants.mcp
+        python_bin = sys.executable
+        serve_cmd = python_bin
+        serve_args = ["-m", "savants.mcp"]
+    else:
+        serve_cmd = savants_bin
+        serve_args = ["serve"]
+
+    # Detect the FalkorDB port — check what's running or use default
+    port = "16379"
+    config = load_config()
+    port = str(config.falkordb.port)
+
+    # Build the MCP server config
+    mcp_config = {
+        "command": serve_cmd,
+        "args": serve_args,
+        "env": {
+            "FALKORDB_HOST": "localhost",
+            "FALKORDB_PORT": port,
+            "FALKORDB_GRAPH": config.falkordb.graph_name,
+        },
+    }
+
+    # Detect which tool to configure
+    has_claude = shutil.which("claude") is not None
+    has_cursor = Path.home().joinpath(".cursor").exists()
+
+    if tool == "auto":
+        if has_claude:
+            tool = "claude"
+        elif has_cursor:
+            tool = "cursor"
+        else:
+            tool = "claude"  # default
+
+    if tool == "claude" and has_claude and scope == "user":
+        # Use claude mcp add-json — most reliable path
+        import subprocess
+        mcp_json_str = json.dumps(mcp_config)
+        cmd_parts = [
+            "claude", "mcp", "add-json",
+            "--scope", "user",
+            "savants",
+            mcp_json_str,
+        ]
+
+        click.echo("Registering with Claude Code...")
+        result = subprocess.run(cmd_parts, capture_output=True, text=True)
+        if result.returncode == 0:
+            click.echo("\nSavants MCP server registered globally with Claude Code.")
+            click.echo("Restart Claude Code to activate. Then try:")
+            click.echo('  "What\'s wrong with my cluster?"')
+            return
+        else:
+            click.echo(f"claude mcp add-json failed: {result.stderr.strip()}", err=True)
+            click.echo("Falling back to .mcp.json...", err=True)
+
+    if tool == "cursor":
+        # Cursor uses .cursor/mcp.json in the project root
+        config_path = Path.cwd() / ".cursor" / "mcp.json"
+        config_path.parent.mkdir(exist_ok=True)
+        existing = {}
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text())
+            except Exception:
+                pass
+        servers = existing.get("mcpServers", {})
+        servers["savants"] = mcp_config
+        existing["mcpServers"] = servers
+        config_path.write_text(json.dumps(existing, indent=2) + "\n")
+        click.echo(f"Wrote {config_path}")
+        click.echo("Restart Cursor to activate the Savants MCP server.")
+        return
+
+    # Default: write .mcp.json in project root (works with Claude Code)
+    config_path = Path.cwd() / ".mcp.json"
+    existing = {}
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text())
+        except Exception:
+            pass
+    servers = existing.get("mcpServers", {})
+    servers["savants"] = mcp_config
+    existing["mcpServers"] = servers
+    config_path.write_text(json.dumps(existing, indent=2) + "\n")
+    click.echo(f"Wrote {config_path}")
+    click.echo("")
+    click.echo("Savants MCP server configured. Restart your AI tool to activate.")
+    click.echo("")
+    click.echo("Available tools (26):")
+    click.echo("  pod_story      — what's wrong with a pod or cluster")
+    click.echo("  host_state     — CPU, memory, disk, failed services")
+    click.echo("  host_story     — what's wrong with the host")
+    click.echo("  cluster_state  — full cluster overview")
+    click.echo("  diff_impact    — blast radius of a code change")
+    click.echo("  function_xray  — full structural profile of a function")
+    click.echo("  ... and 20 more")
+    click.echo("")
+    click.echo("Try asking your AI: \"What's wrong with my cluster?\"")
+
+
+@mcp_group.command("status")
+def mcp_status():
+    """Show the current MCP configuration for Savants."""
+    import json
+    from pathlib import Path
+
+    found = False
+
+    # Check project .mcp.json
+    project = Path.cwd() / ".mcp.json"
+    if project.exists():
+        try:
+            data = json.loads(project.read_text())
+            if "savants" in data.get("mcpServers", {}):
+                cfg = data["mcpServers"]["savants"]
+                click.echo(f"Project config ({project}):")
+                click.echo(f"  Command: {cfg.get('command', '?')} {' '.join(cfg.get('args', []))}")
+                click.echo(f"  Port:    {cfg.get('env', {}).get('FALKORDB_PORT', '?')}")
+                click.echo(f"  Graph:   {cfg.get('env', {}).get('FALKORDB_GRAPH', '?')}")
+                found = True
+        except Exception:
+            pass
+
+    # Check Cursor
+    cursor = Path.cwd() / ".cursor" / "mcp.json"
+    if cursor.exists():
+        try:
+            data = json.loads(cursor.read_text())
+            if "savants" in data.get("mcpServers", {}):
+                click.echo(f"Cursor config ({cursor}): configured")
+                found = True
+        except Exception:
+            pass
+
+    # Check claude mcp list
+    import shutil, subprocess
+    if shutil.which("claude"):
+        try:
+            result = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=5)
+            if "savants" in result.stdout:
+                click.echo(f"Claude Code global: configured")
+                found = True
+        except Exception:
+            pass
+
+    if not found:
+        click.echo("Savants MCP server is not configured.")
+        click.echo("Run: savants mcp install")
+
+
+@mcp_group.command("uninstall")
+@click.option("--scope", type=click.Choice(["project", "user", "all"]), default="all")
+def mcp_uninstall(scope: str):
+    """Remove Savants MCP server configuration."""
+    import json
+    import shutil, subprocess
+    from pathlib import Path
+
+    removed = []
+
+    if scope in ("project", "all"):
+        for config_path in [Path.cwd() / ".mcp.json", Path.cwd() / ".cursor" / "mcp.json"]:
+            if config_path.exists():
+                try:
+                    data = json.loads(config_path.read_text())
+                    if "savants" in data.get("mcpServers", {}):
+                        del data["mcpServers"]["savants"]
+                        config_path.write_text(json.dumps(data, indent=2) + "\n")
+                        removed.append(str(config_path))
+                except Exception:
+                    pass
+
+    if scope in ("user", "all"):
+        if shutil.which("claude"):
+            try:
+                subprocess.run(["claude", "mcp", "remove", "savants"], capture_output=True, timeout=5)
+                removed.append("Claude Code global")
+            except Exception:
+                pass
+
+    if removed:
+        click.echo(f"Removed from: {', '.join(removed)}")
+    else:
+        click.echo("Nothing to remove.")
+
+
 @cli.command()
 @click.argument("repo_path", type=click.Path(exists=True, file_okay=False))
 @click.option("--interval", default=2.0, help="Poll interval in seconds")
