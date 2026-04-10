@@ -169,7 +169,12 @@ def _start_falkordb_process(port: int, verbose: bool = True) -> int | None:
         return None
 
     module = _find_falkordb_module()
-    cmd = [redis_bin, "--port", str(port), "--daemonize", "no", "--save", ""]
+    # Persist graph to disk so it survives restarts
+    data_dir = str(Path.home() / ".savants" / "data")
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    cmd = [redis_bin, "--port", str(port), "--daemonize", "no",
+           "--dir", data_dir, "--dbfilename", "savants.rdb",
+           "--save", "60", "1"]  # RDB snapshot every 60s if ≥1 write
     if module:
         cmd.extend(["--loadmodule", module])
     else:
@@ -237,7 +242,7 @@ def _ensure_falkordb() -> GraphClient:
 @click.group()
 @click.version_option(package_name="savants")
 def cli():
-    """SynapCode: local-first GraphRAG cognitive stack."""
+    """Savants: your infrastructure savant. Know what's wrong in 60 seconds."""
 
 
 @cli.command()
@@ -1031,3 +1036,211 @@ def ask(name: str, as_json: bool):
         click.echo(f"\nDecorators: {decorators}")
     if not callers and not refs and not methods_of:
         click.echo("\n(No structural or string-literal references — likely dead code or external entry point.)")
+
+
+# --- savants up: the 60-second experience ----------------------------------
+
+
+def _detect_k8s_clusters() -> list[dict]:
+    """Auto-detect available kubeconfig contexts."""
+    clusters = []
+    try:
+        from kubernetes import config as k8s_config
+        contexts, active = k8s_config.list_kube_config_contexts()
+        for ctx in (contexts or []):
+            name = ctx.get("name", "")
+            cluster = ctx.get("context", {}).get("cluster", name)
+            clusters.append({"context": name, "cluster": cluster})
+    except Exception:
+        pass
+    return clusters
+
+
+def _detect_docker() -> bool:
+    """Check if Docker is available."""
+    import shutil
+    return shutil.which("docker") is not None
+
+
+def _detect_systemd() -> bool:
+    """Check if systemd is running."""
+    import shutil
+    return shutil.which("systemctl") is not None
+
+
+@cli.command()
+@click.option("--repo", type=click.Path(exists=True, file_okay=False), default=None,
+              help="Path to a git repo to index (defaults to cwd if it's a repo)")
+@click.option("--tail-lines", default=200, type=int,
+              help="Lines of log history to replay per pod")
+def up(repo: str | None, tail_lines: int):
+    """Start Savants: auto-detect infrastructure and show what's wrong.
+
+    This is the 60-second experience. Savants starts the embedded graph,
+    discovers your infrastructure (K8s clusters, Docker, systemd, the
+    current repo), ingests everything, and shows you what's broken.
+
+    \b
+    Example:
+        savants up
+        savants up --repo /path/to/my/project
+    """
+    import os
+    from pathlib import Path
+
+    click.echo("Starting Savants...\n")
+
+    # 1. Ensure graph is running
+    client = _ensure_falkordb()
+    click.echo("[graph] Connected.\n")
+
+    # 2. Auto-detect infrastructure
+    click.echo("Detecting infrastructure...")
+
+    # K8s clusters
+    clusters = _detect_k8s_clusters()
+    if clusters:
+        for c in clusters:
+            click.echo(f"  Found K8s cluster: {c['cluster']} (context: {c['context']})")
+    else:
+        click.echo("  No K8s clusters found")
+
+    # Docker
+    has_docker = _detect_docker()
+    if has_docker:
+        click.echo("  Found Docker")
+
+    # Systemd
+    has_systemd = _detect_systemd()
+    if has_systemd:
+        click.echo("  Found systemd")
+
+    # Repo
+    if repo is None:
+        cwd = os.getcwd()
+        if Path(cwd, ".git").exists():
+            repo = cwd
+    if repo:
+        click.echo(f"  Found git repo: {repo}")
+
+    click.echo("")
+
+    issues_found = []
+
+    # 3. Ingest host
+    click.echo("[host] Ingesting local machine...")
+    try:
+        from savants.host.ingestor import HostIngestor
+        host_ing = HostIngestor(graph_client=client)
+        host_stats = host_ing.snapshot()
+        click.echo(f"  {host_stats.disks} disks, {host_stats.interfaces} interfaces, "
+                   f"{host_stats.systemd_units} systemd units "
+                   f"({host_stats.failed_units} failed), "
+                   f"{host_stats.journal_events} journal events")
+        if host_stats.failed_units > 0:
+            issues_found.append(f"{host_stats.failed_units} failed systemd units")
+        if host_stats.journal_events > 0:
+            issues_found.append(f"{host_stats.journal_events} journal error patterns")
+    except Exception as e:
+        click.echo(f"  Error: {e}", err=True)
+
+    # 4. Ingest K8s clusters
+    for c in clusters:
+        cluster_name = c["cluster"]
+        graph_name = cluster_name.replace("-", "_")
+        click.echo(f"\n[k8s] Ingesting cluster '{cluster_name}'...")
+        try:
+            from savants.config import FalkorDBConfig
+            from savants.k8s.ingestor import K8sIngestor
+            k8s_client = GraphClient(FalkorDBConfig(
+                host=client._config.host,
+                port=client._config.port,
+                graph_name=graph_name,
+            ))
+            k8s_ing = K8sIngestor(
+                graph_client=k8s_client,
+                cluster_name=cluster_name,
+                kube_context=c["context"],
+            )
+            k8s_stats = k8s_ing.snapshot()
+            # Count pods by status
+            r = k8s_client.query(
+                "MATCH (p:K8sPod) RETURN p.status, count(p) ORDER BY count(p) DESC", {}
+            )
+            status_line = ", ".join(
+                f"{row[1]} {row[0]}" for row in r.result_set
+            )
+            click.echo(f"  Pods: {status_line}")
+
+            # Check for CrashLoopBackOff
+            crash_pods = [
+                row for row in r.result_set if row[0] == "CrashLoopBackOff"
+            ]
+            if crash_pods:
+                issues_found.append(
+                    f"{crash_pods[0][1]} pods in CrashLoopBackOff on {cluster_name}"
+                )
+
+            # Quick log ingest for immediate diagnosis
+            click.echo(f"  Tailing logs ({tail_lines} lines/pod)...")
+            try:
+                from savants.k8s.log_watcher import LogWatcher
+                import time
+
+                k8s_ing._load_k8s_client()
+                core = k8s_ing._k8s_client["core"]
+                lw = LogWatcher(
+                    graph=k8s_client, cluster=cluster_name,
+                    core_api=core, flush_interval_seconds=2.0,
+                    tail_lines=tail_lines,
+                )
+                pods = core.list_pod_for_all_namespaces().items
+                running = [p for p in pods if p.status and p.status.phase == "Running"]
+                for p in running:
+                    lw.add_pod(p.metadata.name, p.metadata.namespace)
+                time.sleep(min(15, max(5, len(running) // 5)))
+                lw.flush_all()
+                lw.stop()
+
+                r = k8s_client.query(
+                    "MATCH (e:LogEvent) WHERE e.severity IN ['ERROR','FATAL'] "
+                    "RETURN count(DISTINCT e.pod), count(e), sum(e.count)", {}
+                )
+                if r.result_set and r.result_set[0][0] > 0:
+                    n_pods, n_templates, n_occur = r.result_set[0]
+                    click.echo(f"  Log intelligence: {int(n_templates)} error templates "
+                              f"from {int(n_pods)} pods ({int(n_occur or 0)} occurrences)")
+                    issues_found.append(
+                        f"{int(n_templates)} error patterns across {int(n_pods)} pods on {cluster_name}"
+                    )
+                else:
+                    click.echo("  Log intelligence: no errors detected")
+            except Exception as e:
+                click.echo(f"  Log tailing skipped: {e}", err=True)
+
+        except Exception as e:
+            click.echo(f"  Error: {e}", err=True)
+
+    # 5. Index code repo
+    if repo:
+        click.echo(f"\n[code] Indexing {repo}...")
+        try:
+            builder = CodePropertyGraphBuilder(repo_path=repo, client=client)
+            stats = builder.build()
+            click.echo(f"  {stats['files']} files, {stats['functions']} functions, "
+                      f"{stats['classes']} classes, {stats['edges']} edges")
+        except Exception as e:
+            click.echo(f"  Error: {e}", err=True)
+
+    # 6. Summary
+    click.echo(f"\n{'='*60}")
+    if issues_found:
+        click.echo(f"Found {len(issues_found)} issue(s):\n")
+        for i, issue in enumerate(issues_found, 1):
+            click.echo(f"  {i}. {issue}")
+        click.echo(f"\nRun `savants story` for full diagnosis.")
+    else:
+        click.echo("No issues detected. Your infrastructure looks healthy.")
+    click.echo(f"{'='*60}")
+    click.echo("\nSavants is ready. Use the MCP tools from your AI assistant,")
+    click.echo("or run `savants k8s watch <cluster>` for live monitoring.")

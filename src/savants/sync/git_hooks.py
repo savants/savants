@@ -11,10 +11,18 @@ import logging
 import subprocess
 from pathlib import Path
 
-from temporalio.client import Client
+try:
+    from temporalio.client import Client
+except ImportError:
+    Client = None  # Temporal is optional for CLI-only usage
 
 from savants.config import load_config
-from savants.temporal.workflows import IncrementalSyncInput, IncrementalSyncWorkflow
+
+try:
+    from savants.temporal.workflows import IncrementalSyncInput, IncrementalSyncWorkflow
+except ImportError:
+    IncrementalSyncInput = None
+    IncrementalSyncWorkflow = None
 
 logger = logging.getLogger(__name__)
 
