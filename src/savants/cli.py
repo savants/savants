@@ -12,6 +12,7 @@ Usage:
     savants snapshot restore /repo  # Restore from snapshot
     savants serve                   # Start MCP server
     savants worker                  # Start Temporal worker
+    savants story                   # Full diagnosis narrative
 """
 
 from __future__ import annotations
@@ -574,7 +575,9 @@ def k8s_watch(
 
     Holds long-lived watch streams against the apiserver and, when
     `--logs` is on, one streaming log tail per running pod. Writes
-    cluster state + LogEvent nodes to the per-cluster graph. Block
+    cluster state + LogEvent nodes to the per-cluster graph. Also
+    runs the host ingestor on a 30-second timer to capture local
+    machine state (CPU/memory/load/processes/systemd/Docker). Block
     until SIGINT/SIGTERM.
 
     Example:
@@ -584,8 +587,10 @@ def k8s_watch(
     To run as a daemon see `docs/k8s-watch-systemd.md`.
     """
     import logging
+    import threading
     from savants.config import FalkorDBConfig
     from savants.graph.client import GraphClient
+    from savants.host.ingestor import HostIngestor
     from savants.k8s.ingestor import K8sIngestor
     from savants.k8s.log_watcher import LogWatcher
     from savants.k8s.watcher import K8sWatcher
@@ -610,6 +615,27 @@ def k8s_watch(
     snap_stats = ingestor.snapshot()
     click.echo(snap_stats.summary())
 
+    # Host ingestor: initial snapshot + periodic refresh
+    host_ing = HostIngestor(graph_client=client)
+    host_stats = host_ing.snapshot()
+    click.echo(f"[host] {host_stats.summary().split(chr(10))[0]}")
+
+    host_stop_event = threading.Event()
+
+    def _host_poll_loop(host_ing, stop_event, interval=30):
+        while not stop_event.wait(interval):
+            try:
+                host_ing.snapshot()
+            except Exception:
+                pass
+
+    host_thread = threading.Thread(
+        target=_host_poll_loop,
+        args=(host_ing, host_stop_event),
+        daemon=True,
+    )
+    host_thread.start()
+
     log_watcher: LogWatcher | None = None
     if logs:
         ingestor._load_k8s_client()
@@ -631,11 +657,38 @@ def k8s_watch(
     except KeyboardInterrupt:
         pass
     finally:
+        host_stop_event.set()
+        host_thread.join(timeout=5)
         if log_watcher is not None:
             log_watcher.flush_all()
             log_watcher.stop()
         watcher.stop()
     click.echo(f"[{cluster}] shutdown complete")
+
+
+@cli.group()
+def host():
+    """Ingest local host state into the graph (runtime layer)."""
+
+
+@host.command("snapshot")
+def host_snapshot():
+    """One-shot snapshot of the local machine into the graph.
+
+    Reads CPU, memory, load, disks, network interfaces, top processes,
+    systemd units, Docker containers, kernel events (dmesg), and
+    journald errors. Writes everything to the default graph.
+
+    Example:
+
+        savants host snapshot
+    """
+    from savants.host.ingestor import HostIngestor
+
+    client = _ensure_falkordb()
+    host_ing = HostIngestor(graph_client=client)
+    stats = host_ing.snapshot()
+    click.echo(stats.summary())
 
 
 @cli.group()
@@ -1278,3 +1331,254 @@ def up(repo: str | None, tail_lines: int):
     click.echo(f"{'='*60}")
     click.echo("\nSavants is ready. Use the MCP tools from your AI assistant,")
     click.echo("or run `savants k8s watch <cluster>` for live monitoring.")
+
+
+# --- savants story: full diagnosis narrative --------------------------------
+
+
+# ANSI helpers for color-coded output
+_BOLD = "\033[1m"
+_RED = "\033[31m"
+_YELLOW = "\033[33m"
+_GREEN = "\033[32m"
+_CYAN = "\033[36m"
+_DIM = "\033[2m"
+_RESET = "\033[0m"
+
+_SEV_COLORS = {
+    "FATAL": _RED + _BOLD,
+    "ERROR": _RED,
+    "WARN": _YELLOW,
+    "INFO": _DIM,
+}
+
+
+def _sev_rank(sev: str) -> int:
+    return {"FATAL": 0, "ERROR": 1, "WARN": 2, "INFO": 3}.get(sev, 4)
+
+
+def _min_sev_filter(min_severity: str) -> list[str]:
+    """Return list of severities at or above min_severity."""
+    rank = _sev_rank(min_severity)
+    return [s for s, r in {"FATAL": 0, "ERROR": 1, "WARN": 2, "INFO": 3}.items() if r <= rank]
+
+
+@cli.command()
+@click.option("--since-minutes", default=60, type=int,
+              help="Only show events from the last N minutes (0 for all time)")
+@click.option("--min-severity", default="WARN",
+              help="Minimum severity to show (INFO, WARN, ERROR, FATAL)")
+@click.option("--cluster", "cluster_filter", default=None,
+              help="Filter to a single K8s cluster name")
+@click.option("--host", "host_filter", default=None,
+              help="Filter to a single host name")
+def story(since_minutes: int, min_severity: str, cluster_filter: str | None, host_filter: str | None):
+    """Show a full diagnosis narrative of your infrastructure.
+
+    Reads the graph built by `savants up` and renders a color-coded
+    narrative covering host health, kernel/journal errors, K8s pod
+    status, log event templates, and cross-references (MENTIONS edges).
+
+    \b
+    Example:
+        savants story
+        savants story --since-minutes 0 --min-severity ERROR
+        savants story --cluster astra-k3s
+        savants story --host astra
+    """
+    import time
+    from savants.config import FalkorDBConfig
+
+    min_severity = min_severity.upper()
+    allowed_sevs = _min_sev_filter(min_severity)
+
+    client = _ensure_falkordb()
+
+    # Time filter
+    if since_minutes > 0:
+        cutoff = time.time() - since_minutes * 60
+    else:
+        cutoff = 0.0
+
+    # ── Host section ──────────────────────────────────────────────
+    host_q = "MATCH (h:Host) RETURN h.hostname, h.os, h.cpu_percent, h.cpu_count, " \
+             "h.memory_used_mb, h.memory_total_mb, h.memory_percent, h.load_1m"
+    if host_filter:
+        host_q = ("MATCH (h:Host {hostname: $hn}) RETURN h.hostname, h.os, h.cpu_percent, "
+                  "h.cpu_count, h.memory_used_mb, h.memory_total_mb, h.memory_percent, h.load_1m")
+    host_rows = client.query(
+        host_q, {"hn": host_filter} if host_filter else {},
+    ).result_set
+
+    for row in host_rows:
+        hostname, os_str, cpu_pct, cpu_count, mem_used, mem_total, mem_pct, load1 = row
+        mem_used_gb = round((mem_used or 0) / 1024, 1)
+        mem_total_gb = round((mem_total or 0) / 1024, 1)
+
+        click.echo(f"\n{_BOLD}# Host: {hostname}{_RESET}")
+        click.echo(
+            f"  OS: {os_str} | CPU: {cpu_pct}% ({cpu_count} cores) | "
+            f"Memory: {mem_used_gb}/{mem_total_gb} GB ({mem_pct}%) | Load: {load1}"
+        )
+
+        # Failed systemd units
+        failed_rows = client.query(
+            "MATCH (h:Host {hostname: $hn})-[:HAS_UNIT]->(u:SystemdUnit) "
+            "WHERE u.active_state = 'failed' RETURN u.name ORDER BY u.name",
+            {"hn": hostname},
+        ).result_set
+        if failed_rows:
+            click.echo(f"\n  {_RED}Failed units:{_RESET}")
+            for (unit_name,) in failed_rows:
+                click.echo(f"    - {unit_name}")
+
+        # Journal errors (HostLogEvent)
+        sev_list = allowed_sevs
+        host_log_q = (
+            "MATCH (h:Host {hostname: $hn})-[:EMITTED]->(e:HostLogEvent) "
+            "WHERE e.severity IN $sevs"
+        )
+        if cutoff > 0:
+            host_log_q += " AND e.last_seen >= $cutoff"
+        host_log_q += " RETURN e.template_text, e.count, e.severity, e.unit ORDER BY e.count DESC LIMIT 20"
+        host_log_rows = client.query(
+            host_log_q, {"hn": hostname, "sevs": sev_list, "cutoff": cutoff},
+        ).result_set
+        if host_log_rows:
+            label = f"Journal errors (last {since_minutes}min)" if since_minutes > 0 else "Journal errors (all time)"
+            click.echo(f"\n  {label}:")
+            for tmpl, count, sev, unit in host_log_rows:
+                color = _SEV_COLORS.get(sev, "")
+                prefix = f"{unit}: " if unit else ""
+                click.echo(f"    {color}x{count:<6}{_RESET} {prefix}{tmpl}")
+
+        # Kernel events (KernelEvent)
+        kern_q = (
+            "MATCH (h:Host {hostname: $hn})-[:EMITTED]->(e:KernelEvent) "
+            "WHERE e.severity IN $sevs"
+        )
+        if cutoff > 0:
+            kern_q += " AND e.last_seen >= $cutoff"
+        kern_q += " RETURN e.template_text, e.count, e.severity, e.category ORDER BY e.count DESC LIMIT 10"
+        kern_rows = client.query(
+            kern_q, {"hn": hostname, "sevs": sev_list, "cutoff": cutoff},
+        ).result_set
+        if kern_rows:
+            click.echo(f"\n  Kernel events:")
+            for tmpl, count, sev, cat in kern_rows:
+                color = _SEV_COLORS.get(sev, "")
+                tag = f"[{cat}] " if cat and cat != "other" else ""
+                click.echo(f"    {color}x{count:<6}{_RESET} {tag}{tmpl}")
+
+    # ── K8s clusters ──────────────────────────────────────────────
+    # K8s data lives in separate FalkorDB graphs named after the cluster.
+    # Discover them by listing all graphs and checking for K8sCluster nodes.
+    try:
+        all_graphs = client.db.list_graphs()
+    except Exception:
+        all_graphs = []
+
+    k8s_clusters_found: list[tuple[str, str]] = []  # (graph_name, cluster_name)
+    for gname in all_graphs:
+        if gname == client._config.graph_name:
+            continue  # skip the default savants graph
+        try:
+            k8s_client = GraphClient(FalkorDBConfig(
+                host=client._config.host,
+                port=client._config.port,
+                graph_name=gname,
+            ))
+            rows = k8s_client.query(
+                "MATCH (c:K8sCluster) RETURN c.name LIMIT 1", {},
+            ).result_set
+            if rows and rows[0][0]:
+                cname = rows[0][0]
+                if cluster_filter and cname != cluster_filter:
+                    continue
+                k8s_clusters_found.append((gname, cname))
+        except Exception:
+            continue
+
+    for gname, cname in k8s_clusters_found:
+        k8s_client = GraphClient(FalkorDBConfig(
+            host=client._config.host,
+            port=client._config.port,
+            graph_name=gname,
+        ))
+
+        # Pod status summary
+        pod_rows = k8s_client.query(
+            "MATCH (p:K8sPod) RETURN p.status, count(p) ORDER BY count(p) DESC", {},
+        ).result_set
+        status_parts = []
+        for st, cnt in pod_rows:
+            if st == "CrashLoopBackOff":
+                status_parts.append(f"{_RED}{cnt} {st}{_RESET}")
+            elif st == "Running":
+                status_parts.append(f"{_GREEN}{cnt} {st}{_RESET}")
+            else:
+                status_parts.append(f"{cnt} {st}")
+        status_str = ", ".join(status_parts) if status_parts else "no pods"
+
+        click.echo(f"\n{_BOLD}# Cluster: {cname}{_RESET} ({status_str})")
+
+        # Top LogEvent templates by severity+count
+        log_q = (
+            "MATCH (e:LogEvent) WHERE e.severity IN $sevs"
+        )
+        if cutoff > 0:
+            log_q += " AND e.last_seen >= $cutoff"
+        log_q += (
+            " RETURN e.severity, e.namespace, e.pod, e.count, e.template_text "
+            "ORDER BY CASE e.severity "
+            "WHEN 'FATAL' THEN 0 WHEN 'ERROR' THEN 1 WHEN 'WARN' THEN 2 ELSE 3 END, "
+            "e.count DESC LIMIT 25"
+        )
+        log_rows = k8s_client.query(log_q, {"sevs": allowed_sevs, "cutoff": cutoff}).result_set
+        if log_rows:
+            label = f"Top errors (last {since_minutes}min)" if since_minutes > 0 else "Top errors (all time)"
+            click.echo(f"\n  {label}:")
+            for sev, ns, pod, count, tmpl in log_rows:
+                color = _SEV_COLORS.get(sev, "")
+                # Truncate long templates
+                tmpl_display = tmpl[:120] + "..." if len(tmpl or "") > 120 else (tmpl or "")
+                click.echo(
+                    f"    {color}[{sev}]{_RESET} {ns}/{pod} "
+                    f"{_DIM}x{count}{_RESET}: {tmpl_display}"
+                )
+        else:
+            click.echo(f"\n  {_GREEN}No log errors found.{_RESET}")
+
+        # MENTIONS edges: which entities are referenced in errors
+        mentions_q = (
+            "MATCH (e:LogEvent)-[:MENTIONS]->(x) "
+            "WHERE e.severity IN $sevs"
+        )
+        if cutoff > 0:
+            mentions_q += " AND e.last_seen >= $cutoff"
+        mentions_q += (
+            " RETURN labels(x)[0], x.namespace, x.name, count(e) "
+            "ORDER BY count(e) DESC LIMIT 15"
+        )
+        mention_rows = k8s_client.query(
+            mentions_q, {"sevs": allowed_sevs, "cutoff": cutoff},
+        ).result_set
+        if mention_rows:
+            click.echo(f"\n  {_CYAN}Referenced entities:{_RESET}")
+            for label, ns, name, cnt in mention_rows:
+                # Strip "K8s" prefix from label for display
+                display_label = label[3:] if label.startswith("K8s") else label
+                click.echo(f"    - {display_label} {ns}/{name} <- {cnt} event(s)")
+
+    # ── Footer ────────────────────────────────────────────────────
+    if not host_rows and not k8s_clusters_found:
+        click.echo("\nNo data in the graph. Run `savants up` first to ingest your infrastructure.")
+    else:
+        click.echo(f"\n{_DIM}---{_RESET}")
+        filters = []
+        if since_minutes > 0:
+            filters.append(f"last {since_minutes}min")
+        else:
+            filters.append("all time")
+        filters.append(f">={min_severity}")
+        click.echo(f"{_DIM}Showing: {', '.join(filters)}{_RESET}")

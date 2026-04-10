@@ -513,6 +513,63 @@ class SynapCodeMCPServer:
                 },
             },
             {
+                "name": "host_state",
+                "description": (
+                    "Return a snapshot of a host's health: OS, kernel, uptime, "
+                    "CPU/memory/load averages, disk usage per mount point, "
+                    "failed systemd units, and the top 10 processes by memory. "
+                    "If hostname is omitted, returns a summary for every host "
+                    "in the graph. Queries the Host/HostDisk/SystemdUnit/"
+                    "HostProcess nodes — no live SSH, sub-second response."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hostname": {
+                            "type": "string",
+                            "description": "Hostname (optional — omit for all hosts)",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "host_story",
+                "description": (
+                    "THE HOST MTTR TOOL: given a hostname (or all hosts), "
+                    "return a narrative-ready summary of significant host-level "
+                    "log events (HostLogEvent) and kernel events (KernelEvent) "
+                    "— deduplicated, ranked by severity and count, with example "
+                    "lines. Answers 'what's wrong with this machine?' in one "
+                    "call. Use since_minutes to scope to a recent incident "
+                    "window."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hostname": {
+                            "type": "string",
+                            "description": "Hostname (optional — omit for all hosts)",
+                        },
+                        "since_minutes": {
+                            "type": "integer",
+                            "description": (
+                                "Only include events whose last_seen is within "
+                                "the last N minutes. Default: 60. Pass 0 to "
+                                "disable the time filter entirely."
+                            ),
+                        },
+                        "min_severity": {
+                            "type": "string",
+                            "description": "INFO | WARN | ERROR | FATAL (default: WARN)",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max events to return (default: 15)",
+                        },
+                    },
+                },
+            },
+            {
                 "name": "federated_symbol_in_cluster",
                 "description": (
                     "THE KILLER FEDERATED QUERY: given a function/class/symbol "
@@ -702,6 +759,17 @@ class SynapCodeMCPServer:
                     args["cluster"],
                     args.get("pod"),
                     args.get("namespace"),
+                    args.get("since_minutes", 60),
+                    args.get("min_severity", "WARN"),
+                    args.get("limit", 15),
+                )
+
+            elif tool_name == "host_state":
+                text = self._tool_host_state(args.get("hostname"))
+
+            elif tool_name == "host_story":
+                text = self._tool_host_story(
+                    args.get("hostname"),
                     args.get("since_minutes", 60),
                     args.get("min_severity", "WARN"),
                     args.get("limit", 15),
@@ -1548,6 +1616,308 @@ class SynapCodeMCPServer:
                     f"— mentioned by {int(n_events)} event(s)"
                 )
             lines.append("")
+
+        return "\n".join(lines)
+
+    def _tool_host_state(self, hostname: str | None) -> str:
+        """Snapshot of host health: OS, kernel, CPU/mem/load, disks, failed units, top procs."""
+        c = self.client
+
+        # Build the host query
+        if hostname:
+            host_rows = c.query(
+                "MATCH (h:Host {hostname: $hostname}) "
+                "RETURN h.hostname, h.os, h.kernel, h.uptime_seconds, "
+                "       h.cpu_count, h.cpu_usage_pct, h.memory_total_mb, "
+                "       h.memory_used_mb, h.load_1, h.load_5, h.load_15",
+                {"hostname": hostname},
+            ).result_set
+        else:
+            host_rows = c.query(
+                "MATCH (h:Host) "
+                "RETURN h.hostname, h.os, h.kernel, h.uptime_seconds, "
+                "       h.cpu_count, h.cpu_usage_pct, h.memory_total_mb, "
+                "       h.memory_used_mb, h.load_1, h.load_5, h.load_15 "
+                "ORDER BY h.hostname"
+            ).result_set
+
+        if not host_rows:
+            target = f"'{hostname}'" if hostname else "any"
+            return (
+                f"No Host nodes found for {target}. "
+                f"Run the host ingestor to populate host data first."
+            )
+
+        lines: list[str] = []
+        for row in host_rows:
+            (h_name, os_name, kernel, uptime_s,
+             cpu_count, cpu_pct, mem_total, mem_used,
+             load1, load5, load15) = row
+
+            # Uptime formatting
+            uptime_str = "unknown"
+            if uptime_s is not None:
+                days = int(uptime_s) // 86400
+                hours = (int(uptime_s) % 86400) // 3600
+                uptime_str = f"{days}d {hours}h"
+
+            # Memory percentage
+            mem_pct = (
+                f"{(mem_used / mem_total * 100):.1f}%"
+                if mem_total and mem_used
+                else "N/A"
+            )
+
+            lines.append(f"Host: {h_name}")
+            lines.append(f"  OS:           {os_name or 'unknown'}")
+            lines.append(f"  Kernel:       {kernel or 'unknown'}")
+            lines.append(f"  Uptime:       {uptime_str}")
+            lines.append(f"  CPU:          {cpu_count or '?'} cores, {cpu_pct or '?'}% used")
+            lines.append(
+                f"  Memory:       {mem_used or '?'}/{mem_total or '?'} MB ({mem_pct})"
+            )
+            lines.append(f"  Load avg:     {load1 or '?'} / {load5 or '?'} / {load15 or '?'}")
+            lines.append("")
+
+            # Disk usage per mount
+            disk_rows = c.query(
+                "MATCH (h:Host {hostname: $hostname})-[:HAS_DISK]->(d:HostDisk) "
+                "RETURN d.mount_point, d.device, d.total_mb, d.used_mb, d.usage_pct "
+                "ORDER BY d.usage_pct DESC",
+                {"hostname": h_name},
+            ).result_set
+            if disk_rows:
+                lines.append("  Disks:")
+                for mount, dev, total, used, pct in disk_rows:
+                    warn = " ⚠" if pct is not None and pct > 90 else ""
+                    lines.append(
+                        f"    {mount:<20} {used or '?'}/{total or '?'} MB "
+                        f"({pct or '?'}% used){warn}"
+                    )
+            else:
+                lines.append("  Disks: (none in graph)")
+            lines.append("")
+
+            # Failed systemd units
+            failed_rows = c.query(
+                "MATCH (h:Host {hostname: $hostname})-[:RUNS_UNIT]->(u:SystemdUnit) "
+                "WHERE u.active_state = 'failed' "
+                "RETURN u.name, u.sub_state, u.description "
+                "ORDER BY u.name",
+                {"hostname": h_name},
+            ).result_set
+            if failed_rows:
+                lines.append(f"  Failed systemd units ({len(failed_rows)}):")
+                for unit_name, sub, desc in failed_rows:
+                    lines.append(f"    ✗ {unit_name}  ({sub or 'failed'})")
+                    if desc:
+                        lines.append(f"      {desc}")
+            else:
+                lines.append("  Failed systemd units: none")
+            lines.append("")
+
+            # Top 10 processes by memory
+            proc_rows = c.query(
+                "MATCH (h:Host {hostname: $hostname})-[:RUNS_PROCESS]->(p:HostProcess) "
+                "RETURN p.pid, p.name, p.memory_mb, p.cpu_pct, p.user "
+                "ORDER BY p.memory_mb DESC LIMIT 10",
+                {"hostname": h_name},
+            ).result_set
+            if proc_rows:
+                lines.append("  Top 10 processes by memory:")
+                for pid, pname, mem_mb, proc_cpu, user in proc_rows:
+                    lines.append(
+                        f"    PID {pid or '?':>6}  {pname or '?':<25} "
+                        f"{mem_mb or 0:.0f} MB  {proc_cpu or 0:.1f}% CPU  ({user or '?'})"
+                    )
+            else:
+                lines.append("  Top processes: (none in graph)")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _tool_host_story(
+        self,
+        hostname: str | None,
+        since_minutes: int | None,
+        min_severity: str,
+        limit: int,
+    ) -> str:
+        """MTTR tool for hosts: summarize HostLogEvent and KernelEvent nodes.
+
+        Same pattern as pod_story but for host-level events. Queries the
+        default graph (self.client), not the K8s cluster graph.
+        """
+        c = self.client
+
+        sev_rank = {"INFO": 0, "WARN": 1, "ERROR": 2, "FATAL": 3}
+        min_rank = sev_rank.get(min_severity.upper(), 1)
+        allowed = [s for s, r in sev_rank.items() if r >= min_rank]
+
+        # --- HostLogEvent query ---
+        log_where = ["e.severity IN $allowed"]
+        params: dict = {"allowed": allowed, "limit": limit}
+        if hostname:
+            log_where.append("e.hostname = $hostname")
+            params["hostname"] = hostname
+        if since_minutes and since_minutes > 0:
+            import time as _t
+            params["since"] = _t.time() - (since_minutes * 60)
+            log_where.append("e.last_seen >= $since")
+
+        log_cy = (
+            "MATCH (e:HostLogEvent) WHERE " + " AND ".join(log_where) + " "
+            "RETURN e.hostname, e.source, e.severity, e.count, "
+            "       e.template_text, e.example_lines, "
+            "       e.first_seen, e.last_seen "
+            "ORDER BY CASE e.severity "
+            "           WHEN 'FATAL' THEN 3 "
+            "           WHEN 'ERROR' THEN 2 "
+            "           WHEN 'WARN' THEN 1 "
+            "           ELSE 0 END DESC, e.count DESC "
+            "LIMIT $limit"
+        )
+        log_rows = c.query(log_cy, params).result_set
+
+        # --- KernelEvent query ---
+        kern_where = ["k.severity IN $allowed"]
+        kern_params: dict = {"allowed": allowed, "limit": limit}
+        if hostname:
+            kern_where.append("k.hostname = $hostname")
+            kern_params["hostname"] = hostname
+        if since_minutes and since_minutes > 0:
+            import time as _t2
+            kern_params["since"] = _t2.time() - (since_minutes * 60)
+            kern_where.append("k.last_seen >= $since")
+
+        kern_cy = (
+            "MATCH (k:KernelEvent) WHERE " + " AND ".join(kern_where) + " "
+            "RETURN k.hostname, k.facility, k.severity, k.count, "
+            "       k.template_text, k.example_lines, "
+            "       k.first_seen, k.last_seen "
+            "ORDER BY CASE k.severity "
+            "           WHEN 'FATAL' THEN 3 "
+            "           WHEN 'ERROR' THEN 2 "
+            "           WHEN 'WARN' THEN 1 "
+            "           ELSE 0 END DESC, k.count DESC "
+            "LIMIT $limit"
+        )
+        kern_rows = c.query(kern_cy, kern_params).result_set
+
+        # --- Histogram ---
+        hist_params = {k: v for k, v in params.items() if k != "limit"}
+        log_hist = c.query(
+            "MATCH (e:HostLogEvent) WHERE " + " AND ".join(log_where) + " "
+            "RETURN e.severity, count(e), sum(e.count), count(DISTINCT e.hostname)",
+            hist_params,
+        ).result_set
+        kern_hist_params = {k: v for k, v in kern_params.items() if k != "limit"}
+        kern_hist = c.query(
+            "MATCH (k:KernelEvent) WHERE " + " AND ".join(kern_where) + " "
+            "RETURN k.severity, count(k), sum(k.count), count(DISTINCT k.hostname)",
+            kern_hist_params,
+        ).result_set
+
+        # --- Build output ---
+        scope = []
+        if hostname:
+            scope.append(f"host={hostname}")
+        if since_minutes:
+            scope.append(f"last {since_minutes}m")
+        scope_str = ", ".join(scope) if scope else "all hosts"
+
+        lines: list[str] = []
+        lines.append(f"# Host story ({scope_str})")
+        lines.append("")
+
+        if not log_rows and not kern_rows:
+            lines.append(
+                "No significant host events found. Either the host log watcher "
+                "isn't running, the filters excluded everything, or the host "
+                "is actually healthy."
+            )
+            return "\n".join(lines)
+
+        # Summary from histograms
+        total_templates = sum(int(r[1]) for r in log_hist) + sum(int(r[1]) for r in kern_hist)
+        total_occurrences = (
+            sum(int(r[2] or 0) for r in log_hist)
+            + sum(int(r[2] or 0) for r in kern_hist)
+        )
+        total_hosts = max(
+            max((int(r[3]) for r in log_hist), default=0),
+            max((int(r[3]) for r in kern_hist), default=0),
+        )
+        lines.append(
+            f"**Summary:** {total_templates} distinct templates, "
+            f"{total_occurrences} total occurrences, across "
+            f"{total_hosts} host(s)"
+        )
+
+        # Merged severity histogram
+        sev_counts: dict[str, int] = {}
+        for row in log_hist:
+            sev_counts[row[0]] = sev_counts.get(row[0], 0) + int(row[1])
+        for row in kern_hist:
+            sev_counts[row[0]] = sev_counts.get(row[0], 0) + int(row[1])
+        hist_str = ", ".join(
+            f"{s}={c}" for s, c in sorted(sev_counts.items(), key=lambda x: -x[1])
+        )
+        lines.append(f"**Severity:** {hist_str}")
+        lines.append("")
+
+        # --- HostLogEvent details ---
+        import time as _now_mod
+        import datetime as _dt
+
+        if log_rows:
+            lines.append(f"## Host log events (top {len(log_rows)})")
+            lines.append("")
+            for i, row in enumerate(log_rows, 1):
+                h_name, source, sev, cnt, tmpl, examples, first_seen, last_seen = row
+                lines.append(
+                    f"### {i}. [{sev}] {h_name} ({source or 'unknown'}) "
+                    f"— {int(cnt)} occurrences"
+                )
+                if tmpl:
+                    lines.append(f"Template: `{tmpl[:200]}`")
+                if examples:
+                    lines.append("Example:")
+                    lines.append(f"    {examples[0][:250]}")
+                if last_seen:
+                    try:
+                        ts = _dt.datetime.fromtimestamp(float(last_seen)).isoformat(
+                            timespec="seconds"
+                        )
+                        lines.append(f"Last seen: {ts}")
+                    except Exception:
+                        pass
+                lines.append("")
+
+        # --- KernelEvent details ---
+        if kern_rows:
+            lines.append(f"## Kernel events (top {len(kern_rows)})")
+            lines.append("")
+            for i, row in enumerate(kern_rows, 1):
+                h_name, facility, sev, cnt, tmpl, examples, first_seen, last_seen = row
+                lines.append(
+                    f"### {i}. [{sev}] {h_name} (kern/{facility or 'unknown'}) "
+                    f"— {int(cnt)} occurrences"
+                )
+                if tmpl:
+                    lines.append(f"Template: `{tmpl[:200]}`")
+                if examples:
+                    lines.append("Example:")
+                    lines.append(f"    {examples[0][:250]}")
+                if last_seen:
+                    try:
+                        ts = _dt.datetime.fromtimestamp(float(last_seen)).isoformat(
+                            timespec="seconds"
+                        )
+                        lines.append(f"Last seen: {ts}")
+                    except Exception:
+                        pass
+                lines.append("")
 
         return "\n".join(lines)
 
