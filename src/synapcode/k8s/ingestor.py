@@ -62,19 +62,30 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class DiffCounts:
+    added: int = 0
+    updated: int = 0
+    unchanged: int = 0
+    deleted: int = 0
+
+    def __str__(self) -> str:
+        return (
+            f"+{self.added} ~{self.updated} ={self.unchanged} -{self.deleted}"
+        )
+
+
+@dataclass
 class IngestStats:
     """Per-run stats for a cluster ingest. Returned from snapshot()."""
 
     cluster: str = ""
     elapsed_seconds: float = 0.0
-    namespaces: int = 0
-    deployments: int = 0
-    statefulsets: int = 0
-    daemonsets: int = 0
-    pods: int = 0
-    services: int = 0
-    configmaps: int = 0
-    secrets: int = 0
+    namespaces: DiffCounts = field(default_factory=DiffCounts)
+    deployments: DiffCounts = field(default_factory=DiffCounts)
+    pods: DiffCounts = field(default_factory=DiffCounts)
+    services: DiffCounts = field(default_factory=DiffCounts)
+    configmaps: DiffCounts = field(default_factory=DiffCounts)
+    secrets: DiffCounts = field(default_factory=DiffCounts)
     edges_created: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -82,7 +93,7 @@ class IngestStats:
         lines = [
             f"K8s ingest complete for cluster '{self.cluster}' in {self.elapsed_seconds:.1f}s",
             f"  Namespaces:   {self.namespaces}",
-            f"  Deployments:  {self.deployments} (+{self.statefulsets} StatefulSets, +{self.daemonsets} DaemonSets)",
+            f"  Deployments:  {self.deployments}",
             f"  Pods:         {self.pods}",
             f"  Services:     {self.services}",
             f"  ConfigMaps:   {self.configmaps}",
@@ -145,17 +156,64 @@ class K8sIngestor:
         }
         return self._k8s_client
 
-    def snapshot(self) -> IngestStats:
-        """Take a one-shot snapshot of the cluster and write it to the graph.
+    def _current_rv_map(self, label: str) -> dict[tuple, str]:
+        """Return {(name, namespace): resource_version} for a K8s label in graph.
 
-        This is idempotent — running it multiple times will MERGE nodes,
-        so repeated runs update the graph in place. Used for manual
-        refreshes and as the initial load before watch mode.
+        Cluster node is matched implicitly via the node's `cluster` property.
+        """
+        cypher = (
+            f"MATCH (x:{label} {{cluster: $cluster}}) "
+            "RETURN x.name, x.namespace, x.resource_version"
+        )
+        result = self.client.query(cypher, {"cluster": self.cluster_name})
+        rows = getattr(result, "result_set", None) or []
+        out: dict[tuple, str] = {}
+        for row in rows:
+            name, ns, rv = row[0], row[1] if len(row) > 1 else "", row[2] if len(row) > 2 else ""
+            out[(name, ns or "")] = rv or ""
+        return out
+
+    def _delete_one(self, label: str, name: str, namespace: str = "") -> None:
+        self.client.query(
+            f"MATCH (x:{label} {{name: $name, namespace: $ns, cluster: $cluster}}) "
+            "DETACH DELETE x",
+            {"name": name, "ns": namespace or "", "cluster": self.cluster_name},
+        )
+
+    def _delete_stale(self, label: str, keys: set[tuple]) -> int:
+        n = 0
+        for name, ns in keys:
+            self.client.query(
+                f"MATCH (x:{label} {{name: $name, namespace: $ns, cluster: $cluster}}) "
+                "DETACH DELETE x",
+                {"name": name, "ns": ns, "cluster": self.cluster_name},
+            )
+            n += 1
+        return n
+
+    def snapshot(self) -> IngestStats:
+        """Take a diff-based snapshot of the cluster and apply the delta.
+
+        Uses K8s `metadata.resource_version` to detect changes: unchanged
+        resources are skipped entirely, changed resources are re-merged,
+        and resources that disappeared from the cluster are deleted from
+        the graph. First run is equivalent to a full load.
         """
         t0 = time.time()
         stats = IngestStats(cluster=self.cluster_name)
 
         k8s = self._load_k8s_client()
+
+        # Snapshot existing graph state per resource type
+        existing = {
+            "K8sNamespace": self._current_rv_map("K8sNamespace"),
+            "K8sDeployment": self._current_rv_map("K8sDeployment"),
+            "K8sPod": self._current_rv_map("K8sPod"),
+            "K8sService": self._current_rv_map("K8sService"),
+            "K8sConfigMap": self._current_rv_map("K8sConfigMap"),
+            "K8sSecret": self._current_rv_map("K8sSecret"),
+        }
+        seen = {k: set() for k in existing}
 
         # 1. Cluster node (top-level scope)
         try:
@@ -181,6 +239,18 @@ class K8sIngestor:
 
         for ns in ns_list:
             meta = ns.metadata
+            key = (meta.name, "")
+            seen["K8sNamespace"].add(key)
+            rv = meta.resource_version or ""
+            prev = existing["K8sNamespace"].get(key)
+            if prev is None:
+                stats.namespaces.added += 1
+            elif prev == rv:
+                stats.namespaces.unchanged += 1
+                continue
+            else:
+                stats.namespaces.updated += 1
+
             status = ns.status.phase if ns.status else "Unknown"
             age = self._age_seconds(meta.creation_timestamp)
             ns_node = K8sNamespaceNode(
@@ -188,16 +258,15 @@ class K8sIngestor:
                 cluster=self.cluster_name,
                 status=status,
                 age_seconds=age,
+                resource_version=rv,
             )
             self._merge(create_k8s_namespace_query(ns_node))
-            # Edge: K8sCluster CONTAINS K8sNamespace
             self.client.query(
                 "MATCH (c:K8sCluster {name: $cluster}) "
                 "MATCH (n:K8sNamespace {name: $ns, cluster: $cluster}) "
                 "MERGE (c)-[:CONTAINS]->(n)",
                 {"cluster": self.cluster_name, "ns": meta.name},
             )
-            stats.namespaces += 1
             stats.edges_created += 1
 
         # 3. Deployments (and StatefulSets, DaemonSets — same node type)
@@ -207,29 +276,37 @@ class K8sIngestor:
             stats.errors.append(f"list_deployments: {e}")
             deploy_list = []
 
+        def _diff_deploy(obj, kind):
+            meta = obj.metadata
+            key = (meta.name, meta.namespace or "")
+            seen["K8sDeployment"].add(key)
+            rv = meta.resource_version or ""
+            prev = existing["K8sDeployment"].get(key)
+            if prev is None:
+                stats.deployments.added += 1
+            elif prev == rv:
+                stats.deployments.unchanged += 1
+                return
+            else:
+                stats.deployments.updated += 1
+            self._ingest_deployment(obj, kind=kind, rv=rv)
+            stats.edges_created += 1
+
         for d in deploy_list:
             try:
-                self._ingest_deployment(d, kind="Deployment")
-                stats.deployments += 1
-                stats.edges_created += 1  # CONTAINS edge from namespace
+                _diff_deploy(d, "Deployment")
             except Exception as e:
                 stats.errors.append(f"deployment {d.metadata.name}: {e}")
 
         try:
-            sts_list = k8s["apps"].list_stateful_set_for_all_namespaces().items
-            for s in sts_list:
-                self._ingest_deployment(s, kind="StatefulSet")
-                stats.statefulsets += 1
-                stats.edges_created += 1
+            for s in k8s["apps"].list_stateful_set_for_all_namespaces().items:
+                _diff_deploy(s, "StatefulSet")
         except Exception as e:
             stats.errors.append(f"list_stateful_sets: {e}")
 
         try:
-            ds_list = k8s["apps"].list_daemon_set_for_all_namespaces().items
-            for d in ds_list:
-                self._ingest_deployment(d, kind="DaemonSet")
-                stats.daemonsets += 1
-                stats.edges_created += 1
+            for d in k8s["apps"].list_daemon_set_for_all_namespaces().items:
+                _diff_deploy(d, "DaemonSet")
         except Exception as e:
             stats.errors.append(f"list_daemon_sets: {e}")
 
@@ -242,10 +319,20 @@ class K8sIngestor:
 
         for p in pod_list:
             try:
-                self._ingest_pod(p)
-                stats.pods += 1
-                # edges: namespace CONTAINS pod, owner RUNS pod, pod READS configmap/secret
-                stats.edges_created += 1  # CONTAINS (+ ownership counted inside)
+                meta = p.metadata
+                key = (meta.name, meta.namespace or "")
+                seen["K8sPod"].add(key)
+                rv = meta.resource_version or ""
+                prev = existing["K8sPod"].get(key)
+                if prev is None:
+                    stats.pods.added += 1
+                elif prev == rv:
+                    stats.pods.unchanged += 1
+                    continue
+                else:
+                    stats.pods.updated += 1
+                self._ingest_pod(p, rv=rv)
+                stats.edges_created += 1
             except Exception as e:
                 stats.errors.append(f"pod {p.metadata.name}: {e}")
 
@@ -258,8 +345,19 @@ class K8sIngestor:
 
         for svc in svc_list:
             try:
-                self._ingest_service(svc)
-                stats.services += 1
+                meta = svc.metadata
+                key = (meta.name, meta.namespace or "")
+                seen["K8sService"].add(key)
+                rv = meta.resource_version or ""
+                prev = existing["K8sService"].get(key)
+                if prev is None:
+                    stats.services.added += 1
+                elif prev == rv:
+                    stats.services.unchanged += 1
+                    continue
+                else:
+                    stats.services.updated += 1
+                self._ingest_service(svc, rv=rv)
                 stats.edges_created += 1
             except Exception as e:
                 stats.errors.append(f"service {svc.metadata.name}: {e}")
@@ -273,8 +371,19 @@ class K8sIngestor:
 
         for cm in cm_list:
             try:
-                self._ingest_configmap(cm)
-                stats.configmaps += 1
+                meta = cm.metadata
+                key = (meta.name, meta.namespace or "")
+                seen["K8sConfigMap"].add(key)
+                rv = meta.resource_version or ""
+                prev = existing["K8sConfigMap"].get(key)
+                if prev is None:
+                    stats.configmaps.added += 1
+                elif prev == rv:
+                    stats.configmaps.unchanged += 1
+                    continue
+                else:
+                    stats.configmaps.updated += 1
+                self._ingest_configmap(cm, rv=rv)
                 stats.edges_created += 1
             except Exception as e:
                 stats.errors.append(f"configmap {cm.metadata.name}: {e}")
@@ -288,11 +397,35 @@ class K8sIngestor:
 
         for sec in sec_list:
             try:
-                self._ingest_secret(sec)
-                stats.secrets += 1
+                meta = sec.metadata
+                key = (meta.name, meta.namespace or "")
+                seen["K8sSecret"].add(key)
+                rv = meta.resource_version or ""
+                prev = existing["K8sSecret"].get(key)
+                if prev is None:
+                    stats.secrets.added += 1
+                elif prev == rv:
+                    stats.secrets.unchanged += 1
+                    continue
+                else:
+                    stats.secrets.updated += 1
+                self._ingest_secret(sec, rv=rv)
                 stats.edges_created += 1
             except Exception as e:
                 stats.errors.append(f"secret {sec.metadata.name}: {e}")
+
+        # 8. Delete stale nodes (in graph but gone from cluster)
+        label_to_counts = {
+            "K8sNamespace": stats.namespaces,
+            "K8sDeployment": stats.deployments,
+            "K8sPod": stats.pods,
+            "K8sService": stats.services,
+            "K8sConfigMap": stats.configmaps,
+            "K8sSecret": stats.secrets,
+        }
+        for label, counts in label_to_counts.items():
+            stale = set(existing[label].keys()) - seen[label]
+            counts.deleted = self._delete_stale(label, stale)
 
         stats.elapsed_seconds = time.time() - t0
         logger.info(stats.summary())
@@ -302,7 +435,7 @@ class K8sIngestor:
     # Per-resource ingest helpers
     # ------------------------------------------------------------------
 
-    def _ingest_deployment(self, d: Any, kind: str) -> None:
+    def _ingest_deployment(self, d: Any, kind: str, rv: str = "") -> None:
         meta = d.metadata
         spec = d.spec
         status = d.status or None
@@ -330,6 +463,7 @@ class K8sIngestor:
             ) if status else 0,
             image=image,
             labels=labels,
+            resource_version=rv,
         )
         self._merge(create_k8s_deployment_query(node))
 
@@ -341,7 +475,7 @@ class K8sIngestor:
             {"ns": meta.namespace, "name": meta.name, "cluster": self.cluster_name},
         )
 
-    def _ingest_pod(self, p: Any) -> None:
+    def _ingest_pod(self, p: Any, rv: str = "") -> None:
         meta = p.metadata
         spec = p.spec
         status = p.status
@@ -397,6 +531,7 @@ class K8sIngestor:
             image=image,
             owner_kind=owner_kind,
             owner_name=owner_name,
+            resource_version=rv,
         )
         self._merge(create_k8s_pod_query(node))
 
@@ -479,7 +614,7 @@ class K8sIngestor:
                 },
             )
 
-    def _ingest_service(self, svc: Any) -> None:
+    def _ingest_service(self, svc: Any, rv: str = "") -> None:
         meta = svc.metadata
         spec = svc.spec
 
@@ -499,6 +634,7 @@ class K8sIngestor:
             cluster_ip=spec.cluster_ip or "",
             ports=ports,
             selector=selector,
+            resource_version=rv,
         )
         self._merge(create_k8s_service_query(node))
 
@@ -510,7 +646,7 @@ class K8sIngestor:
             {"ns": meta.namespace, "name": meta.name, "cluster": self.cluster_name},
         )
 
-    def _ingest_configmap(self, cm: Any) -> None:
+    def _ingest_configmap(self, cm: Any, rv: str = "") -> None:
         meta = cm.metadata
         keys = list(cm.data.keys()) if cm.data else []
 
@@ -519,6 +655,7 @@ class K8sIngestor:
             namespace=meta.namespace,
             cluster=self.cluster_name,
             key_names=keys,
+            resource_version=rv,
         )
         self._merge(create_k8s_configmap_query(node))
 
@@ -529,7 +666,7 @@ class K8sIngestor:
             {"ns": meta.namespace, "name": meta.name, "cluster": self.cluster_name},
         )
 
-    def _ingest_secret(self, sec: Any) -> None:
+    def _ingest_secret(self, sec: Any, rv: str = "") -> None:
         meta = sec.metadata
         keys = list(sec.data.keys()) if sec.data else []
 
@@ -539,6 +676,7 @@ class K8sIngestor:
             cluster=self.cluster_name,
             type=sec.type or "Opaque",
             key_names=keys,  # key names only, NEVER values
+            resource_version=rv,
         )
         self._merge(create_k8s_secret_query(node))
 

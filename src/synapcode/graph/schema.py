@@ -65,6 +65,13 @@ SCHEMA_INDICES = [
     "CREATE INDEX FOR (s:K8sService) ON (s.name)",
     "CREATE INDEX FOR (cm:K8sConfigMap) ON (cm.name)",
     "CREATE INDEX FOR (sec:K8sSecret) ON (sec.name)",
+    # Log intelligence layer
+    "CREATE INDEX FOR (e:LogEvent) ON (e.template_hash)",
+    "CREATE INDEX FOR (e:LogEvent) ON (e.pod)",
+    "CREATE INDEX FOR (e:LogEvent) ON (e.namespace)",
+    "CREATE INDEX FOR (e:LogEvent) ON (e.cluster)",
+    "CREATE INDEX FOR (e:LogEvent) ON (e.severity)",
+    "CREATE INDEX FOR (e:LogEvent) ON (e.last_seen)",
 ]
 
 
@@ -140,6 +147,7 @@ class K8sNamespaceNode:
     cluster: str
     status: str = "Active"  # Active, Terminating
     age_seconds: int = 0
+    resource_version: str = ""  # etcd ModRevision, used for diff-based ingest
 
 
 @dataclass
@@ -159,6 +167,7 @@ class K8sDeploymentNode:
     replicas_available: int = 0
     image: str = ""  # primary container image
     labels: list[str] = field(default_factory=list)  # flattened key=value
+    resource_version: str = ""
 
 
 @dataclass
@@ -178,6 +187,7 @@ class K8sPodNode:
     image: str = ""
     owner_kind: str = ""  # ReplicaSet, StatefulSet, DaemonSet, etc.
     owner_name: str = ""
+    resource_version: str = ""
 
 
 @dataclass
@@ -194,6 +204,7 @@ class K8sServiceNode:
     cluster_ip: str = ""
     ports: list[str] = field(default_factory=list)  # "80/TCP", "443/TCP"
     selector: list[str] = field(default_factory=list)  # flattened key=value
+    resource_version: str = ""
 
 
 @dataclass
@@ -208,6 +219,7 @@ class K8sConfigMapNode:
     namespace: str
     cluster: str
     key_names: list[str] = field(default_factory=list)  # just the keys, no values
+    resource_version: str = ""
 
 
 @dataclass
@@ -224,6 +236,32 @@ class K8sSecretNode:
     cluster: str
     type: str = "Opaque"  # Opaque | kubernetes.io/tls | kubernetes.io/dockerconfigjson
     key_names: list[str] = field(default_factory=list)  # just the keys
+    resource_version: str = ""
+
+
+@dataclass
+class LogEventNode:
+    """A deduplicated, significant log event derived from a pod's stdout/stderr.
+
+    One LogEventNode represents *one template* (via drain3) emitted by one pod,
+    aggregated across all occurrences. Repeated occurrences update `count`,
+    `last_seen`, and rotate into `example_lines` (capped). This keeps the graph
+    small (~1 node per distinct pattern per pod) while preserving enough raw
+    text for LLM narration and human inspection.
+
+    Stable ID format: LogEvent:{cluster}/{namespace}/{pod}/{template_hash}
+    """
+
+    template_hash: str  # drain3 cluster id, stable within a pod's lifetime
+    pod: str
+    namespace: str
+    cluster: str
+    severity: str = "INFO"  # INFO | WARN | ERROR | FATAL
+    template_text: str = ""  # drain3 parameterized template, e.g. "user <*> failed <*>"
+    first_seen: float = 0.0  # unix ts
+    last_seen: float = 0.0  # unix ts
+    count: int = 0  # total occurrences seen
+    example_lines: list[str] = field(default_factory=list)  # capped sample, last N
 
 
 @dataclass
@@ -352,12 +390,14 @@ def create_k8s_cluster_query(node: K8sClusterNode) -> tuple[str, dict]:
 def create_k8s_namespace_query(node: K8sNamespaceNode) -> tuple[str, dict]:
     return (
         "MERGE (n:K8sNamespace {name: $name, cluster: $cluster}) "
-        "SET n.status = $status, n.age_seconds = $age_seconds",
+        "SET n.status = $status, n.age_seconds = $age_seconds, "
+        "n.resource_version = $rv",
         {
             "name": node.name,
             "cluster": node.cluster,
             "status": node.status,
             "age_seconds": node.age_seconds,
+            "rv": node.resource_version,
         },
     )
 
@@ -366,7 +406,8 @@ def create_k8s_deployment_query(node: K8sDeploymentNode) -> tuple[str, dict]:
     return (
         "MERGE (d:K8sDeployment {name: $name, namespace: $namespace, cluster: $cluster}) "
         "SET d.kind = $kind, d.replicas_desired = $rd, d.replicas_ready = $rr, "
-        "d.replicas_available = $ra, d.image = $image, d.labels = $labels",
+        "d.replicas_available = $ra, d.image = $image, d.labels = $labels, "
+        "d.resource_version = $rv",
         {
             "name": node.name,
             "namespace": node.namespace,
@@ -377,6 +418,7 @@ def create_k8s_deployment_query(node: K8sDeploymentNode) -> tuple[str, dict]:
             "ra": node.replicas_available,
             "image": node.image,
             "labels": node.labels,
+            "rv": node.resource_version,
         },
     )
 
@@ -386,7 +428,8 @@ def create_k8s_pod_query(node: K8sPodNode) -> tuple[str, dict]:
         "MERGE (p:K8sPod {name: $name, namespace: $namespace, cluster: $cluster}) "
         "SET p.status = $status, p.node_name = $node_name, "
         "p.restart_count = $rc, p.ready = $ready, p.image = $image, "
-        "p.owner_kind = $owner_kind, p.owner_name = $owner_name",
+        "p.owner_kind = $owner_kind, p.owner_name = $owner_name, "
+        "p.resource_version = $rv",
         {
             "name": node.name,
             "namespace": node.namespace,
@@ -398,6 +441,7 @@ def create_k8s_pod_query(node: K8sPodNode) -> tuple[str, dict]:
             "image": node.image,
             "owner_kind": node.owner_kind,
             "owner_name": node.owner_name,
+            "rv": node.resource_version,
         },
     )
 
@@ -406,7 +450,7 @@ def create_k8s_service_query(node: K8sServiceNode) -> tuple[str, dict]:
     return (
         "MERGE (s:K8sService {name: $name, namespace: $namespace, cluster: $cluster}) "
         "SET s.type = $type, s.cluster_ip = $cluster_ip, "
-        "s.ports = $ports, s.selector = $selector",
+        "s.ports = $ports, s.selector = $selector, s.resource_version = $rv",
         {
             "name": node.name,
             "namespace": node.namespace,
@@ -415,6 +459,7 @@ def create_k8s_service_query(node: K8sServiceNode) -> tuple[str, dict]:
             "cluster_ip": node.cluster_ip,
             "ports": node.ports,
             "selector": node.selector,
+            "rv": node.resource_version,
         },
     )
 
@@ -422,12 +467,13 @@ def create_k8s_service_query(node: K8sServiceNode) -> tuple[str, dict]:
 def create_k8s_configmap_query(node: K8sConfigMapNode) -> tuple[str, dict]:
     return (
         "MERGE (cm:K8sConfigMap {name: $name, namespace: $namespace, cluster: $cluster}) "
-        "SET cm.key_names = $keys",
+        "SET cm.key_names = $keys, cm.resource_version = $rv",
         {
             "name": node.name,
             "namespace": node.namespace,
             "cluster": node.cluster,
             "keys": node.key_names,
+            "rv": node.resource_version,
         },
     )
 
@@ -435,13 +481,45 @@ def create_k8s_configmap_query(node: K8sConfigMapNode) -> tuple[str, dict]:
 def create_k8s_secret_query(node: K8sSecretNode) -> tuple[str, dict]:
     return (
         "MERGE (sec:K8sSecret {name: $name, namespace: $namespace, cluster: $cluster}) "
-        "SET sec.type = $type, sec.key_names = $keys",
+        "SET sec.type = $type, sec.key_names = $keys, sec.resource_version = $rv",
         {
             "name": node.name,
             "namespace": node.namespace,
             "cluster": node.cluster,
             "type": node.type,
             "keys": node.key_names,
+            "rv": node.resource_version,
+        },
+    )
+
+
+def create_log_event_query(node: LogEventNode) -> tuple[str, dict]:
+    """MERGE a LogEvent by (cluster, namespace, pod, template_hash).
+
+    Repeated occurrences update `count`, `last_seen`, and `example_lines`
+    without creating duplicate nodes. The caller is expected to pass the
+    *cumulative* count and the *refreshed* example_lines list (drain3
+    mining state lives in the ingestor, not the graph).
+    """
+    return (
+        "MERGE (e:LogEvent {cluster: $cluster, namespace: $namespace, "
+        "pod: $pod, template_hash: $th}) "
+        "SET e.severity = $severity, e.template_text = $template_text, "
+        "e.last_seen = $last_seen, e.count = $count, "
+        "e.example_lines = $example_lines, "
+        "e.first_seen = CASE WHEN e.first_seen IS NULL OR e.first_seen = 0 "
+        "                    THEN $first_seen ELSE e.first_seen END",
+        {
+            "cluster": node.cluster,
+            "namespace": node.namespace,
+            "pod": node.pod,
+            "th": node.template_hash,
+            "severity": node.severity,
+            "template_text": node.template_text,
+            "first_seen": node.first_seen,
+            "last_seen": node.last_seen,
+            "count": node.count,
+            "example_lines": node.example_lines,
         },
     )
 

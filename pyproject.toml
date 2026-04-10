@@ -24,6 +24,7 @@ dependencies = [
     "cryptography>=43.0.0",
     "click>=8.1.0",
     "kubernetes>=32.0.0",
+    "drain3>=0.9.11",
 ]
 
 [project.scripts]

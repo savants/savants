@@ -515,6 +515,125 @@ def gc(repo_path: str):
 
 
 @cli.group()
+def k8s():
+    """Ingest a Kubernetes cluster into the graph (runtime layer)."""
+
+
+@k8s.command("snapshot")
+@click.argument("cluster")
+@click.option("--context", help="kubeconfig context name (defaults to current)")
+@click.option("--kubeconfig", help="Path to kubeconfig (defaults to $KUBECONFIG or ~/.kube/config)")
+def k8s_snapshot(cluster: str, context: str | None, kubeconfig: str | None):
+    """One-shot snapshot of a live cluster into its graph.
+
+    Use this for the initial load or a manual refresh. For live watching,
+    use `synapcode k8s watch` instead.
+    """
+    from synapcode.config import FalkorDBConfig
+    from synapcode.graph.client import GraphClient
+    from synapcode.k8s.ingestor import K8sIngestor
+
+    graph_name = cluster.replace("-", "_")
+    client = GraphClient(FalkorDBConfig(graph_name=graph_name))
+    ingestor = K8sIngestor(
+        graph_client=client,
+        cluster_name=cluster,
+        kube_context=context,
+        kubeconfig_path=kubeconfig,
+    )
+    stats = ingestor.snapshot()
+    click.echo(stats.summary())
+
+
+@k8s.command("watch")
+@click.argument("cluster")
+@click.option("--context", help="kubeconfig context name (defaults to current)")
+@click.option("--kubeconfig", help="Path to kubeconfig")
+@click.option("--logs/--no-logs", default=True, help="Enable log intelligence layer")
+@click.option("--tail-lines", default=0, type=int,
+              help="Replay N lines of history per pod on subscribe (0 = live only)")
+@click.option("--retention-hours", default=24, type=int,
+              help="How long to keep LogEvent nodes before pruning")
+@click.option("--rate-limit", default=1000, type=int,
+              help="Max log lines per second per pod (prevents misbehaving pods from flooding)")
+def k8s_watch(
+    cluster: str,
+    context: str | None,
+    kubeconfig: str | None,
+    logs: bool,
+    tail_lines: int,
+    retention_hours: int,
+    rate_limit: int,
+):
+    """Run the live K8s watcher (+ optional log intelligence) forever.
+
+    Holds long-lived watch streams against the apiserver and, when
+    `--logs` is on, one streaming log tail per running pod. Writes
+    cluster state + LogEvent nodes to the per-cluster graph. Block
+    until SIGINT/SIGTERM.
+
+    Example:
+
+        synapcode k8s watch astra-k3s --tail-lines 500
+
+    To run as a daemon see `docs/k8s-watch-systemd.md`.
+    """
+    import logging
+    from synapcode.config import FalkorDBConfig
+    from synapcode.graph.client import GraphClient
+    from synapcode.k8s.ingestor import K8sIngestor
+    from synapcode.k8s.log_watcher import LogWatcher
+    from synapcode.k8s.watcher import K8sWatcher
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-5s %(name)s: %(message)s",
+    )
+
+    graph_name = cluster.replace("-", "_")
+    client = GraphClient(FalkorDBConfig(graph_name=graph_name))
+    ingestor = K8sIngestor(
+        graph_client=client,
+        cluster_name=cluster,
+        kube_context=context,
+        kubeconfig_path=kubeconfig,
+    )
+    # Run snapshot first so entity index + baseline state exist before
+    # the watch loops start; the watchers will then incrementally
+    # reconcile on top.
+    click.echo(f"[{cluster}] initial snapshot...")
+    snap_stats = ingestor.snapshot()
+    click.echo(snap_stats.summary())
+
+    log_watcher: LogWatcher | None = None
+    if logs:
+        ingestor._load_k8s_client()
+        core = ingestor._k8s_client["core"]
+        log_watcher = LogWatcher(
+            graph=client,
+            cluster=cluster,
+            core_api=core,
+            tail_lines=tail_lines,
+            rate_limit_per_sec=rate_limit,
+            retention_seconds=retention_hours * 3600,
+        )
+        click.echo(f"[{cluster}] log intelligence enabled (retention={retention_hours}h)")
+
+    watcher = K8sWatcher(ingestor, log_watcher=log_watcher)
+    click.echo(f"[{cluster}] starting watch loops (Ctrl-C to stop)...")
+    try:
+        watcher.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if log_watcher is not None:
+            log_watcher.flush_all()
+            log_watcher.stop()
+        watcher.stop()
+    click.echo(f"[{cluster}] shutdown complete")
+
+
+@cli.group()
 def snapshot():
     """Create or restore graph snapshots for team bootstrapping."""
 

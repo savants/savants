@@ -470,6 +470,49 @@ class SynapCodeMCPServer:
                 },
             },
             {
+                "name": "pod_story",
+                "description": (
+                    "THE MTTR KILLER TOOL: given a pod (or a whole cluster), "
+                    "return a narrative-ready summary of the significant log "
+                    "events it has emitted — deduplicated by drain3 template, "
+                    "ranked by severity and count, with up to 3 example lines "
+                    "per template. Answers 'what's wrong with this pod?' in "
+                    "one call by reading LogEvent nodes produced by the log "
+                    "watcher. If `pod` is omitted, returns the top events "
+                    "across the whole cluster. Use `since_minutes` to scope "
+                    "to a recent incident window."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cluster": {"type": "string"},
+                        "pod": {
+                            "type": "string",
+                            "description": "Pod name (optional — omit for cluster-wide view)",
+                        },
+                        "namespace": {"type": "string"},
+                        "since_minutes": {
+                            "type": "integer",
+                            "description": (
+                                "Only include events whose last_seen is within "
+                                "the last N minutes. Default: 60. Pass 0 to "
+                                "disable the time filter entirely (returns all "
+                                "retained events, useful for historical review)."
+                            ),
+                        },
+                        "min_severity": {
+                            "type": "string",
+                            "description": "INFO | WARN | ERROR | FATAL (default: WARN)",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max events to return (default: 15)",
+                        },
+                    },
+                    "required": ["cluster"],
+                },
+            },
+            {
                 "name": "federated_symbol_in_cluster",
                 "description": (
                     "THE KILLER FEDERATED QUERY: given a function/class/symbol "
@@ -652,6 +695,16 @@ class SynapCodeMCPServer:
             elif tool_name == "namespace_summary":
                 text = self._tool_namespace_summary(
                     args["cluster"], args["namespace"]
+                )
+
+            elif tool_name == "pod_story":
+                text = self._tool_pod_story(
+                    args["cluster"],
+                    args.get("pod"),
+                    args.get("namespace"),
+                    args.get("since_minutes", 60),
+                    args.get("min_severity", "WARN"),
+                    args.get("limit", 15),
                 )
 
             elif tool_name == "federated_symbol_in_cluster":
@@ -1330,6 +1383,171 @@ class SynapCodeMCPServer:
                 lines.append(f"  {health} [{d_kind:12}] {d_name}  ({rr}/{rd} ready)")
                 if img:
                     lines.append(f"      {img}")
+
+        return "\n".join(lines)
+
+    def _tool_pod_story(
+        self,
+        cluster: str,
+        pod: str | None,
+        namespace: str | None,
+        since_minutes: int | None,
+        min_severity: str,
+        limit: int,
+    ) -> str:
+        """MTTR tool: summarize significant LogEvents for a pod or whole cluster.
+
+        Reads from the log intelligence layer (LogEvent nodes + EMITTED
+        edges) populated by `synapcode.k8s.log_watcher.LogWatcher`. No
+        live K8s calls. No raw logs. Just the pre-digested story.
+        """
+        c = self._k8s_client(cluster)
+
+        sev_rank = {"INFO": 0, "WARN": 1, "ERROR": 2, "FATAL": 3}
+        min_rank = sev_rank.get(min_severity.upper(), 1)
+        allowed = [s for s, r in sev_rank.items() if r >= min_rank]
+
+        where = ["e.cluster = $cluster", "e.severity IN $allowed"]
+        params: dict = {"cluster": cluster, "allowed": allowed, "limit": limit}
+        if pod:
+            where.append("e.pod = $pod")
+            params["pod"] = pod
+        if namespace:
+            where.append("e.namespace = $ns")
+            params["ns"] = namespace
+        # since_minutes=0 is the explicit opt-out ("give me everything").
+        # None would mean "use the default" — but dispatch already applied
+        # the default before calling, so None here means no filter.
+        if since_minutes and since_minutes > 0:
+            import time as _t
+            params["since"] = _t.time() - (since_minutes * 60)
+            where.append("e.last_seen >= $since")
+
+        cy = (
+            "MATCH (e:LogEvent) WHERE " + " AND ".join(where) + " "
+            "RETURN e.pod, e.namespace, e.severity, e.count, "
+            "       e.template_text, e.example_lines, "
+            "       e.first_seen, e.last_seen, e.pod_deleted_at "
+            "ORDER BY CASE e.severity "
+            "           WHEN 'FATAL' THEN 3 "
+            "           WHEN 'ERROR' THEN 2 "
+            "           WHEN 'WARN' THEN 1 "
+            "           ELSE 0 END DESC, e.count DESC "
+            "LIMIT $limit"
+        )
+        rows = c.query(cy, params).result_set
+
+        # Header: totals + severity histogram + pod count
+        hist_cy = (
+            "MATCH (e:LogEvent) WHERE " + " AND ".join(where[:-0] if False else where) + " "
+            "RETURN e.severity, count(e), sum(e.count), count(DISTINCT e.pod)"
+        )
+        # Drop the limit from params for histogram
+        hist_params = {k: v for k, v in params.items() if k != "limit"}
+        hist_cy = hist_cy.replace("$limit", "15")  # placeholder, not used
+        hist = c.query(
+            "MATCH (e:LogEvent) WHERE " + " AND ".join(where) + " "
+            "RETURN e.severity, count(e), sum(e.count), count(DISTINCT e.pod)",
+            hist_params,
+        ).result_set
+
+        scope = []
+        if pod:
+            scope.append(f"pod={pod}")
+        if namespace:
+            scope.append(f"namespace={namespace}")
+        if since_minutes:
+            scope.append(f"last {since_minutes}m")
+        scope_str = ", ".join(scope) if scope else "cluster-wide"
+
+        lines: list[str] = []
+        lines.append(f"# Log story for {cluster} ({scope_str})")
+        lines.append("")
+
+        if not rows:
+            lines.append(
+                "No significant log events found. Either the log watcher "
+                "isn't running, the filters excluded everything, or the pod "
+                "is actually healthy."
+            )
+            return "\n".join(lines)
+
+        total_templates = sum(int(r[1]) for r in hist)
+        total_occurrences = sum(int(r[2] or 0) for r in hist)
+        total_pods = max((int(r[3]) for r in hist), default=0)
+        lines.append(
+            f"**Summary:** {total_templates} distinct templates, "
+            f"{total_occurrences} total occurrences, across "
+            f"{total_pods} pods"
+        )
+        hist_str = ", ".join(
+            f"{r[0]}={int(r[1])}" for r in sorted(hist, key=lambda x: -int(x[1]))
+        )
+        lines.append(f"**Severity:** {hist_str}")
+        lines.append("")
+
+        lines.append(f"## Top {len(rows)} events (by severity, then volume)")
+        lines.append("")
+        import time as _now_mod
+        now_ts = _now_mod.time()
+        for i, row in enumerate(rows, 1):
+            pod_name, ns, sev, cnt, tmpl, examples, first_seen, last_seen, deleted_at = row
+            tombstone = ""
+            if deleted_at:
+                try:
+                    ago = int(now_ts - float(deleted_at))
+                    mins = ago // 60
+                    tombstone = f" ⚰ (pod deleted {mins}m ago)" if mins else " ⚰ (pod just deleted)"
+                except Exception:
+                    tombstone = " ⚰ (pod deleted)"
+            lines.append(
+                f"### {i}. [{sev}] {ns}/{pod_name}{tombstone} — {int(cnt)} occurrences"
+            )
+            if tmpl:
+                lines.append(f"Template: `{tmpl[:200]}`")
+            if examples:
+                lines.append("Example:")
+                lines.append(f"    {examples[0][:250]}")
+            if last_seen:
+                import datetime as _dt
+                try:
+                    ts = _dt.datetime.fromtimestamp(float(last_seen)).isoformat(
+                        timespec="seconds"
+                    )
+                    lines.append(f"Last seen: {ts}")
+                except Exception:
+                    pass
+            # Mentions: show the graph entities this event refers to.
+            mentions_r = c.query(
+                "MATCH (e:LogEvent {cluster: $cluster, namespace: $ns, "
+                "pod: $pod, template_hash: $th})-[:MENTIONS]->(x) "
+                "RETURN labels(x)[0], x.name",
+                {"cluster": cluster, "ns": ns, "pod": pod_name, "th": None},
+            )
+            # The template_hash isn't in the row — refetch via ordering is
+            # expensive. Simpler: query by (pod, count) match — but safest
+            # is to skip mentions here and show them in a dedicated pass
+            # below. Drop this inline attempt.
+            lines.append("")
+
+        # Mentions summary: entities referenced across all returned events.
+        mentions_rows = c.query(
+            "MATCH (e:LogEvent) WHERE " + " AND ".join(where) + " "
+            "MATCH (e)-[:MENTIONS]->(x) "
+            "RETURN labels(x)[0], x.name, x.namespace, count(DISTINCT e) "
+            "ORDER BY count(DISTINCT e) DESC LIMIT 20",
+            hist_params,
+        ).result_set
+        if mentions_rows:
+            lines.append("## Referenced entities (from log text)")
+            lines.append("")
+            for label, ent_name, ent_ns, n_events in mentions_rows:
+                short_label = label.replace("K8s", "")
+                lines.append(
+                    f"- **{short_label}** `{ent_ns}/{ent_name}` "
+                    f"— mentioned by {int(n_events)} event(s)"
+                )
+            lines.append("")
 
         return "\n".join(lines)
 
