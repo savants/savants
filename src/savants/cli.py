@@ -1042,15 +1042,41 @@ def ask(name: str, as_json: bool):
 
 
 def _detect_k8s_clusters() -> list[dict]:
-    """Auto-detect available kubeconfig contexts."""
+    """Auto-detect available kubeconfig contexts, filtering unreachable ones."""
+    import socket
+
     clusters = []
     try:
         from kubernetes import config as k8s_config
         contexts, active = k8s_config.list_kube_config_contexts()
         for ctx in (contexts or []):
             name = ctx.get("name", "")
-            cluster = ctx.get("context", {}).get("cluster", name)
-            clusters.append({"context": name, "cluster": cluster})
+            cluster_name = ctx.get("context", {}).get("cluster", name)
+
+            # Quick reachability check: try to resolve the API server host.
+            # Skip stale kubeconfig contexts that point to dead clusters.
+            try:
+                k8s_config.load_kube_config(context=name)
+                from kubernetes import client as k8s_client
+                api = k8s_client.CoreV1Api()
+                host = api.api_client.configuration.host
+                # Extract hostname from URL
+                from urllib.parse import urlparse
+                parsed = urlparse(host)
+                hostname = parsed.hostname or ""
+                # Skip if we can't even resolve the hostname (2s timeout)
+                if hostname and hostname not in ("localhost", "127.0.0.1"):
+                    socket.setdefaulttimeout(2)
+                    try:
+                        socket.getaddrinfo(hostname, parsed.port or 443)
+                    except (socket.gaierror, socket.timeout, OSError):
+                        continue  # unreachable, skip silently
+                    finally:
+                        socket.setdefaulttimeout(None)
+            except Exception:
+                continue
+
+            clusters.append({"context": name, "cluster": cluster_name})
     except Exception:
         pass
     return clusters
@@ -1087,6 +1113,14 @@ def up(repo: str | None, tail_lines: int):
     """
     import os
     from pathlib import Path
+
+    import logging
+    # Suppress noisy libraries during the auto-detect phase
+    logging.getLogger("urllib3").setLevel(logging.CRITICAL)
+    logging.getLogger("kubernetes").setLevel(logging.CRITICAL)
+    logging.getLogger("savants.graph.cpg").setLevel(logging.ERROR)
+    logging.getLogger("drain3").setLevel(logging.WARNING)
+    logging.getLogger("root").setLevel(logging.CRITICAL)
 
     click.echo("Starting Savants...\n")
 
