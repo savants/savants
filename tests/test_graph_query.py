@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from synapcode.graph.query import GraphQueryEngine
+from savants.graph.query import GraphQueryEngine
 
 
 @pytest.mark.integration

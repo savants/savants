@@ -11,7 +11,7 @@ pub fn walk_node_root(node: Node, source: &str, file_path: &str, out: &mut Parse
 }
 
 /// True if `s` could plausibly be a symbol name or dotted path.
-/// Mirror of `_looks_like_symbol` in `src/synapcode/graph/cpg.py`.
+/// Mirror of `_looks_like_symbol` in `src/savants/graph/cpg.py`.
 fn looks_like_symbol(s: &str) -> bool {
     if s.is_empty() || s.len() > 120 || s.contains(' ') || s.contains('\n') {
         return false;

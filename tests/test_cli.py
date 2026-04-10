@@ -8,7 +8,7 @@ import subprocess
 import pytest
 from click.testing import CliRunner
 
-from synapcode.cli import cli
+from savants.cli import cli
 
 
 @pytest.fixture

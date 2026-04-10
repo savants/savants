@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from synapcode.pipelines.graphrag_inlet import (
+from savants.pipelines.graphrag_inlet import (
     build_graph_context,
     extract_code_references,
     inject_context,
 )
-from synapcode.pipelines.router import RouteDecision, estimate_complexity, route_request
+from savants.pipelines.router import RouteDecision, estimate_complexity, route_request
 
 
 class TestCodeReferenceExtraction:

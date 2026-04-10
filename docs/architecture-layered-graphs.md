@@ -1,7 +1,7 @@
 # Layered Graph Architecture
 
 **Status:** Canonical design as of 2026-04-07
-**Implementation status:** Specification phase. PoC delta computer in `src/synapcode/delta/`.
+**Implementation status:** Specification phase. PoC delta computer in `src/savants/delta/`.
 
 This document defines how SynapCode handles team collaboration, uncommitted changes, and arbitrary repo sizes via a three-layer graph composition. It is the architectural spine that justifies the cloud tiers in `BUSINESS.md`.
 
@@ -347,9 +347,9 @@ For local-tier users on small/medium repos, the history layer is essentially fre
 The free local tier ships with history disabled by default and a `--history` opt-in:
 
 ```bash
-synapcode init /path/to/repo               # current state only
-synapcode init /path/to/repo --history     # current state + last 6 months
-synapcode history /path/to/repo --since=1y # extend history backward later
+savants init /path/to/repo               # current state only
+savants init /path/to/repo --history     # current state + last 6 months
+savants history /path/to/repo --since=1y # extend history backward later
 ```
 
 This keeps the free experience fast for evaluators while letting power users opt in.
@@ -362,14 +362,14 @@ The cloud tier indexes full history by default. The first sync of a repo runs a 
 
 | Component | Status |
 |---|---|
-| `Episode` node type | ✅ Already in `src/synapcode/graph/episodic.py` |
+| `Episode` node type | ✅ Already in `src/savants/graph/episodic.py` |
 | `Episode` schema indices | ✅ Already defined |
 | `EpisodicMemory.add_episode()` / `recall()` | ✅ Already implemented |
-| `CHANGES` edge type | 🟡 To add to `src/synapcode/graph/schema.py` |
-| `GitHistoryWalker` | 🟡 Scaffolded in `src/synapcode/history/walker.py` |
-| `synapcode history` CLI command | 🟡 Stub in `src/synapcode/cli.py` |
-| Time-travel query helpers | ❌ Not yet in `src/synapcode/graph/query.py` |
-| MCP tools (`find_last_modifier`, `co_change_analysis`, etc.) | ❌ Not yet in `src/synapcode/mcp/server.py` |
+| `CHANGES` edge type | 🟡 To add to `src/savants/graph/schema.py` |
+| `GitHistoryWalker` | 🟡 Scaffolded in `src/savants/history/walker.py` |
+| `savants history` CLI command | 🟡 Stub in `src/savants/cli.py` |
+| Time-travel query helpers | ❌ Not yet in `src/savants/graph/query.py` |
+| MCP tools (`find_last_modifier`, `co_change_analysis`, etc.) | ❌ Not yet in `src/savants/mcp/server.py` |
 
 The walker and schema additions are the immediate next steps. Time-travel query helpers and MCP tools are follow-on work once the data is loadable.
 
@@ -468,11 +468,11 @@ If they have a merge conflict in git, that's resolved at the git level. The grap
 
 | Component | Status |
 |---|---|
-| Local FalkorDB sidecar (free tier) | ✅ Implemented (`src/synapcode/graph/`) |
+| Local FalkorDB sidecar (free tier) | ✅ Implemented (`src/savants/graph/`) |
 | Tauri desktop app | ✅ Implemented (`desktop/`) |
-| MCP server | ✅ Implemented (`src/synapcode/mcp/`) |
-| Tree-sitter CPG builder | ✅ Implemented (`src/synapcode/graph/cpg.py`) |
-| Local delta computer | 🟡 PoC in `src/synapcode/delta/computer.py` |
+| MCP server | ✅ Implemented (`src/savants/mcp/`) |
+| Tree-sitter CPG builder | ✅ Implemented (`src/savants/graph/cpg.py`) |
+| Local delta computer | 🟡 PoC in `src/savants/delta/computer.py` |
 | Delta protocol JSON schema | ✅ Specified (`docs/delta-protocol.md`) |
 | Cloud base (multi-tenant FalkorDB on K8s) | ❌ Not started |
 | Branch overlay storage | ❌ Not started |
@@ -561,5 +561,5 @@ Expansion phase. Most of revenue growth happens here.
 - `docs/profiling-results.md` — empirical limits of the local tier (TBD)
 - `docs/confidential-compute.md` — TEE architecture details (TBD)
 - `BUSINESS.md` — how the architecture maps to deployment tiers and revenue
-- `src/synapcode/delta/computer.py` — Python PoC of the delta computer
+- `src/savants/delta/computer.py` — Python PoC of the delta computer
 - `rust-core/` — Rust port of the indexer hot path

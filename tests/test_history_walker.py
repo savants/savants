@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from synapcode.history.walker import GitHistoryWalker
+from savants.history.walker import GitHistoryWalker
 
 
 def _git(repo, *args, env=None):
@@ -140,7 +140,7 @@ class TestGitHistoryWalker:
 
     def test_first_commit_is_introduction(self, history_repo, graph_client):
         """The 'initial commit' Episode should be linked to hello() via CHANGES."""
-        from synapcode.graph.cpg import CodePropertyGraphBuilder
+        from savants.graph.cpg import CodePropertyGraphBuilder
 
         # First, populate the current-state graph (Layer 1)
         builder = CodePropertyGraphBuilder(repo_path=history_repo, client=graph_client)

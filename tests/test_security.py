@@ -1,13 +1,13 @@
 """Tests for BYOK encryption and provenance stamping."""
 
-from synapcode.security.encryption import (
+from savants.security.encryption import (
     decrypt_snapshot,
     encrypt_snapshot,
     generate_dek,
     encrypt_data,
     decrypt_data,
 )
-from synapcode.security.provenance import (
+from savants.security.provenance import (
     compute_content_hash,
     create_stamp,
     verify_stamp,

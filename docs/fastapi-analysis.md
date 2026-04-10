@@ -10,10 +10,10 @@ This document captures the first time SynapCode was used as a *tool* (not as a d
 ## Setup
 
 ```python
-from synapcode.graph.client import GraphClient
-from synapcode.graph.cpg import CodePropertyGraphBuilder
-from synapcode.history.walker import GitHistoryWalker
-from synapcode.config import FalkorDBConfig
+from savants.graph.client import GraphClient
+from savants.graph.cpg import CodePropertyGraphBuilder
+from savants.history.walker import GitHistoryWalker
+from savants.config import FalkorDBConfig
 
 client = GraphClient(FalkorDBConfig(graph_name='oss_fastapi'))
 client.ensure_schema()
@@ -238,10 +238,10 @@ That sentence is a real, actionable, never-published architectural review of one
 
 ## Reproducibility
 
-These queries are now packaged as `synapcode.analysis.queries`:
+These queries are now packaged as `savants.analysis.queries`:
 
 ```python
-from synapcode.analysis import (
+from savants.analysis import (
     most_called,
     god_classes,
     name_collisions,
@@ -261,4 +261,4 @@ report = architectural_summary(client, src_prefix='your_module/')
 
 ## Next: package as a CLI
 
-The findings above suggest a `synapcode audit <repo>` CLI command that runs all the canonical queries and outputs a markdown report. That's the next product step — turn this manual analysis into a one-line command anyone can run on any codebase.
+The findings above suggest a `savants audit <repo>` CLI command that runs all the canonical queries and outputs a markdown report. That's the next product step — turn this manual analysis into a one-line command anyone can run on any codebase.

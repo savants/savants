@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from synapcode.graph.schema import (
+from savants.graph.schema import (
     ClassNode,
     FileNode,
     FunctionNode,

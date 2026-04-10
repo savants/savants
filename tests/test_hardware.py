@@ -1,6 +1,6 @@
 """Tests for hardware monitoring."""
 
-from synapcode.hardware.monitor import (
+from savants.hardware.monitor import (
     estimate_graph_memory,
     get_system_stats,
 )

@@ -121,7 +121,7 @@ difference is what data it holds and where it lives.
 
 | Scope | What it holds | Where it runs | Update source |
 |---|---|---|---|
-| **Code graph** (per repo) | Layer 1 (functions, classes, configs, env vars) + Layer 2 (commit history) | One Mazkir instance per repo, deployed centrally or per-team | CI on every push, or `synapcode hooks` post-commit |
+| **Code graph** (per repo) | Layer 1 (functions, classes, configs, env vars) + Layer 2 (commit history) | One Mazkir instance per repo, deployed centrally or per-team | CI on every push, or `savants hooks` post-commit |
 | **Runtime graph** (per cluster) | Layer 4 (Deployments, Pods, Images, ConfigMaps, deploy Episodes, incident Episodes) | Mazkir K8s operator inside each cluster, with a sidecar FalkorDB | K8s watch API + PagerDuty webhooks |
 | **History graph** (per repo) | Layer 2 (commits, episodes, PR-level metadata) | Co-located with the code graph for that repo | Git log walker, GitHub webhooks |
 | **Knowledge graph** (org-wide, future) | Slack, Linear, Jira, Notion, meeting transcripts | One central Mazkir instance | OAuth integrations + webhooks |

@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from synapcode.mcp.server import (
+from savants.mcp.server import (
     SynapCodeMCPServer,
     read_message,
     write_message,
@@ -85,7 +85,7 @@ class TestMCPProtocol:
         server = SynapCodeMCPServer(client=graph_client)
         resp = server.handle_message(_req("initialize"))
         assert resp["result"]["protocolVersion"] == "2024-11-05"
-        assert resp["result"]["serverInfo"]["name"] == "synapcode"
+        assert resp["result"]["serverInfo"]["name"] == "savants"
 
     def test_notification_returns_none(self, graph_client):
         server = SynapCodeMCPServer(client=graph_client)

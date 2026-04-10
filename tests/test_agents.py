@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from synapcode.agents.base import AgentInput, AgentOutput
+from savants.agents.base import AgentInput, AgentOutput
 
 
 class TestAgentModels:

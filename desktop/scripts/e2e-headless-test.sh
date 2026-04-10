@@ -14,7 +14,7 @@
 set -euo pipefail
 
 PORT="${FALKORDB_PORT:-16379}"
-BINARY="${BINARY:-./src-tauri/target/release/synapcode-desktop}"
+BINARY="${BINARY:-./src-tauri/target/release/savants-desktop}"
 DISPLAY_NUM=":99"
 TIMEOUT_SECS=15
 

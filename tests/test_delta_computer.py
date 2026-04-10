@@ -7,8 +7,8 @@ tree-sitter parsing on real Python source.
 
 from __future__ import annotations
 
-from synapcode.delta.computer import compute_file_delta, parse_content
-from synapcode.delta.schema import (
+from savants.delta.computer import compute_file_delta, parse_content
+from savants.delta.schema import (
     AddEdge,
     AddNode,
     Delta,

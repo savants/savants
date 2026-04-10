@@ -3,7 +3,7 @@
 //! Run: cargo run --release --example bench_flask -- /tmp/profile-repos/flask
 
 use std::time::Instant;
-use synapcode_core::CodePropertyGraphBuilder;
+use savants_core::CodePropertyGraphBuilder;
 
 fn main() {
     let repo = std::env::args()

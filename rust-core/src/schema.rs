@@ -1,4 +1,4 @@
-//! Schema mirrors `src/synapcode/graph/schema.py` and the delta protocol IDs.
+//! Schema mirrors `src/savants/graph/schema.py` and the delta protocol IDs.
 
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +47,7 @@ pub struct StringRef {
 ///
 /// `name` is the dotted path (e.g. `operationProfiling.mode`) so that
 /// pattern-search over node.name finds it. Mirrors
-/// `ConfigKeyNode` in `src/synapcode/graph/schema.py`.
+/// `ConfigKeyNode` in `src/savants/graph/schema.py`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConfigKeyNode {
     pub name: String,

@@ -15,7 +15,7 @@ const EXCLUDED_DIRS: &[&str] = &[
     ".venv",
     "dist",
     "build",
-    ".synapcode",
+    ".savants",
 ];
 
 #[derive(Debug, Default, Clone)]

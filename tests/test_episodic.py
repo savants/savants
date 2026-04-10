@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from synapcode.graph.episodic import Episode, EpisodicMemory, TemporalFact
+from savants.graph.episodic import Episode, EpisodicMemory, TemporalFact
 
 
 @pytest.mark.integration

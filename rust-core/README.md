@@ -1,13 +1,13 @@
-# synapcode-core
+# savants-core
 
 Native Rust implementation of the SynapCode indexer hot path.
 
 ## What this is
 
 A Rust crate that mirrors the Python implementation of:
-- The Code Property Graph builder (`synapcode/graph/cpg.py`)
-- The local delta computer (`synapcode/delta/computer.py`)
-- The schema and canonical IDs (`synapcode/graph/schema.py`, `synapcode/delta/schema.py`)
+- The Code Property Graph builder (`savants/graph/cpg.py`)
+- The local delta computer (`savants/delta/computer.py`)
+- The schema and canonical IDs (`savants/graph/schema.py`, `savants/delta/schema.py`)
 
 It uses the same tree-sitter grammars (Python, JavaScript, TypeScript) and produces the same Delta wire format documented in `docs/delta-protocol.md`. The output is byte-compatible with the Python implementation, so the rest of the stack (FalkorDB writes, MCP server, history walker, layered graph) works without modification.
 
@@ -21,7 +21,7 @@ It uses the same tree-sitter grammars (Python, JavaScript, TypeScript) and produ
 | Reverse-engineering resistance | trivial | meaningful (stripped, LTO'd, panic=abort) |
 | Memory footprint per file | ~1KB Python objects + GC | tighter, no GC pauses |
 
-This crate is the answer to the cold-start latency we measured: real graph queries take **0.8-4ms** through FalkorDB, but `synapcode impact ...` from the CLI takes **~1.2 seconds** because of Python startup. Replacing the indexer hot path with a Rust binary collapses that to ~50ms.
+This crate is the answer to the cold-start latency we measured: real graph queries take **0.8-4ms** through FalkorDB, but `savants impact ...` from the CLI takes **~1.2 seconds** because of Python startup. Replacing the indexer hot path with a Rust binary collapses that to ~50ms.
 
 ## Building
 
@@ -45,14 +45,14 @@ After this, the existing Python code can opt into the Rust hot path:
 
 ```python
 try:
-    import synapcode_core
+    import savants_core
     USE_RUST = True
 except ImportError:
     USE_RUST = False
 
 if USE_RUST:
-    stats_json = synapcode_core.build_cpg_stats("/path/to/repo")
-    delta_json = synapcode_core.compute_file_delta("src/main.py", before, after, "acme", "backend")
+    stats_json = savants_core.build_cpg_stats("/path/to/repo")
+    delta_json = savants_core.compute_file_delta("src/main.py", before, after, "acme", "backend")
 else:
     # fall back to pure Python
     ...
@@ -105,6 +105,6 @@ The split: **Rust for the CPU-bound parser, Python for everything else.** This l
 
 1. `cargo test` — verify the unit tests pass on this machine
 2. `maturin develop --features python` — build the PyO3 module
-3. Wire `synapcode_core` into `cpg.py` behind a feature flag
+3. Wire `savants_core` into `cpg.py` behind a feature flag
 4. Benchmark: re-run the profiler from `docs/profiling-results.md` (when written) with the Rust hot path enabled and compare
 5. Once we trust it, make Rust the default; Python becomes the fallback

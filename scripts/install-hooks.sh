@@ -22,7 +22,7 @@ cat > "${HOOK_FILE}" << 'HOOK'
 # Installed by: scripts/install-hooks.sh
 
 echo "[SynapCode] Post-merge hook triggered, starting incremental sync..."
-python -m synapcode.sync.git_hooks 2>&1 | while read -r line; do
+python -m savants.sync.git_hooks 2>&1 | while read -r line; do
     echo "[SynapCode] ${line}"
 done
 HOOK
@@ -30,7 +30,7 @@ HOOK
 chmod +x "${HOOK_FILE}"
 
 # Create the bookmark directory
-mkdir -p "${REPO_PATH}/.synapcode"
+mkdir -p "${REPO_PATH}/.savants"
 
 echo "SynapCode post-merge hook installed at ${HOOK_FILE}"
 echo "Run a full index first, then the hook will handle incremental updates."

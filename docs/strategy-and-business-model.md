@@ -221,16 +221,16 @@ If we ship cloud without it, the first customer with a checked-in `mongod.conf` 
 
 **Use existing battle-tested rules** from `detect-secrets`, `gitleaks`, or `trufflehog`. Don't invent new regexes.
 
-**Implementation:** new module `src/synapcode/security/secret_scrub.py`. Single function `scrub(value: str) -> tuple[str, bool]` returns `(possibly-redacted-value, was_secret)`. Mirror to Rust.
+**Implementation:** new module `src/savants/security/secret_scrub.py`. Single function `scrub(value: str) -> tuple[str, bool]` returns `(possibly-redacted-value, was_secret)`. Mirror to Rust.
 
 ---
 
 ## 6. Distribution (the "one command install" problem)
 
 **Phase 1 (1 day):** Linux x86_64 wheel via PyPI.
-- Move binaries into `src/synapcode/binaries/` for `package_data` inclusion
+- Move binaries into `src/savants/binaries/` for `package_data` inclusion
 - Update `_find_bundled_binary()` to check `importlib.resources` first
-- `pip install synapcode` works on Linux x86_64 zero-config
+- `pip install savants` works on Linux x86_64 zero-config
 
 **Phase 2 (1 week):** Cross-platform CI build matrix via `cibuildwheel`.
 - Linux x86_64 + arm64
@@ -238,11 +238,11 @@ If we ship cloud without it, the first customer with a checked-in `mongod.conf` 
 - (Maybe Windows; FalkorDB on Windows is painful, probably ship WSL guidance instead)
 - Per-tag GitHub Actions release publishing to PyPI
 
-**Phase 3 (parallel to 2):** Universal `curl -fsSL get.synapcode.dev | sh` installer.
+**Phase 3 (parallel to 2):** Universal `curl -fsSL get.savants.dev | sh` installer.
 - Detects platform via `uname -ms`
 - Downloads matching tarball from GitHub release
-- Drops binaries in `~/.local/share/synapcode/`
-- Symlinks `synapcode` into `~/.local/bin/`
+- Drops binaries in `~/.local/share/savants/`
+- Symlinks `savants` into `~/.local/bin/`
 - This is what `uv`, `bun`, `mise`, `rustup` all do
 
 **Phase 4 (weeks):** Tauri desktop launcher.

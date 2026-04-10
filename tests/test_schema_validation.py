@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from synapcode.graph.schema import (
+from savants.graph.schema import (
     SCHEMA_INDICES,
     ClassNode,
     FileNode,

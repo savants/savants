@@ -61,7 +61,7 @@ pip install -e ".[dev]"
 ### Index a Repository
 
 ```bash
-synapcode init /path/to/your/repo
+savants init /path/to/your/repo
 ```
 
 FalkorDB starts automatically if not already running (native `redis-server`,
@@ -71,16 +71,16 @@ no Docker required). The desktop app manages this for you.
 
 ```bash
 # Search for functions/classes
-synapcode search "authenticate"
+savants search "authenticate"
 
 # Cascading impact analysis
-synapcode impact process_data
+savants impact process_data
 
 # Query with natural language
-synapcode query "What functions call authenticate?"
+savants query "What functions call authenticate?"
 
 # Check system health
-synapcode status
+savants status
 ```
 
 ### 5. Keep the Graph in Sync
@@ -90,16 +90,16 @@ synapcode status
 ./scripts/install-hooks.sh /path/to/repo
 
 # Or manually re-index after changes
-synapcode index /path/to/repo
+savants index /path/to/repo
 ```
 
 ### 6. Connect to Claude Code / Cursor (MCP)
 
 ```bash
 # Register as an MCP server
-claude mcp add-json synapcode --scope user '{
+claude mcp add-json savants --scope user '{
   "command": "python",
-  "args": ["-m", "synapcode.mcp"],
+  "args": ["-m", "savants.mcp"],
   "env": {"FALKORDB_HOST": "localhost", "FALKORDB_PORT": "6379"}
 }'
 ```
@@ -107,25 +107,25 @@ claude mcp add-json synapcode --scope user '{
 ### Full CLI Reference
 
 ```
-synapcode init <repo>              First-time index + setup
-synapcode index <repo> [--full]    Re-index (incremental by default)
-synapcode query "<question>"       Query graph for structural context
-synapcode impact <function_name>   Cascading impact analysis
-synapcode search <pattern>         Search functions/classes by name
-synapcode status                   Service health + graph stats
-synapcode gc <repo>                Garbage collection
-synapcode snapshot create <repo>   Serialize graph for Git LFS
-synapcode snapshot restore <repo>  Restore from snapshot
-synapcode serve                    Start MCP server
-synapcode worker                   Start Temporal worker
+savants init <repo>              First-time index + setup
+savants index <repo> [--full]    Re-index (incremental by default)
+savants query "<question>"       Query graph for structural context
+savants impact <function_name>   Cascading impact analysis
+savants search <pattern>         Search functions/classes by name
+savants status                   Service health + graph stats
+savants gc <repo>                Garbage collection
+savants snapshot create <repo>   Serialize graph for Git LFS
+savants snapshot restore <repo>  Restore from snapshot
+savants serve                    Start MCP server
+savants worker                   Start Temporal worker
 ```
 
 ### Programmatic Usage
 
 ```python
-from synapcode.graph.client import GraphClient
-from synapcode.graph.cpg import CodePropertyGraphBuilder
-from synapcode.graph.query import GraphQueryEngine
+from savants.graph.client import GraphClient
+from savants.graph.cpg import CodePropertyGraphBuilder
+from savants.graph.query import GraphQueryEngine
 
 # Index a repo
 client = GraphClient()
@@ -174,8 +174,8 @@ print(f"Affected files: {impact.affected_files}")
 ## Project Structure
 
 ```
-synapcode/
-├── src/synapcode/
+savants/
+├── src/savants/
 │   ├── graph/          # FalkorDB client, CPG builder, schema, queries
 │   ├── temporal/       # Workflows, activities, worker
 │   ├── pipelines/      # Open WebUI routing, GraphRAG inlet, manifold

@@ -188,7 +188,7 @@ fn start_temporal(app: &AppHandle) -> Result<Child, String> {
 fn start_python_worker() -> Result<Child, String> {
     tracing::info!("Starting Python worker");
     Command::new("python")
-        .args(["-m", "synapcode.temporal.worker"])
+        .args(["-m", "savants.temporal.worker"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -251,7 +251,7 @@ fn get_health(procs: State<ManagedProcesses>) -> SystemHealth {
         name: "Worker".into(),
         running: worker_running,
         pid: procs.worker.lock().unwrap().as_ref().map(|c| c.id()),
-        detail: if worker_running { "synapcode-tasks queue".into() } else { "stopped".into() },
+        detail: if worker_running { "savants-tasks queue".into() } else { "stopped".into() },
     });
 
     // System RAM

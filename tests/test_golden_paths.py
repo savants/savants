@@ -11,12 +11,12 @@ import subprocess
 
 import pytest
 
-from synapcode.graph.client import GraphClient
-from synapcode.graph.cpg import CodePropertyGraphBuilder
-from synapcode.graph.episodic import Episode, EpisodicMemory, TemporalFact
-from synapcode.graph.gc import GraphGarbageCollector
-from synapcode.graph.query import GraphQueryEngine
-from synapcode.sync.git_hooks import get_current_head, save_last_indexed_sha
+from savants.graph.client import GraphClient
+from savants.graph.cpg import CodePropertyGraphBuilder
+from savants.graph.episodic import Episode, EpisodicMemory, TemporalFact
+from savants.graph.gc import GraphGarbageCollector
+from savants.graph.query import GraphQueryEngine
+from savants.sync.git_hooks import get_current_head, save_last_indexed_sha
 
 
 @pytest.mark.integration

@@ -1,4 +1,4 @@
-//! Delta protocol — wire format compatible with `src/synapcode/delta/schema.py`.
+//! Delta protocol — wire format compatible with `src/savants/delta/schema.py`.
 
 use crate::cpg::ParsedFile;
 use crate::schema::canonical_node_id;
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 pub const PROTOCOL_VERSION: &str = "0.1";
-pub const SCHEMA_ID: &str = "synapcode/delta/v0.1";
+pub const SCHEMA_ID: &str = "savants/delta/v0.1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeltaScope {

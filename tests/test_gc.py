@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from synapcode.graph.gc import GraphGarbageCollector
+from savants.graph.gc import GraphGarbageCollector
 
 
 @pytest.mark.integration
@@ -65,7 +65,7 @@ class TestStaleFileCollection:
 @pytest.mark.integration
 class TestExpiredFacts:
     def test_removes_expired_facts(self, graph_client):
-        from synapcode.graph.episodic import EpisodicMemory, TemporalFact
+        from savants.graph.episodic import EpisodicMemory, TemporalFact
 
         memory = EpisodicMemory(graph_client)
         memory.ensure_schema()

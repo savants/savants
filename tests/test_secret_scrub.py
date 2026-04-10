@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from synapcode.security.secret_scrub import scrub, is_secret_value, REDACTED
+from savants.security.secret_scrub import scrub, is_secret_value, REDACTED
 
 
 class TestSpecificPatterns:
@@ -85,7 +85,7 @@ class TestNonSecrets:
         assert not is_secret_value("HandleTsCoinTransfer")
 
     def test_dotted_path_not_secret(self):
-        assert not is_secret_value("synapcode.graph.cpg.CodePropertyGraphBuilder")
+        assert not is_secret_value("savants.graph.cpg.CodePropertyGraphBuilder")
 
     def test_empty_string(self):
         cleaned, hit = scrub("")
@@ -113,7 +113,7 @@ class TestIntegrationWithParser:
     """Smoke tests proving the scrubber is wired into _flatten_config."""
 
     def test_config_value_with_secret_redacted(self, tmp_path):
-        from synapcode.graph.cpg import _flatten_config
+        from savants.graph.cpg import _flatten_config
 
         node = {"database": {"password": "hunter2", "host": "db.local"}}
         out: list = []
@@ -126,7 +126,7 @@ class TestIntegrationWithParser:
         assert by_name["database.host"].value == "db.local"
 
     def test_string_literal_secret_rejected(self):
-        from synapcode.graph.cpg import _looks_like_symbol
+        from savants.graph.cpg import _looks_like_symbol
 
         # Normal symbol passes
         assert _looks_like_symbol("HandleTsCoinTransfer")

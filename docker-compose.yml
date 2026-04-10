@@ -56,7 +56,7 @@ services:
     ports:
       - "9099:9099"
     volumes:
-      - ./src/synapcode/pipelines:/app/pipelines
+      - ./src/savants/pipelines:/app/pipelines
     environment:
       - FALKORDB_HOST=falkordb
       - FALKORDB_PORT=6379

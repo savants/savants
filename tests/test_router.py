@@ -1,6 +1,6 @@
 """Tests for the selective deferred routing pipeline."""
 
-from synapcode.pipelines.router import (
+from savants.pipelines.router import (
     RouteDecision,
     estimate_complexity,
     route_request,

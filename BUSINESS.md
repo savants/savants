@@ -242,7 +242,7 @@ A SynapCode hitting $25-50M ARR by Year 3 with this architectural moat is in the
 
 ### Days 1-14: Legal & infrastructure
 - [ ] Make GitHub repo private
-- [ ] Register synapcode.dev (verify trademark)
+- [ ] Register savants.dev (verify trademark)
 - [ ] Apply for Apple Developer Program
 - [ ] Order Windows EV code-signing certificate
 - [ ] Form business entity (LLC or Delaware C-corp)

@@ -1,7 +1,7 @@
 # Graph Delta Protocol
 
 **Status:** Specification v0.1
-**Implementation:** `src/synapcode/delta/schema.py`
+**Implementation:** `src/savants/delta/schema.py`
 
 The Delta Protocol is the wire format for representing graph mutations. It is used for:
 
@@ -16,7 +16,7 @@ A delta is a JSON object describing graph mutations. It is intentionally **decla
 ```json
 {
   "version": "0.1",
-  "schema_id": "synapcode/delta/v0.1",
+  "schema_id": "savants/delta/v0.1",
   "scope": {
     "org": "acme",
     "repo": "backend",
@@ -306,7 +306,7 @@ Alice adds a new function `verify_session` to `src/auth/jwt.py`:
 ```json
 {
   "version": "0.1",
-  "schema_id": "synapcode/delta/v0.1",
+  "schema_id": "savants/delta/v0.1",
   "scope": {
     "org": "acme",
     "repo": "backend",
@@ -343,7 +343,7 @@ Alice renames `authenticate` to `verify_session`:
 ```json
 {
   "version": "0.1",
-  "schema_id": "synapcode/delta/v0.1",
+  "schema_id": "savants/delta/v0.1",
   "scope": { "org": "acme", "repo": "backend", "branch": "alice/refactor-auth" },
   "operations": [
     {
@@ -403,8 +403,8 @@ Clients send their `version` in the request; the server returns `415 Unsupported
 
 | Component | Status |
 |---|---|
-| Python data classes (`src/synapcode/delta/schema.py`) | ✅ Implemented |
-| Local delta computer (`src/synapcode/delta/computer.py`) | ✅ PoC implemented |
+| Python data classes (`src/savants/delta/schema.py`) | ✅ Implemented |
+| Local delta computer (`src/savants/delta/computer.py`) | ✅ PoC implemented |
 | Composition engine | ❌ Not implemented |
 | Compression support | ❌ Not implemented |
 | Signature support | ❌ Not implemented |

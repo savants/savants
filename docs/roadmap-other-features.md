@@ -42,7 +42,7 @@ These are the in-the-flow features that turn SynapCode from "tool you query occa
 **Buyer:** Team
 **Pain:** Architectural boundaries dissolve over time because nobody catches the moment a new cross-module dependency is added. SynapCode catches it the moment it appears.
 **Have:** `coupling_check` MCP tool already exists.
-**Build:** Hook the tool into pre-commit and the editor's diagnostic stream. Optional: a `.synapcode/architecture.toml` file that declares forbidden module pairs.
+**Build:** Hook the tool into pre-commit and the editor's diagnostic stream. Optional: a `.savants/architecture.toml` file that declares forbidden module pairs.
 
 ### 1.5 Smart Find-References replacement
 **Effort:** S (already an MCP tool)
@@ -82,7 +82,7 @@ These are the in-the-flow features that turn SynapCode from "tool you query occa
 **Buyer:** Team / Enterprise
 **Pain:** CI runs 4,500 tests when only 18 actually exercise the affected call graph. Result: 12 minutes of CI per push.
 **Have:** Call graph traversal queries.
-**Build:** `synapcode test --since=HEAD~1` outputs the minimal test set for a commit. Drop-in for any pytest/jest/go test runner.
+**Build:** `savants test --since=HEAD~1` outputs the minimal test set for a commit. Drop-in for any pytest/jest/go test runner.
 **Notes:** Pairs naturally with the GitHub App so test selection happens automatically on each PR push.
 
 ---
@@ -122,7 +122,7 @@ These are the in-the-flow features that turn SynapCode from "tool you query occa
 **Effort:** M
 **Buyer:** Team / Enterprise (sold to VP Eng)
 **Pain:** Engineering leaders have no structural visibility into bus factor, drift, knowledge silos, hot files. They run on vibes + retroactive incident postmortems.
-**Have:** All the queries are already in `src/synapcode/analysis/queries.py`.
+**Have:** All the queries are already in `src/savants/analysis/queries.py`.
 **Build:** A weekly cron that runs the queries and emails an HTML report. Phase 2: a hosted dashboard.
 **Pricing:** $100/dev/month for orgs of 50-500 devs.
 
@@ -131,7 +131,7 @@ These are the in-the-flow features that turn SynapCode from "tool you query occa
 **Buyer:** Team / Enterprise
 **Pain:** "Who else can safely modify this if Alice leaves?" — currently answered by intuition.
 **Have:** `bus_factor` query, `top_contributors` query.
-**Build:** A heat-map visualization (file tree → red where bus factor is 1, green where it's 4+). Standalone webpage from `synapcode bus-factor --html`.
+**Build:** A heat-map visualization (file tree → red where bus factor is 1, green where it's 4+). Standalone webpage from `savants bus-factor --html`.
 
 ### 4.3 Architecture Drift Detection
 **Effort:** M
@@ -145,7 +145,7 @@ These are the in-the-flow features that turn SynapCode from "tool you query occa
 **Buyer:** Team / HR (one-time per departure)
 **Pain:** Engineer gives notice. Manager has 2 weeks. What knowledge dies with them?
 **Have:** Bus factor + recency-weighted contribution.
-**Build:** `synapcode audit-departure <author>` outputs:
+**Build:** `savants audit-departure <author>` outputs:
 - Files where they're the dominant maintainer
 - Functions only they understand (sole substantive contributor)
 - Co-change partners showing what's coupled to their work
@@ -197,7 +197,7 @@ These are the in-the-flow features that turn SynapCode from "tool you query occa
 **Buyer:** Team / Enterprise
 **Pain:** Incident fires. Currently it's 30 min of `git log` + Slack scrambling.
 **Have:** `pre_change_warning`, `risk_score`, history queries.
-**Build:** `synapcode explain --since=3h --service=payments` outputs the recent risky commits ranked by their bug correlation, with revert hints. Pairs with the leadership dashboard.
+**Build:** `savants explain --since=3h --service=payments` outputs the recent risky commits ranked by their bug correlation, with revert hints. Pairs with the leadership dashboard.
 
 ### 6.2 Real-time deployment risk scoring
 **Effort:** M
@@ -298,7 +298,7 @@ These are the in-the-flow features that turn SynapCode from "tool you query occa
 **Effort:** S
 **Buyer:** Team
 **Pain:** Devs ask "who knows this code?" in Slack constantly.
-**Build:** A Slack bot. `/synapcode owner src/auth/jwt.py` returns the bus factor + contributors. `/synapcode impact authenticate` returns the impact analysis.
+**Build:** A Slack bot. `/savants owner src/auth/jwt.py` returns the bus factor + contributors. `/savants impact authenticate` returns the impact analysis.
 
 ### 9.3 Notion / Confluence integration
 **Effort:** S
@@ -377,7 +377,7 @@ These are the in-the-flow features that turn SynapCode from "tool you query occa
 ### 12.2 Native CLI binary
 **Effort:** M
 **Buyer:** Individual / Team
-**Pain:** `python -m synapcode.cli` cold-starts in ~1100ms because of Python interpreter overhead. Real graph queries are sub-100ms. The CLI feels slow.
+**Pain:** `python -m savants.cli` cold-starts in ~1100ms because of Python interpreter overhead. Real graph queries are sub-100ms. The CLI feels slow.
 **Have:** Rust crate compiles cleanly.
 **Build:** Wrap the Rust crate in a `clap`-based CLI that talks to the FalkorDB sidecar directly. Replaces the Python CLI for users who don't need the agent layer. Cold start: ~50ms.
 

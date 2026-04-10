@@ -1,7 +1,7 @@
 //! Config file indexing: YAML / TOML / JSON -> flat list of ConfigKey nodes.
 //!
 //! Mirrors `parse_config_file` + `_flatten_config` in
-//! `src/synapcode/graph/cpg.py`. The goal is to capture *infrastructure*
+//! `src/savants/graph/cpg.py`. The goal is to capture *infrastructure*
 //! config (mongod settings, helm values, CI env vars, feature flags) so
 //! questions like "is the Mongo profiler enabled?" don't go unanswered
 //! just because the setting lives outside Python/JS/TS source.
@@ -268,12 +268,12 @@ mod tests {
         let p = write(
             &dir,
             "pyproject.toml",
-            "[project]\nname = \"synapcode\"\nversion = \"0.1.0\"\n[project.optional-dependencies]\ndev = [\"pytest\", \"ruff\"]\n",
+            "[project]\nname = \"savants\"\nversion = \"0.1.0\"\n[project.optional-dependencies]\ndev = [\"pytest\", \"ruff\"]\n",
         );
         let keys = parse_config_file(&p, "pyproject.toml");
         let by_name: std::collections::HashMap<&str, &ConfigKeyNode> =
             keys.iter().map(|k| (k.name.as_str(), k)).collect();
-        assert_eq!(by_name["project.name"].value, "synapcode");
+        assert_eq!(by_name["project.name"].value, "savants");
         assert_eq!(by_name["project.version"].value, "0.1.0");
         assert_eq!(
             by_name["project.optional-dependencies.dev"].value,

@@ -9,8 +9,8 @@ import uuid
 import pytest
 from falkordb import FalkorDB
 
-from synapcode.config import FalkorDBConfig
-from synapcode.graph.client import GraphClient
+from savants.config import FalkorDBConfig
+from savants.graph.client import GraphClient
 
 
 @pytest.fixture(scope="session")
@@ -106,7 +106,7 @@ def test_repo(tmp_path):
 @pytest.fixture
 def indexed_repo(test_repo, graph_client):
     """A test repo that has already been indexed into the graph."""
-    from synapcode.graph.cpg import CodePropertyGraphBuilder
+    from savants.graph.cpg import CodePropertyGraphBuilder
 
     builder = CodePropertyGraphBuilder(repo_path=test_repo, client=graph_client)
     stats = builder.build()

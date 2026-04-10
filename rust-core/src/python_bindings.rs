@@ -4,10 +4,10 @@
 //! After building, the existing Python code can opt in via:
 //!
 //!     try:
-//!         from synapcode_core import build_cpg, compute_file_delta
+//!         from savants_core import build_cpg, compute_file_delta
 //!         USE_RUST = True
 //!     except ImportError:
-//!         from synapcode.graph.cpg import CodePropertyGraphBuilder
+//!         from savants.graph.cpg import CodePropertyGraphBuilder
 //!         USE_RUST = False
 //!
 //! Wire format for return values is the same JSON as the Python delta protocol,
@@ -56,9 +56,9 @@ fn compute_file_delta(
     Ok(delta.to_json())
 }
 
-/// PyO3 module entry point. Built as `synapcode_core` Python extension.
+/// PyO3 module entry point. Built as `savants_core` Python extension.
 #[pymodule]
-fn synapcode_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn savants_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_cpg_stats, m)?)?;
     m.add_function(wrap_pyfunction!(compute_file_delta, m)?)?;
     Ok(())
