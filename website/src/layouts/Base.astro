@@ -1,0 +1,35 @@
+---
+interface Props {
+  title: string;
+  description?: string;
+}
+const { title, description = "Your infrastructure savant. Know what's wrong in 60 seconds." } = Astro.props;
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content={description} />
+  <title>{title}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style is:global>
+    :root {
+      --bg: #0a0a0a; --fg: #e5e5e5; --muted: #737373;
+      --accent: #22d3ee; --accent-dim: #164e63;
+      --surface: #171717; --border: #262626;
+      --green: #4ade80; --red: #f87171; --yellow: #facc15;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg); color: var(--fg);
+      line-height: 1.6; -webkit-font-smoothing: antialiased;
+    }
+    code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
+    .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+  </style>
+</head>
+<body><slot /></body>
+</html>
