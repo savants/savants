@@ -1,12 +1,12 @@
 [package]
-name = "synapcode-core"
+name = "savants-core"
 version = "0.1.0"
 edition = "2021"
 description = "Native Rust core for SynapCode: tree-sitter CPG builder + delta computer"
 license = "Proprietary"
 
 [lib]
-name = "synapcode_core"
+name = "savants_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

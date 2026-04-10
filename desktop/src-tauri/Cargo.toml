@@ -1,5 +1,5 @@
 [package]
-name = "synapcode-desktop"
+name = "savants-desktop"
 version = "0.1.0"
 edition = "2021"
 description = "SynapCode desktop app — manages FalkorDB, Temporal, and the Python worker as sidecars"
