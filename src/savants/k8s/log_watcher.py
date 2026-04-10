@@ -315,6 +315,7 @@ class LogEventWriter:
         self.graph = graph
         self.cluster = cluster
         self.entity_index = entity_index
+        self.correlator = None  # Set by K8sWatcher if temporal correlation is active
 
     def flush(self, pod: str, namespace: str, buckets: dict[str, _Bucket]) -> int:
         n = 0
@@ -370,6 +371,17 @@ class LogEventWriter:
                             "ent": ent_name,
                         },
                     )
+            # CAUSED_BY temporal correlation: check if a recent cluster
+            # state change (configmap edit, deployment rollout, pod restart)
+            # happened within the correlation window before this LogEvent.
+            if self.correlator is not None:
+                try:
+                    self.correlator.correlate(
+                        namespace, pod, b.template_hash, b.last_seen,
+                    )
+                except Exception as e:
+                    logger.debug("correlator error: %s", e)
+
             b.dirty = False
             n += 1
         return n

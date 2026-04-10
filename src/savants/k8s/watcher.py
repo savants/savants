@@ -34,6 +34,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from savants.k8s.correlator import StateChangeTracker
 from savants.k8s.ingestor import K8sIngestor
 from savants.k8s.log_watcher import LogWatcher
 
@@ -90,6 +91,15 @@ class K8sWatcher:
         # event (including the initial reconcile list) gets tailed, and
         # every DELETED pod event triggers a purge of its LogEvent nodes.
         self.log_watcher = log_watcher
+        # Temporal correlator: records state changes and creates CAUSED_BY
+        # edges when LogEvents appear within the correlation window.
+        self.correlator = StateChangeTracker(
+            graph=ingestor.client,
+            cluster=ingestor.cluster_name,
+        )
+        # Wire the correlator into the log watcher's writer if present
+        if log_watcher is not None:
+            log_watcher.writer.correlator = self.correlator
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self.stats: dict[str, WatchStats] = {}
@@ -304,9 +314,30 @@ class K8sWatcher:
                             elif etype == "ADDED":
                                 spec.handler(obj, rv)
                                 stats.added += 1
+                                # Pod additions during watch (not reconcile)
+                                # often indicate a restart after a crash.
+                                if spec.label == "K8sPod":
+                                    self.correlator.record(
+                                        "pod_restart", meta.namespace or "",
+                                        meta.name, time.time(), "K8sPod",
+                                    )
                             elif etype == "MODIFIED":
                                 spec.handler(obj, rv)
                                 stats.modified += 1
+                                # Record state changes for CAUSED_BY correlation.
+                                # ConfigMap/Secret edits and Deployment rollouts
+                                # are the most common causes of downstream errors.
+                                _change_types = {
+                                    "K8sConfigMap": ("configmap_edit", "K8sConfigMap"),
+                                    "K8sSecret": ("secret_edit", "K8sSecret"),
+                                    "K8sDeployment": ("deployment_rollout", "K8sDeployment"),
+                                }
+                                if spec.label in _change_types:
+                                    ctype, clabel = _change_types[spec.label]
+                                    self.correlator.record(
+                                        ctype, meta.namespace or "",
+                                        meta.name, time.time(), clabel,
+                                    )
                             else:
                                 logger.debug("Unknown watch event type: %s", etype)
 
