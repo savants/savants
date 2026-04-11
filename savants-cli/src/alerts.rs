@@ -81,36 +81,129 @@ pub fn check_and_alert(client: &crate::graph::GraphClient, config: &AlertConfig)
                     let ns = row[1].as_str();
                     let restarts = row[2].as_i64();
                     let cluster = cluster_graph.replace("_", "-");
+
+                    // Check for CAUSED_BY correlation
+                    let cause = cc.query(
+                        &format!(
+                            "MATCH (e:LogEvent {{pod: '{}', namespace: '{}'}})-[r:CAUSED_BY]->(x) \
+                             RETURN labels(x)[0], x.name, r.change_type, r.delta_seconds LIMIT 1",
+                            name, ns
+                        ),
+                        &[],
+                    ).ok().and_then(|r| r.rows.first().map(|row| {
+                        format!("Likely caused by {} on {} ({}s before crash)",
+                            row.get(2).map(|v| v.as_str()).unwrap_or("?"),
+                            row.get(1).map(|v| v.as_str()).unwrap_or("?"),
+                            row.get(3).map(|v| v.as_i64()).unwrap_or(0))
+                    }));
+
+                    // Check recent log errors for this pod
+                    let top_error = cc.query(
+                        &format!(
+                            "MATCH (e:LogEvent {{pod: '{}', namespace: '{}'}}) \
+                             WHERE e.severity IN ['ERROR','FATAL'] \
+                             RETURN e.template_text, e.count ORDER BY e.count DESC LIMIT 1",
+                            name, ns
+                        ),
+                        &[],
+                    ).ok().and_then(|r| r.rows.first().map(|row| {
+                        let tmpl: String = row[0].as_str().chars().take(100).collect();
+                        format!("Top error (x{}): {}", row[1].as_i64(), tmpl)
+                    }));
+
+                    let mut message = format!(
+                        "Pod {}/{} on {} — {} restarts\n",
+                        ns, name, cluster, restarts
+                    );
+                    if let Some(cause) = cause {
+                        message.push_str(&format!("\n{}\n", cause));
+                    }
+                    if let Some(error) = top_error {
+                        message.push_str(&format!("\n{}\n", error));
+                    }
+                    message.push_str(&format!(
+                        "\nCheck: kubectl --context {} -n {} logs {} --previous",
+                        cluster, ns, name
+                    ));
+
                     alerts.push(Alert {
                         id: format!("crashloop:{}:{}:{}", cluster, ns, name),
                         severity: AlertSeverity::Critical,
                         title: format!("CrashLoopBackOff: {}/{}", ns, name),
-                        message: format!(
-                            "Pod {}/{} on cluster {} is in CrashLoopBackOff ({} restarts)",
-                            ns, name, cluster, restarts
-                        ),
+                        message,
                         source: format!("k8s:{}", cluster),
                     });
                 }
             }
 
-            // Failed pods
+            // Failed pods — with smart context
             if let Ok(r) = cc.query(
-                "MATCH (p:K8sPod) WHERE p.status = 'Failed' RETURN p.name, p.namespace",
+                "MATCH (p:K8sPod) WHERE p.status = 'Failed' RETURN p.name, p.namespace, p.owner_kind, p.owner_name, p.image",
                 &[],
             ) {
                 for row in &r.rows {
                     let name = row[0].as_str();
                     let ns = row[1].as_str();
+                    let owner_kind = row.get(2).map(|v| v.as_str()).unwrap_or("");
+                    let owner_name = row.get(3).map(|v| v.as_str()).unwrap_or("");
+                    let image = row.get(4).map(|v| v.as_str()).unwrap_or("");
                     let cluster = cluster_graph.replace("_", "-");
+
+                    // Check if there's a healthy replacement (same owner, Running)
+                    let has_replacement = if !owner_name.is_empty() {
+                        cc.query(
+                            &format!(
+                                "MATCH (p:K8sPod) WHERE p.namespace = '{}' AND p.owner_name = '{}' AND p.status = 'Running' RETURN count(p)",
+                                ns, owner_name
+                            ),
+                            &[],
+                        ).ok()
+                        .and_then(|r| r.rows.first().map(|r| r[0].as_i64()))
+                        .unwrap_or(0) > 0
+                    } else { false };
+
+                    let (severity, diagnosis) = if has_replacement {
+                        (AlertSeverity::Info, format!(
+                            "Pod {}/{} on {} failed but a healthy replacement is running. \
+                             This is a dead pod that K8s left behind.\n\n\
+                             Fix: kubectl --context {} -n {} delete pod {}",
+                            ns, name, cluster, cluster, ns, name
+                        ))
+                    } else {
+                        // No replacement — check what it depends on
+                        let deps = cc.query(
+                            &format!(
+                                "MATCH (p:K8sPod {{name: '{}', namespace: '{}'}})-[:READS]->(cm) RETURN labels(cm)[0], cm.name",
+                                name, ns
+                            ),
+                            &[],
+                        ).ok().map(|r| {
+                            r.rows.iter()
+                                .map(|r| format!("{}: {}", r[0].as_str(), r[1].as_str()))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }).unwrap_or_default();
+
+                        (AlertSeverity::Warning, format!(
+                            "Pod {}/{} on {} failed with no healthy replacement.\n\
+                             Image: {}\n\
+                             Owner: {}/{}\n\
+                             {}\n\n\
+                             Check logs: kubectl --context {} -n {} logs {} --previous",
+                            ns, name, cluster,
+                            image,
+                            owner_kind, owner_name,
+                            if deps.is_empty() { "No config dependencies found.".to_string() }
+                            else { format!("Depends on: {}", deps) },
+                            cluster, ns, name
+                        ))
+                    };
+
                     alerts.push(Alert {
                         id: format!("failed:{}:{}:{}", cluster, ns, name),
-                        severity: AlertSeverity::Warning,
+                        severity,
                         title: format!("Pod Failed: {}/{}", ns, name),
-                        message: format!(
-                            "Pod {}/{} on cluster {} is in Failed state",
-                            ns, name, cluster
-                        ),
+                        message: diagnosis,
                         source: format!("k8s:{}", cluster),
                     });
                 }
