@@ -383,14 +383,14 @@ impl McpServer {
                 }
             },
             {
-                "name": "advanced_graph_query",
-                "description": "Power-user escape hatch: run a raw graph query against the underlying engine.",
+                "name": "query",
+                "description": "Run a SaQL query against Savants. SaQL is a resource-oriented query language. Examples: 'show pods where status = CrashLoopBackOff', 'story pod api-gateway in prod since 1h', 'causes of pod api-gateway', 'dependents of configmap api-config', 'impact of function authenticate', 'stats'. Use this for any question the specialized tools don't cover.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Query string for the Savants memory engine"}
+                        "q": {"type": "string", "description": "SaQL query string. Examples: 'show pods', 'story host astra since 24h', 'causes of pod api-gw in prod'"}
                     },
-                    "required": ["query"]
+                    "required": ["q"]
                 }
             },
             {
@@ -441,7 +441,8 @@ impl McpServer {
             "federated_symbol_in_cluster" => self.tool_federated_symbol_in_cluster(&args),
             "pre_change_warning" => self.tool_pre_change_warning(&args),
             "coupling_check" => self.tool_coupling_check(&args),
-            "advanced_graph_query" => self.tool_advanced_graph_query(&args),
+            "query" => self.tool_saql_query(&args),
+            "advanced_graph_query" => self.tool_advanced_graph_query(&args),  // hidden, not in tool list
             "reindex" => self.tool_reindex(&args),
             _ => Err(format!("Unknown tool: {}", tool_name)),
         };
@@ -2128,6 +2129,12 @@ impl McpServer {
                 "message": message
             }
         })
+    }
+
+    fn tool_saql_query(&self, args: &Value) -> Result<String, String> {
+        let q_str = arg_str(args, "q")?;
+        let parsed = crate::saql::parse(&q_str)?;
+        crate::saql::execute(&parsed, &self.client)
     }
 }
 
