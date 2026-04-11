@@ -150,7 +150,22 @@ pub async fn run(repo: Option<String>, _tail_lines: u32) {
         }
     }
 
-    // 4. Summary
+    // 4. Auto-configure MCP if an AI tool is detected and not already configured
+    let mcp_configured = Path::new(".mcp.json").exists()
+        && std::fs::read_to_string(".mcp.json")
+            .map(|s| s.contains("savants"))
+            .unwrap_or(false);
+
+    if !mcp_configured {
+        let has_claude = find_in_path("claude").is_some();
+        let has_cursor = Path::new(".cursor").exists();
+        if has_claude || has_cursor {
+            println!("[{}] Auto-configuring MCP for AI tools...", "mcp".bold());
+            super::mcp::install("project", "auto");
+        }
+    }
+
+    // 5. Summary
     println!("\n{}", "=".repeat(60));
     if issues.is_empty() {
         println!("{}", "No issues detected. Your infrastructure looks healthy.".green());

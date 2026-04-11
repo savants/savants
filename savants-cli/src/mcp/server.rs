@@ -103,7 +103,7 @@ impl McpServer {
         json!([
             {
                 "name": "graph_stats",
-                "description": "Get node and edge counts for the Code Property Graph.",
+                "description": "Get the total number of resources and connections tracked by Savants.",
                 "inputSchema": {"type": "object", "properties": {}}
             },
             {
@@ -388,7 +388,7 @@ impl McpServer {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Graph query string"}
+                        "query": {"type": "string", "description": "Query string for the Savants memory engine"}
                     },
                     "required": ["query"]
                 }
@@ -473,7 +473,7 @@ impl McpServer {
     fn query_text(&self, client: &GraphClient, cypher: &str, params: &[(&str, &str)]) -> Result<Vec<Vec<GraphValue>>, String> {
         client.query(cypher, params)
             .map(|r| r.rows)
-            .map_err(|e| format!("Graph query failed: {}", e))
+            .map_err(|e| format!("Query failed: {}", e))
     }
 
     // ---------------------------------------------------------------
@@ -508,7 +508,7 @@ impl McpServer {
 
         if ns_count == 0 {
             return Ok(format!(
-                "Cluster '{}' has no data in the graph. Run the K8s ingestor to populate it first.",
+                "Cluster '{}' has no data yet. Run the K8s ingestor to populate it first.",
                 cluster
             ));
         }
@@ -711,6 +711,32 @@ impl McpServer {
         ];
 
         if rows.is_empty() {
+            // Check if there's data outside the time window — don't penalize
+            // for querying a narrow range when data exists further back
+            if since_minutes > 0 {
+                let check = c.query(
+                    "MATCH (e:LogEvent) WHERE e.severity IN ['ERROR','FATAL'] RETURN min(e.last_seen), max(e.last_seen), count(e)",
+                    &[],
+                );
+                if let Ok(ref r) = check {
+                    if let Some(row) = r.rows.first() {
+                        let count = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
+                        if count > 0 {
+                            let oldest = row.get(0).map(|v| v.as_f64()).unwrap_or(0.0);
+                            let newest = row.get(1).map(|v| v.as_f64()).unwrap_or(0.0);
+                            let oldest_ago = ((now_unix() - oldest) / 60.0) as i64;
+                            let newest_ago = ((now_unix() - newest) / 60.0) as i64;
+                            lines.push(format!(
+                                "No events in the last {} minutes, but {} events exist from {}–{} minutes ago. \
+                                 Try `since_minutes: {}` or `since_minutes: 0` to see them.",
+                                since_minutes, count, oldest_ago, newest_ago,
+                                newest_ago + 10,
+                            ));
+                            return Ok(lines.join("\n"));
+                        }
+                    }
+                }
+            }
             lines.push(
                 "No significant log events found. Either the log watcher \
                  isn't running, the filters excluded everything, or the pod \
@@ -1258,7 +1284,7 @@ impl McpServer {
             &[("ns", &namespace)],
         )?;
         if ns_rows.is_empty() {
-            return Ok(format!("Namespace '{}' not found in cluster graph.", namespace));
+            return Ok(format!("Namespace '{}' not found in cluster data.", namespace));
         }
         let status = ns_rows[0].get(0).map(|v| v.as_str()).unwrap_or("?");
         let age = ns_rows[0].get(1).map(|v| v.as_i64()).unwrap_or(0);
@@ -1428,7 +1454,7 @@ impl McpServer {
         };
 
         if fn_result.is_empty() {
-            return Ok(format!("Function '{}' not found in graph.", function_name));
+            return Ok(format!("Function '{}' not found.", function_name));
         }
 
         let mut lines = vec![format!("=== X-Ray: {} ===", function_name)];
