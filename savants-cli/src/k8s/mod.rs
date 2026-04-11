@@ -1,7 +1,7 @@
 //! Kubernetes cluster ingestor for the Mazkir runtime layer.
 //!
 //! Reads the state of a Kubernetes cluster via the `kube` crate,
-//! maps resources to Mazkir graph nodes, and writes them to a FalkorDB graph
+//! maps resources to Mazkir graph nodes, and writes them to a Savants memory graph
 //! via `GraphClient`. Supports snapshot mode (full reconcile), watch mode
 //! (live streaming), log intelligence, and temporal correlation.
 

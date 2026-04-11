@@ -1,5 +1,5 @@
 //! Host ingestor — reads local machine state from /proc, systemd, dmesg,
-//! Docker and writes it to FalkorDB. Rust port of the Python
+//! Docker and writes it to Savants memory. Rust port of the Python
 //! `savants.host.ingestor` module.
 
 pub mod template;
@@ -1159,7 +1159,7 @@ pub fn run_snapshot() {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
-                "{}: Could not connect to FalkorDB: {}",
+                "{}: Could not connect to Savants memory: {}",
                 "Error".red(),
                 e
             );
@@ -1169,7 +1169,7 @@ pub fn run_snapshot() {
 
     if !client.is_connected() {
         eprintln!(
-            "{}: FalkorDB is not reachable at {}:{}",
+            "{}: Savants memory is not reachable at {}:{}",
             "Error".red(),
             state.graph_host(),
             state.graph_port()

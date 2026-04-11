@@ -659,7 +659,7 @@ impl McpServer {
         let mut where_parts = vec![
             format!("e.cluster = '{}'", escape_cypher(&cluster)),
         ];
-        // Severity filter inline (FalkorDB param lists are tricky)
+        // Severity filter inline (memory engine param lists are tricky)
         let allowed_str = allowed.iter().map(|s| format!("'{}'", s)).collect::<Vec<_>>().join(", ");
         where_parts.push(format!("e.severity IN [{}]", allowed_str));
 

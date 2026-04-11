@@ -15,11 +15,11 @@ use colored::*;
 
 const DEFAULT_PORT: u16 = 6379;
 
-pub struct EmbeddedFalkorDB {
+pub struct EmbeddedEngine {
     pub port: u16,
 }
 
-impl EmbeddedFalkorDB {
+impl EmbeddedEngine {
     pub fn new() -> Self {
         let port = env::var("SAVANTS_PORT")
             .ok()
@@ -28,7 +28,7 @@ impl EmbeddedFalkorDB {
         Self { port }
     }
 
-    /// Ensure FalkorDB is running. Starts it if not already up.
+    /// Ensure memory engine is running. Starts it if not already up.
     /// Returns true if we started it, false if it was already running.
     pub fn ensure_running(&self) -> Result<bool, String> {
         // Already running?
@@ -39,7 +39,7 @@ impl EmbeddedFalkorDB {
         // Find binaries
         let redis_bin = find_redis_binary()
             .ok_or("Could not find redis-server. Install Redis or run the savants installer.")?;
-        let graph_module = find_graph_module();
+        let engine_module = find_engine_module();
 
         // Ensure data directory
         let data_dir = savants_home().join("data");
@@ -54,11 +54,11 @@ impl EmbeddedFalkorDB {
             .arg("--save").arg("60").arg("1")
             .arg("--loglevel").arg("warning");
 
-        if let Some(ref module) = graph_module {
+        if let Some(ref module) = engine_module {
             cmd.arg("--loadmodule").arg(module);
         }
 
-        // Set LD_LIBRARY_PATH for libgomp (needed by FalkorDB on NixOS)
+        // Set LD_LIBRARY_PATH for libgomp (needed by memory engine on NixOS)
         let mut env_vars = env::vars().collect::<Vec<_>>();
         if let Some(gomp_dir) = find_libgomp() {
             let existing = env::var("LD_LIBRARY_PATH").unwrap_or_default();
@@ -99,7 +99,7 @@ impl EmbeddedFalkorDB {
         }
 
         Err(format!(
-            "FalkorDB did not start within 10s. Check {}",
+            "Savants memory did not start within 10s. Check {}",
             log_file.display()
         ))
     }
@@ -134,23 +134,23 @@ fn find_redis_binary() -> Option<String> {
     crate::find_in_path("redis-server").map(|p| p.to_string_lossy().to_string())
 }
 
-fn find_graph_module() -> Option<String> {
+fn find_engine_module() -> Option<String> {
     // 1. Env override
-    if let Ok(p) = env::var("SAVANTS_MODULE") {
+    if let Ok(p) = env::var("SAVANTS_ENGINE") {
         if Path::new(&p).exists() {
             return Some(p);
         }
     }
 
     // 2. Bundled
-    if let Some(bundled) = find_bundled("falkordb.so") {
+    if let Some(bundled) = find_bundled("savants-engine.so") {
         return Some(bundled);
     }
 
     // 3. System paths
     for p in &[
-        "/usr/lib/redis/modules/falkordb.so",
-        "/usr/local/lib/redis/modules/falkordb.so",
+        "/usr/lib/savants/engine.so",
+        "/usr/local/lib/savants/engine.so",
     ] {
         if Path::new(p).exists() {
             return Some(p.to_string());

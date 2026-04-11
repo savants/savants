@@ -1,14 +1,14 @@
 use colored::*;
 use std::path::Path;
 use crate::find_in_path;
-use crate::embedded::EmbeddedFalkorDB;
+use crate::embedded::EmbeddedEngine;
 
 pub async fn run(repo: Option<String>, _tail_lines: u32) {
     println!("{}", "Starting Savants...".bold());
     println!();
 
-    // 1. Ensure embedded FalkorDB is running
-    let embedded = EmbeddedFalkorDB::new();
+    // 1. Ensure embedded graph engine is running
+    let embedded = EmbeddedEngine::new();
     match embedded.ensure_running() {
         Ok(true) => println!("  {} Graph: {}", "●".green(), "started".green()),
         Ok(false) => println!("  {} Graph: {}", "●".green(), "connected".green()),

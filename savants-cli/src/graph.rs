@@ -53,7 +53,7 @@ impl GraphValue {
     }
 }
 
-/// A typed parameter value for FalkorDB CYPHER queries.
+/// A typed parameter value for Savants memory CYPHER queries.
 /// Strings get quoted, numbers and booleans do not.
 #[derive(Debug, Clone)]
 pub enum ParamValue {
@@ -65,7 +65,7 @@ pub enum ParamValue {
 }
 
 impl ParamValue {
-    /// Format for FalkorDB CYPHER parameter syntax.
+    /// Format for Savants memory CYPHER parameter syntax.
     fn to_cypher_literal(&self) -> String {
         match self {
             ParamValue::Str(s) => format!("'{}'", s.replace('\'', "\\'")),
@@ -222,7 +222,7 @@ fn parse_value(v: &Value) -> GraphValue {
         Value::Okay => GraphValue::String("OK".to_string()),
         Value::Nil => GraphValue::Null,
         Value::Bulk(arr) => {
-            // FalkorDB compact format: [type_id, value]
+            // Savants memory compact format: [type_id, value]
             if arr.len() == 2 {
                 if let Value::Int(type_id) = &arr[0] {
                     return match type_id {
