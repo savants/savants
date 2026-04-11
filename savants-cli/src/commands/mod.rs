@@ -5,3 +5,4 @@ pub mod mcp;
 pub mod status;
 pub mod story;
 pub mod up;
+pub mod watch_repo;

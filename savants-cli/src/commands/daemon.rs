@@ -9,7 +9,7 @@
 
 use colored::*;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn daemon_pid_file() -> PathBuf {
@@ -226,10 +226,124 @@ pub async fn run() {
         });
     }
 
+    // Start alert + repo + AWS monitoring thread
+    std::thread::spawn(|| {
+        let alert_config = crate::alerts::AlertConfig::from_env();
+        if alert_config.is_configured() {
+            println!("[alerts] Gotify/webhook alerting enabled");
+        }
+
+        // Discover git repos to watch
+        let repo_paths = discover_git_repos();
+        let mut repo_watchers: Vec<super::watch_repo::RepoWatcher> = repo_paths
+            .iter()
+            .map(|(path, branch)| {
+                println!("[repo] Watching {} (branch: {})", path, branch);
+                super::watch_repo::RepoWatcher::new(path, branch)
+            })
+            .collect();
+
+        loop {
+            // 1. Check alerts (graph-based: CrashLoop, disk, security, WiFi)
+            let state = crate::config::State::load();
+            if let Ok(client) = crate::graph::GraphClient::new(&state.graph_name()) {
+                crate::alerts::check_and_alert(&client, &alert_config);
+            }
+
+            // 2. Poll GitHub repos for new commits
+            for watcher in &mut repo_watchers {
+                if watcher.poll() {
+                    // New commits detected — notify
+                    if alert_config.is_configured() {
+                        let title = format!("New commits in {}", watcher.repo_path.rsplit('/').next().unwrap_or("repo"));
+                        let msg = format!("Code changes detected. Re-indexing recommended.");
+                        fire_gotify(&alert_config, &title, &msg, 3);
+                    }
+                }
+            }
+
+            // 3. Check AWS health (lightweight — just API status calls)
+            check_aws_health(&alert_config);
+
+            std::thread::sleep(std::time::Duration::from_secs(300)); // every 5 minutes
+        }
+    });
+
     // Wait forever (or until Ctrl-C)
     println!("Daemon running. Ctrl-C to stop.");
     tokio::signal::ctrl_c().await.ok();
     println!("Daemon shutting down...");
+}
+
+fn discover_git_repos() -> Vec<(String, String)> {
+    // Look for known repo paths
+    let candidates = [
+        ("/home/miguel/git/sourcecoders-ai/talent-pipeline", "main"),
+        ("/home/miguel/git/bernadinm/savants", "master"),
+    ];
+    candidates.iter()
+        .filter(|(path, _)| Path::new(path).join(".git").exists())
+        .map(|(p, b)| (p.to_string(), b.to_string()))
+        .collect()
+}
+
+fn fire_gotify(config: &crate::alerts::AlertConfig, title: &str, message: &str, priority: u8) {
+    if let (Some(url), Some(token)) = (&config.gotify_url, &config.gotify_token) {
+        let url = format!("{}/message?token={}", url, token);
+        let body = serde_json::json!({
+            "title": format!("Savants: {}", title),
+            "message": message,
+            "priority": priority,
+        });
+        let _ = std::thread::spawn(move || {
+            let client = reqwest::blocking::Client::new();
+            let _ = client.post(&url)
+                .json(&body)
+                .timeout(std::time::Duration::from_secs(5))
+                .send();
+        });
+    }
+}
+
+fn check_aws_health(config: &crate::alerts::AlertConfig) {
+    // Check EKS cluster status
+    for cluster in &["taria-prod-eks", "taria-dev-eks"] {
+        let output = Command::new("aws")
+            .args(["eks", "describe-cluster", "--name", cluster, "--region", "us-west-2",
+                   "--query", "cluster.status", "--output", "text"])
+            .output();
+        if let Ok(o) = output {
+            let status = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !status.is_empty() && status != "ACTIVE" {
+                fire_gotify(config, &format!("EKS {} unhealthy", cluster), &format!("Status: {}", status), 8);
+            }
+        }
+    }
+
+    // Check RDS health
+    let output = Command::new("aws")
+        .args(["rds", "describe-db-instances",
+               "--query", "DBInstances[?DBInstanceStatus!=`available`].{Name:DBInstanceIdentifier,Status:DBInstanceStatus}",
+               "--output", "text"])
+        .output();
+    if let Ok(o) = output {
+        let unhealthy = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !unhealthy.is_empty() {
+            fire_gotify(config, "RDS unhealthy", &unhealthy, 8);
+        }
+    }
+
+    // Check CloudWatch alarms in ALARM state
+    let output = Command::new("aws")
+        .args(["cloudwatch", "describe-alarms", "--state-value", "ALARM",
+               "--query", "MetricAlarms[].AlarmName", "--output", "text"])
+        .output();
+    if let Ok(o) = output {
+        let alarms = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !alarms.is_empty() {
+            fire_gotify(config, "CloudWatch ALARM", &alarms, 8);
+        }
+    }
 }
 
 fn discover_kubeconfig_clusters() -> Vec<String> {
