@@ -1780,12 +1780,9 @@ impl McpServer {
 
         let rows = self.query_text(
             &self.client,
-            "MATCH path = shortestPath( \
-               (a:Function)-[:CALLS*]->(b:Function) \
-             ) \
+            "MATCH (a:Function)-[:CALLS*1..6]->(b:Function) \
              WHERE a.file_path = $from AND b.file_path = $to \
-             UNWIND nodes(path) AS n \
-             RETURN DISTINCT n.file_path \
+             RETURN DISTINCT a.file_path, b.file_path \
              LIMIT 20",
             &[("from", &from_file), ("to", &to_file)],
         )?;
