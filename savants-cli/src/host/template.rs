@@ -19,7 +19,7 @@ static RE_IP: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_HEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b0x[0-9a-fA-F]{8,}\b|(?<![a-zA-Z])[0-9a-fA-F]{9,}(?![a-zA-Z])").unwrap()
+    Regex::new(r"\b0x[0-9a-fA-F]{8,}\b|\b[0-9a-fA-F]{9,}\b").unwrap()
 });
 
 static RE_NUM: LazyLock<Regex> = LazyLock::new(|| {
