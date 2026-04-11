@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "savants": {
+      "args": [
+        "serve"
+      ],
+      "command": "/home/miguel/git/bernadinm/savants/savants-cli/target/release/savants",
+      "env": {
+        "FALKORDB_GRAPH": "savants",
+        "FALKORDB_HOST": "localhost",
+        "FALKORDB_PORT": "16379"
+      }
+    }
+  }
+}
