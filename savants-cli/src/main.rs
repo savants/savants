@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use colored::*;
 
+mod config;
 mod graph;
 mod commands;
 mod utils;
@@ -55,6 +56,15 @@ enum Commands {
     },
     /// Start the MCP server (for Claude Code / Cursor)
     Serve,
+    /// Connect to savants.cloud (opens browser, like tailscale up)
+    Connect,
+    /// Disconnect from savants.cloud
+    Disconnect,
+    /// View internal state
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -103,6 +113,14 @@ enum HostAction {
     Snapshot,
 }
 
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Create or reset config to defaults
+    Init,
+    /// Show the config file path
+    Path,
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -148,6 +166,36 @@ async fn main() {
         },
         Commands::Serve => {
             commands::agent::run_python_raw(&["-m", "savants.mcp"]);
+        }
+        Commands::Connect => {
+            commands::connect::run().await;
+        }
+        Commands::Disconnect => {
+            commands::connect::disconnect();
+        }
+        Commands::Config { action } => {
+            match action {
+                Some(ConfigAction::Init) => {
+                    let state = config::State::default();
+                    if let Err(e) = state.save() {
+                        eprintln!("{}: {}", "Error".red(), e);
+                    } else {
+                        println!("State initialized.");
+                    }
+                }
+                Some(ConfigAction::Path) => {
+                    println!("{}", dirs::home_dir().unwrap_or_default().join(".savants").display());
+                }
+                None => {
+                    let state = config::State::load();
+                    println!("Graph:  {}:{}/{}", state.graph_host(), state.graph_port(), state.graph_name());
+                    if state.is_cloud_authenticated() {
+                        println!("Cloud:  {} (org: {})", "connected".green(), state.cloud_org.as_deref().unwrap_or("?"));
+                    } else {
+                        println!("Cloud:  {} (run {})", "not connected".dimmed(), "savants connect".cyan());
+                    }
+                }
+            }
         }
     }
 }
