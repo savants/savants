@@ -402,13 +402,19 @@ fn run_smart_diagnosis(
     config: &AlertConfig,
     alerts: &mut Vec<Alert>,
 ) {
-    // Collect all log events from all clusters + host
+    // Collect RECENT log events only — no stale alerts for already-fixed issues.
+    // Only alert on events with last_seen in the last 30 minutes.
+    let since_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64() - 1800.0;
     let mut events: Vec<(String, i64, String)> = vec![];
 
-    // Host log events
+    // Host log events (recent only)
     if let Ok(r) = client.query(
-        "MATCH (e:HostLogEvent) WHERE e.severity IN ['ERROR', 'FATAL'] \
-         RETURN e.template_text, e.count, e.severity ORDER BY e.count DESC LIMIT 20",
+        &format!(
+            "MATCH (e:HostLogEvent) WHERE e.severity IN ['ERROR', 'FATAL'] \
+             AND e.last_seen >= {} \
+             RETURN e.template_text, e.count, e.severity ORDER BY e.count DESC LIMIT 20",
+            since_ts
+        ),
         &[],
     ) {
         for row in &r.rows {
@@ -416,12 +422,16 @@ fn run_smart_diagnosis(
         }
     }
 
-    // K8s log events from all clusters
+    // K8s log events from all clusters (recent only)
     for cluster_graph in &["taria_prod", "taria_dev", "default"] {
         if let Ok(cc) = crate::graph::GraphClient::new(cluster_graph) {
             if let Ok(r) = cc.query(
-                "MATCH (e:LogEvent) WHERE e.severity IN ['ERROR', 'FATAL'] \
-                 RETURN e.template_text, e.count, e.severity ORDER BY e.count DESC LIMIT 20",
+                &format!(
+                    "MATCH (e:LogEvent) WHERE e.severity IN ['ERROR', 'FATAL'] \
+                     AND e.last_seen >= {} \
+                     RETURN e.template_text, e.count, e.severity ORDER BY e.count DESC LIMIT 20",
+                    since_ts
+                ),
                 &[],
             ) {
                 for row in &r.rows {
