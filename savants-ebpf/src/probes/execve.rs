@@ -116,29 +116,110 @@ fn read_process_event(pid: u32, hostname: &str) -> Option<KernelSecurityEvent> {
 }
 
 fn is_interesting(event: &KernelSecurityEvent) -> bool {
-    // Skip system noise — only report processes that are potentially suspicious
-    let boring = ["kworker", "migration", "rcu_", "ksoftirqd", "watchdog",
-                  "irq/", "scsi_", "loop", "jbd2", "ext4"];
-    if boring.iter().any(|b| event.comm.starts_with(b)) {
+    // ── Kernel threads: never interesting ──
+    let kernel_threads = [
+        "kworker", "migration", "rcu_", "ksoftirqd", "watchdog",
+        "irq/", "scsi_", "loop", "jbd2", "ext4", "ata_", "kswapd",
+        "oom_reaper", "khungtaskd", "kcompactd", "writeback",
+    ];
+    if kernel_threads.iter().any(|b| event.comm.starts_with(b)) {
         return false;
     }
 
-    // In containers, almost everything is interesting
-    if event.container_id.is_some() {
+    // ── Known malware: ALWAYS report ──
+    let always_flag = [
+        "xmrig", "minerd", "kdevtmpfsi", "kinsing",
+        "masscan", "nmap", "zmap",
+        "meterpreter", "cobalt", "reverse", "revshell",
+    ];
+    if always_flag.iter().any(|s| event.comm.contains(s)) {
         return true;
     }
 
-    // On the host, only report unusual processes
-    match &event.detail {
-        EventDetail::ProcessExec { filename, .. } => {
+    // ── Container whitelisting ──
+    if event.container_id.is_some() {
+        if let EventDetail::ProcessExec { filename, argv, parent_comm } = &event.detail {
+            let cmdline = argv.join(" ");
             let basename = filename.rsplit('/').next().unwrap_or(filename);
-            let suspicious = ["bash", "sh", "nc", "ncat", "curl", "wget",
-                            "python", "perl", "ruby", "xmrig", "nmap"];
-            // Only interesting if it's a suspicious binary OR parent is unusual
-            suspicious.iter().any(|s| basename == *s) || event.ppid == 1
+
+            // Health probes — the #1 noise source
+            let health_probes = [
+                "ping_readiness", "ping_liveness", "healthcheck", "health_check",
+                "readiness_check", "liveness_check", "pg_isready", "redis-cli ping",
+                "mysqladmin ping", "mongo --eval", "grpc_health_probe",
+                "wget -q --spider", "curl -f http://localhost",
+                "/lifecycle/ak", "authentik.lib.config",  // Authentik health
+                "/scripts/ping_", "/health/ping_",        // Redis/Valkey probes
+                "pg_isready -U",                          // Postgres readiness
+            ];
+            if health_probes.iter().any(|p| cmdline.contains(p) || event.comm.contains(p)) {
+                return false;
+            }
+
+            // Container init/entrypoint
+            let init_patterns = [
+                "entrypoint.sh", "docker-entrypoint", "start.sh",
+                "/pause", "tini", "dumb-init",
+            ];
+            if init_patterns.iter().any(|p| cmdline.contains(p)) {
+                return false;
+            }
+
+            // Known application processes + health check binaries
+            // Check BOTH basename AND full cmdline — health probes often use
+            // generic shells (sh, bash) with specific arguments
+            let known_apps = [
+                "gunicorn", "uvicorn", "nginx", "node", "java", "dotnet",
+                "php-fpm", "postgres", "mysqld", "redis-server", "mongod",
+                "pg_isready", "redis-cli", "mysqladmin", "mongo",
+                "terraform", "terraform-provi",
+                "runc", "containerd", "cri-o",
+                "cpufreqctl", "auto-cpufreq", "nproc", "uname",
+                "temporal", "authentik", "promtail", "grafana", "loki",
+                "prometheus", "alertmanager", "cert-manager", "cloudflared",
+                "coredns", "metrics-server", "kube-proxy", "flannel",
+                "calico", "cilium", "traefik", "envoy", "istio",
+            ];
+            if known_apps.iter().any(|app| basename.contains(app) || cmdline.contains(app)) {
+                return false;
+            }
+
+            // Shell from container runtime = probably a probe
+            let is_shell = ["sh", "bash", "dash"].contains(&basename);
+            let probe_parents = ["containerd-shim", "tini", "dumb-init",
+                                "s6-supervise", "runsv", "supervisord"];
+            if is_shell && probe_parents.iter().any(|p| parent_comm.contains(p)) {
+                // Only flag if the shell command looks suspicious
+                let suspicious_args = [
+                    "nc ", "ncat ", "/dev/tcp/", "base64 -d",
+                    "| bash", "| sh", "python -c", "perl -e",
+                    "chmod +x", "chmod 777", "/tmp/", "/dev/shm/",
+                ];
+                if !suspicious_args.iter().any(|s| cmdline.contains(s)) {
+                    return false;
+                }
+            }
+
+            // Unknown process in a container = interesting
+            return true;
         }
-        _ => false,
     }
+
+    // ── Host whitelisting ──
+    let host_boring = [
+        "systemd", "journald", "logind", "udevd", "dbus-daemon",
+        "NetworkManager", "dhcpcd", "wpa_supplicant",
+        "cron", "anacron", "sshd", "agetty", "login",
+        "polkitd", "containerd", "dockerd", "k3s",
+        "kubelet", "auto-cpufreq", "thermald",
+        "nix-daemon", "nix-build", "nix-env",
+    ];
+    if host_boring.iter().any(|b| event.comm.starts_with(b) || event.comm.contains(b)) {
+        return false;
+    }
+
+    // Unknown on host = potentially interesting
+    true
 }
 
 fn parse_status_field(status: &str, field: &str) -> u32 {
