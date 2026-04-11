@@ -4,11 +4,13 @@
 //! It compares the current state against alert rules and fires
 //! notifications for new issues only (deduplicates by alert ID).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-static FIRED_ALERTS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+/// Tracks when each alert last fired. Re-fires after the cooldown period.
+/// Critical: re-fire every 15 minutes. Warning: every 30 minutes. Info: once.
+static FIRED_ALERTS: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 
 #[derive(Debug, Clone)]
 pub struct Alert {
@@ -303,18 +305,40 @@ pub fn check_and_alert(client: &crate::graph::GraphClient, config: &AlertConfig)
         }
     }
 
-    // ── Deduplicate and fire ──
+    // ── Deduplicate with cooldown periods ──
+    // Critical/Emergency: re-notify every 15 minutes if still active
+    // Warning: re-notify every 30 minutes
+    // Info: notify once, never repeat
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let mut fired = FIRED_ALERTS.lock().unwrap();
     if fired.is_none() {
-        *fired = Some(HashSet::new());
+        *fired = Some(HashMap::new());
     }
     let seen = fired.as_mut().unwrap();
 
     for alert in &alerts {
-        if seen.contains(&alert.id) { continue; }
-        seen.insert(alert.id.clone());
-        fire_alert(alert, config);
+        let cooldown_secs = match alert.severity {
+            AlertSeverity::Emergency => 900,  // 15 minutes
+            AlertSeverity::Critical => 900,   // 15 minutes
+            AlertSeverity::Warning => 1800,   // 30 minutes
+            AlertSeverity::Info => u64::MAX,  // never repeat
+        };
+
+        let should_fire = match seen.get(&alert.id) {
+            None => true,                              // never fired
+            Some(last) => now - last >= cooldown_secs, // cooldown expired
+        };
+
+        if should_fire {
+            seen.insert(alert.id.clone(), now);
+            fire_alert(alert, config);
+        }
     }
+
+    // Clean up resolved alerts: if an ID was in `seen` but NOT in current alerts,
+    // the issue resolved. Remove it so it can re-fire if it comes back.
+    let current_ids: std::collections::HashSet<String> = alerts.iter().map(|a| a.id.clone()).collect();
+    seen.retain(|id, _| current_ids.contains(id));
 }
 
 fn fire_alert(alert: &Alert, config: &AlertConfig) {
@@ -440,7 +464,7 @@ fn run_smart_diagnosis(
 pub fn clear_alert(id: &str) {
     if let Ok(mut fired) = FIRED_ALERTS.lock() {
         if let Some(set) = fired.as_mut() {
-            set.remove(id);
+            set.remove(&id.to_string());
         }
     }
 }
@@ -448,6 +472,6 @@ pub fn clear_alert(id: &str) {
 /// Clear all alerts (on daemon restart).
 pub fn clear_all() {
     if let Ok(mut fired) = FIRED_ALERTS.lock() {
-        *fired = Some(HashSet::new());
+        *fired = Some(HashMap::new());
     }
 }

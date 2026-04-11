@@ -265,7 +265,7 @@ pub async fn run() {
             // 3. Check AWS health (lightweight — just API status calls)
             check_aws_health(&alert_config);
 
-            std::thread::sleep(std::time::Duration::from_secs(300)); // every 5 minutes
+            std::thread::sleep(std::time::Duration::from_secs(60)); // check every minute
         }
     });
 
