@@ -7,6 +7,7 @@ mod embedded;
 mod engine;
 mod graph;
 mod obfuscate;
+mod saql;
 mod schema;
 mod commands;
 mod host;
