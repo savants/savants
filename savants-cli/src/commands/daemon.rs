@@ -56,15 +56,25 @@ pub fn start() {
     let savants_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("savants"));
 
     // The daemon is just `savants daemon run` in the background
+    // Forward ALL current env vars so Gotify/webhook config is preserved
     let log = fs::File::create(&log_file).expect("Cannot create daemon log");
-    let child = Command::new(&savants_bin)
-        .args(["daemon", "run"])
+    let mut cmd = Command::new(&savants_bin);
+    cmd.args(["daemon", "run"])
         .env("SAVANTS_PORT", embedded.port.to_string())
         .stdout(log.try_clone().unwrap())
         .stderr(log)
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("Failed to start daemon");
+        .stdin(Stdio::null());
+
+    // Forward alert config env vars
+    for key in &["SAVANTS_GOTIFY_URL", "SAVANTS_GOTIFY_TOKEN", "SAVANTS_WEBHOOK_URL",
+                 "KUBECONFIG", "HOME", "PATH", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                 "AWS_DEFAULT_REGION", "GOOGLE_APPLICATION_CREDENTIALS"] {
+        if let Ok(val) = std::env::var(key) {
+            cmd.env(key, val);
+        }
+    }
+
+    let child = cmd.spawn().expect("Failed to start daemon");
 
     let pid = child.id();
     fs::write(daemon_pid_file(), pid.to_string()).expect("Cannot write pid file");
