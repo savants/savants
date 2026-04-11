@@ -156,6 +156,7 @@ def _start_falkordb_process(port: int, verbose: bool = True) -> int | None:
     """Start redis-server + FalkorDB module. Returns PID on success."""
     import subprocess
     import time
+    from pathlib import Path
 
     redis_bin = _find_redis_binary()
     if not redis_bin:
