@@ -1,0 +1,5 @@
+apiVersion: v2
+name: savants-cloud
+description: savants.cloud — multi-tenant graph federation API
+version: 0.1.0
+appVersion: "0.1.0"

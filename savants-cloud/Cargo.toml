@@ -1,0 +1,27 @@
+[package]
+name = "savants-cloud"
+version = "0.1.0"
+edition = "2021"
+description = "savants.cloud — multi-tenant graph federation API"
+
+[[bin]]
+name = "savants-cloud"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+redis = "0.25"
+jsonwebtoken = "9"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
+bcrypt = "0.15"
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"

@@ -1,0 +1,40 @@
+api:
+  image: savants/savants-cloud:latest
+  replicas: 1
+  port: 3000
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "512Mi"
+  env:
+    JWT_SECRET: "change-me-in-production"
+    STRIPE_SECRET_KEY: ""
+    STRIPE_WEBHOOK_SECRET: ""
+    GOOGLE_CLIENT_ID: ""
+    GOOGLE_CLIENT_SECRET: ""
+    GITHUB_CLIENT_ID: ""
+    GITHUB_CLIENT_SECRET: ""
+
+postgres:
+  image: postgres:16-alpine
+  storage: 5Gi
+  database: savants
+  user: savants
+  password: savants
+
+falkordb:
+  # Reuse existing FalkorDB in atlas-system namespace
+  # or deploy a dedicated one
+  external: true
+  host: falkordb.atlas-system.svc.cluster.local
+  port: 6379
+
+ingress:
+  enabled: true
+  host: api.savants.cloud
+  tls: true
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod

@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: savants-cloud-api
+  labels:
+    app: savants-cloud
+    component: api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app: savants-cloud
+      component: api
+  template:
+    metadata:
+      labels:
+        app: savants-cloud
+        component: api
+    spec:
+      containers:
+        - name: api
+          image: {{ .Values.api.image }}
+          ports:
+            - containerPort: {{ .Values.api.port }}
+          env:
+            - name: DATABASE_URL
+              value: "postgres://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@savants-cloud-postgres:5432/{{ .Values.postgres.database }}"
+            - name: REDIS_URL
+              value: "redis://{{ .Values.falkordb.host }}:{{ .Values.falkordb.port }}"
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:{{ .Values.api.port }}"
+            {{- range $key, $value := .Values.api.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.api.port }}
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.api.port }}
+            initialDelaySeconds: 10
