@@ -1,157 +1,170 @@
-# Savants Roadmap
+# Savants Roadmap — From Today to $1B
 
-## Priority 0: 60-second install-to-value (THE critical path)
+## Where we are (April 2026)
 
-Everything else is blocked by this. No GTM, no launch, no growth without frictionless install → immediate aha moment.
+**Built and working:**
+- 5.4MB Rust binary, zero dependencies
+- 20 host monitoring categories (3.7s full scan)
+- K8s cluster state + real-time watch streams
+- Log intelligence (template extraction, severity classification)
+- eBPF security probes (process exec, network connections)
+- 27 MCP tools for Claude Code / Cursor / any AI
+- 31 knowledge patterns with v2 dynamic diagnosis engine
+- SaQL query language (hides internal architecture)
+- Cloud API server (Axum, Postgres, JWT auth, Stripe)
+- Website (savants.dev, 23KB)
+- Install script (savants.sh)
+- Pricing model ($50/1K resources under management)
 
-### P0.1 — Embedded graph (kill the FalkorDB port-forward dependency)
-- [ ] Evaluate kuzu vs bundled FalkorDB subprocess vs DuckDB+graph extension
-- [ ] Implement chosen embedded graph with migration shim over existing Cypher queries
-- [ ] `savants init` creates `~/.savants/data/` and starts the graph automatically
-- [ ] Verify all 24 MCP tools work against embedded graph
-- [ ] Remove the `FALKORDB_HOST`/`FALKORDB_PORT` requirement for local mode
-
-### P0.2 — Single binary distribution
-- [ ] Package with PyInstaller or Nuitka (no visible Python dependency)
-- [ ] `curl -fsSL savants.sh | sh` install script that detects OS/arch and downloads binary
-- [ ] Test on: Ubuntu 22/24, Debian 12, Fedora 40, NixOS, macOS arm64/x86
-- [ ] Binary size target: < 50MB
-- [ ] Homebrew tap: `brew install savants`
-
-### P0.3 — Auto-detect infrastructure
-- [ ] `savants watch --auto-detect`: find kubeconfig contexts, Docker socket, systemd
-- [ ] `savants scan .`: index the current repo's code graph automatically
-- [ ] First useful output < 60 seconds from install
-- [ ] Auto-detect output: "Found: 1 K8s cluster (astra-k3s, 94 pods), 1 host (astra, 8 cores), Docker active, 534 systemd units"
-
-### P0.4 — The "aha moment" output
-- [ ] After auto-detect, immediately show: top 3 issues found (failed units, CrashLoop pods, disk warnings, high-error pods)
-- [ ] Color-coded severity, one-line-per-issue summary
-- [ ] "Run `savants story` for full diagnosis" call-to-action
-- [ ] `savants story` = cluster-wide + host-wide narrative (combines pod_story + host_story)
-
-### P0.5 — savants.sh install script
-- [ ] Write the install script (hosted at savants.sh)
-- [ ] Detect OS, arch, download correct binary
-- [ ] Add to PATH, verify install, run `savants --version`
-- [ ] Deploy to savants.sh domain
+**Proven on live infrastructure:**
+- Diagnosed coredns DNS cascade (15 CrashLoopBackOff pods → 1 root cause → 45s)
+- Found DHCP DAD conflict causing intermittent 502s (invisible to K8s monitoring)
+- Identified WiFi 2.4GHz interference (16K dropped packets)
+- All fixes verified working
 
 ---
 
-## Priority 1: Complete the product (needed for launch)
+## Phase 1: Launch (Weeks 1-2)
 
-### P1.1 — Host agent MCP tools
-- [ ] `host_state` MCP tool (CPU, memory, disk, load, failed units)
-- [ ] `host_story` MCP tool (significant journal/dmesg events, same pattern as pod_story)
-- [ ] Wire host agent into CLI: `savants host watch` daemon
-- [ ] Wire host ingestor into `savants watch --auto-detect`
+**Goal: First 100 users from Hacker News.**
 
-### P1.2 — CAUSED_BY temporal correlation (Phase 7 from log intelligence checklist)
-- [ ] Rolling window (60s) of recent cluster state changes from K8sWatcher
-- [ ] When LogEvent emitted, check window for temporally-adjacent events
-- [ ] Create CAUSED_BY edge with `confidence: "candidate"`
-- [ ] Surface in pod_story: "likely caused by configmap edit 30s prior"
+- [ ] Deploy savants.dev to Cloudflare Pages
+- [ ] Host binary at savants.sh (install script serves correct arch)
+- [ ] Create GitHub releases with pre-built binaries (linux-x86_64, linux-aarch64)
+- [ ] Post on Hacker News (draft ready in docs/hn-post.md)
+- [ ] Post on r/kubernetes, r/devops, r/sre
+- [ ] Record 2-minute terminal demo video (savants up → diagnosis)
+- [ ] Submit to MCP server directories (Claude Code, Cursor)
 
-### P1.3 — `savants report` shareable output
-- [ ] Generate markdown report of current cluster + host state + top issues
-- [ ] One-command: `savants report > diagnosis.md`
-- [ ] Designed to be pasted into Slack, GitHub issues, blog posts
-- [ ] Include graph stats, severity histogram, top 10 events, mentioned entities
-
-### P1.4 — Secret scrubber (prerequisite for cloud tier)
-- [ ] Scrub ConfigKey values, string_refs, EnvVar from graph before any cloud sync
-- [ ] Test: no actual secret values in any graph node property
-- [ ] Configurable scrub rules (regex patterns, env var names)
+**Success metric:** 500 installs, 10 GitHub stars, 3 people reach out.
 
 ---
 
-## Priority 2: Launch (HN + distribution)
+## Phase 2: Product-Market Fit (Weeks 3-8)
 
-### P2.1 — Hacker News launch
-- [ ] Write the HN post: "Savants: I built a tool that found the root cause of 15 crashing pods in 45 seconds"
-- [ ] Include: real demo (astra-k3s diagnosis), install command, what it found
-- [ ] Prepare for traffic: savants.sh serving binaries, savants.dev with docs
-- [ ] Target: front page, 5k installs first week
+**Goal: Find 10 users who can't live without it.**
 
-### P2.2 — savants.dev landing page
-- [ ] Hero: "Your infrastructure savant. Know what's wrong in 60 seconds."
-- [ ] Demo video: `curl savants.sh | sh` → auto-detect → diagnosis
-- [ ] Install command front and center
-- [ ] Feature grid: code graph, K8s state, log intelligence, host monitoring
-- [ ] "How it works" section: the 3-tier pipeline diagram
+- [ ] Talk to every person who installed it. What did they try? Where did it break?
+- [ ] Fix the top 3 pain points from user feedback
+- [ ] Add GitHub Actions integration (PR comment: blast radius + risk score)
+- [ ] Add Slack bot (the primary enterprise interface)
+- [ ] Wire v2 dynamic diagnosis into the diagnose MCP tool
+- [ ] Add learning mode for eBPF (replace whitelist with baseline)
+- [ ] Implement adapter system (TOML-based extensible resource ingestion)
+- [ ] Add `savants report --format html` for shareable incident reports
 
-### P2.3 — MCP marketplace listings
-- [ ] Claude Code MCP directory listing
-- [ ] Cursor MCP marketplace
-- [ ] README with MCP setup instructions
-- [ ] `savants mcp install` command that configures .mcp.json automatically
-
-### P2.4 — Documentation
-- [ ] Getting started guide (install → first diagnosis in 5 minutes)
-- [ ] CLI reference (all commands + flags)
-- [ ] MCP tools reference (all 24+ tools with examples)
-- [ ] Architecture overview (the 6-layer graph)
+**Success metric:** 10 weekly active users who use it in real incidents.
 
 ---
 
-## Priority 3: Growth + monetization
+## Phase 3: Cloud Tier + Revenue (Weeks 9-16)
 
-### P3.1 — savants.cloud (the paid tier)
-- [ ] Federation server: accept graph metadata from local clients
-- [ ] Multi-tenant graph storage
-- [ ] Cross-cluster queries ("which cluster has this configmap?")
-- [ ] `savants connect` command to link local → cloud
-- [ ] Team tier: $49/user/month
-- [ ] SOC2 Type 2 (when cloud tier has customers)
+**Goal: First paying customer. $1K MRR.**
 
-### P3.2 — AWS Marketplace listing
-- [ ] Package as AMI or container for Marketplace
-- [ ] Metered billing integration
-- [ ] Enterprise tier: SSO, RBAC, audit logs
+- [ ] Deploy savants.cloud to GCP Cloud Run + Cloud SQL
+- [ ] Complete OAuth device flow (savants connect → browser auth)
+- [ ] Firebase Auth for Google/GitHub SSO
+- [ ] Agent keys for headless remote clusters
+- [ ] Federation: CLI pushes deltas to cloud, cloud stores federated graph
+- [ ] Cross-cluster queries ("show all failing pods across all clusters")
+- [ ] Billing: Stripe metering on resources under management
+- [ ] Team features: shared graphs, member invites, org management
+- [ ] Dashboard: web UI for viewing graphs and incidents
 
-### P3.3 — Extension API
-- [ ] `@savants_tool` decorator for third-party MCP tools
-- [ ] Plugin discovery and loading
-- [ ] Example extensions: PagerDuty, Slack, Terraform drift
-- [ ] Extension marketplace on savants.dev
-
-### P3.4 — AWS/GCP/Azure cloud ingestors
-- [ ] AWS: EC2, RDS, Lambda, ECS, CloudWatch metrics → graph
-- [ ] GCP: GKE, Cloud Run, Cloud SQL → graph
-- [ ] Azure: AKS, App Service → graph
-- [ ] Cross-cloud federation queries
+**Success metric:** 3 paying teams, $3K MRR, 1K total installs.
 
 ---
 
-## Priority 4: Scale
+## Phase 4: Integrations + Growth (Months 5-8)
 
-### P4.1 — Performance (Rust hot paths)
-- [ ] Move log classifier to Rust (target: 5M lines/sec/core)
-- [ ] Move drain3 template extraction to Rust
-- [ ] Move graph writer to batch Cypher with pipelining
-- [ ] Profile and optimize for 50-cluster, 10k-pod scale
+**Goal: Become the default infrastructure intelligence tool. $50K MRR.**
 
-### P4.2 — macOS + Windows host agents
-- [ ] macOS collector: sysctl, vm_stat, launchctl, `log show`
-- [ ] Windows collector: WMI, Event Log, Windows Services
-- [ ] Platform detection + automatic collector selection
+- [ ] GitHub bot: auto-comment on PRs with blast radius analysis
+- [ ] PagerDuty integration: auto-enrich incidents with graph context
+- [ ] Datadog/Grafana: import metrics, connect to code graph
+- [ ] ArgoCD/Flux: track deployments, know what version is running where
+- [ ] Terraform/Pulumi: blast radius for infrastructure changes
+- [ ] AWS integration: EC2, RDS, Lambda, ECS, costs → graph
+- [ ] GCP integration: GKE, Cloud Run, Cloud SQL → graph
+- [ ] Extension SDK: let third parties build MCP tools on the graph
+- [ ] Compliance reports: auto-generate SOC2/HIPAA incident evidence
 
-### P4.3 — Web UI
-- [ ] Graph visualization (nodes + edges, interactive)
-- [ ] Incident timeline view
-- [ ] Team dashboard for savants.cloud
-- [ ] Compliance artifact export (SOC2, HIPAA incident evidence)
+**Success metric:** 50 paying teams, $50K MRR, 10K installs, 5 community extensions.
 
 ---
 
-## What's already done (as of 2026-04-10)
+## Phase 5: Enterprise + Platform (Months 9-14)
 
-- [x] Code graph: AST parsing, call graphs, decorators, config keys, episodic memory
-- [x] K8s cluster state: diff-based ingest, real-time watch streams (1.27s propagation)
-- [x] K8s log intelligence: 3-tier pipeline (classifier → drain3 → graph), MENTIONS edges, retention GC
-- [x] Host agent: CPU/mem/disk/net/processes/systemd/docker/dmesg/journald (0.9s ingest)
-- [x] MCP server: 24 tools including pod_story, cluster_state, diff_impact
-- [x] CLI: `savants k8s watch`, `savants k8s snapshot`
-- [x] Rename: synapcode → savants (complete across Python, Rust, desktop, tests, docs, CI)
-- [x] Domains: savants.dev, savants.sh, savants.cloud purchased
-- [x] Proven on live cluster: diagnosed coredns root cause (15 CrashLoopBackOff pods, 7.5M log lines → 1 story → 45 seconds)
+**Goal: Enterprise contracts. $500K MRR.**
+
+- [ ] SSO (SAML/OIDC) for enterprise customers
+- [ ] RBAC: role-based access to graphs and tools
+- [ ] Audit logs: who queried what, when
+- [ ] On-premises deployment option (Helm chart, air-gapped)
+- [ ] AWS Marketplace listing (buy with committed spend)
+- [ ] Dedicated support tier ($5K/month)
+- [ ] SLA: 15-minute response for critical issues
+- [ ] SOC2 Type 2 certification for savants.cloud
+- [ ] Multi-region deployment (US, EU, APAC)
+
+**Success metric:** 10 enterprise customers, $500K MRR, 100K installs.
+
+---
+
+## Phase 6: Autonomous Agent (Months 15-24)
+
+**Goal: Savants diagnoses AND fixes. $2M MRR.**
+
+- [ ] Google Docs/Notion integration: connect docs to code + infra
+- [ ] Google Calendar: on-call schedules, deploy freezes
+- [ ] Slack deep integration: parse incident channels for decisions
+- [ ] Jira/Linear: connect tickets to code changes to incidents
+- [ ] Identity integration (Okta/Google Workspace): who has access to what
+- [ ] Autonomous fix suggestion: detect issue → generate PR → request approval
+- [ ] Autonomous deploy: if approved, trigger ArgoCD/Flux deployment
+- [ ] Predictive: "this pod will OOM in 12 hours based on memory trend"
+- [ ] Cost optimization: "these 5 deployments are idle, saving $2K/month"
+- [ ] Full incident timeline: code change → deploy → incident → fix → postmortem
+
+**Success metric:** 100 enterprise customers, $2M MRR, 500K installs.
+
+---
+
+## Phase 7: The Standard (Year 3+)
+
+**Goal: Savants is how infrastructure is managed. $10M+ MRR.**
+
+- [ ] Figma/Canva: design system connected to component graph
+- [ ] Salesforce: customer impact analysis during incidents
+- [ ] Financial: connect cloud spend to business metrics
+- [ ] AI agent marketplace: community-built agents on the Savants platform
+- [ ] Multi-cloud federation: unified view across AWS + GCP + Azure + on-prem
+- [ ] Acquisition targets: buy specialized tools, integrate into the graph
+- [ ] IPO preparation or strategic acquisition
+
+---
+
+## What you need to do RIGHT NOW
+
+1. **Deploy savants.dev** (Cloudflare Pages, 30 minutes)
+2. **Host binary at savants.sh** (Cloudflare Worker, 1 hour)
+3. **Post on HN** (Tuesday or Wednesday, 9-10am ET)
+
+Everything else follows from having users. The product is built. Ship it.
+
+---
+
+## The one question that determines everything
+
+**Can you get 10 people to use Savants in a real incident within 60 days?**
+
+If yes → the roadmap accelerates. Users tell you what to build next.
+If no → the product needs to change. More features won't help.
+
+The fastest path to 10 users: find SRE teams who had a bad incident
+in the last month, run Savants against their cluster live, and show
+them the root cause they already know (so they can verify accuracy).
+
+---
+
+*Generated by Savants. Last updated: 2026-04-11.*
