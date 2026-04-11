@@ -294,7 +294,23 @@ pub async fn run() {
                     }
                 }
                 if gcp_configs.is_empty() {
-                    println!("[cost] GCP: no billing exports found (run: gcloud auth login)");
+                    // No BigQuery export — fall back to API-based estimation
+                    let projects_output = Command::new("gcloud")
+                        .args(["projects", "list", "--format=value(projectId)"])
+                        .output();
+                    if let Ok(o) = projects_output {
+                        if o.status.success() {
+                            for project in String::from_utf8_lossy(&o.stdout).lines() {
+                                let project = project.trim();
+                                if project.is_empty() { continue; }
+                                let _ = crate::cloud_cost::setup_billing_export(project);
+                                match crate::cloud_cost::ingest_gcp_costs_api(&client, project) {
+                                    Ok(n) => println!("[cost] GCP {} (estimated): {} resources", project, n),
+                                    Err(e) => println!("[cost] GCP {} skip: {}", project, e),
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // AWS: auto-discovers from configured profile
