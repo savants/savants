@@ -1,0 +1,5 @@
+# Remap all source paths to eliminate build machine paths from the binary.
+# This prevents `/home/miguel/.cargo/registry/...` from appearing in
+# panic messages and debug strings.
+[build]
+rustflags = ["--remap-path-prefix", "/home/miguel/.cargo/registry/src/=", "--remap-path-prefix", "/home/miguel/git/bernadinm/savants/savants-cli/="]

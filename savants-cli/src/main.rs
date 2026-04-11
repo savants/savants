@@ -1,9 +1,12 @@
 use clap::{Parser, Subcommand};
 use colored::*;
 
+mod cloud;
 mod config;
 mod embedded;
+mod engine;
 mod graph;
+mod obfuscate;
 mod commands;
 mod host;
 mod k8s;
