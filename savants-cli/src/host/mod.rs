@@ -393,11 +393,24 @@ impl HostIngestor {
             if total_discarded > 1000 {
                 let diag_q = format!(
                     "MERGE (e:HostLogEvent {{hostname: '{}', source: 'wifi', template_hash: 'wifi-discard-high'}}) \
-                     SET e.severity = 'WARNING', e.template_text = 'WiFi {} discarding {} packets (signal {}dBm, band {}, ch {}). If on 2.4GHz, switch to 5GHz.', \
+                     SET e.severity = 'WARNING', e.template_text = 'WiFi {} discarding {} packets (signal {}dBm, band {}, ch {}). Check channel congestion and power management.', \
                      e.count = {}, e.last_seen = {}",
                     self.hostname,
                     iface, total_discarded, signal_dbm, band, channel,
                     total_discarded,
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),
+                );
+                let _ = self.client.query(&diag_q, &[]);
+            }
+
+            // Also flag if signal is weak
+            if signal_dbm < -75 && signal_dbm > -256 {
+                let diag_q = format!(
+                    "MERGE (e:HostLogEvent {{hostname: '{}', source: 'wifi', template_hash: 'wifi-signal-weak'}}) \
+                     SET e.severity = 'WARNING', e.template_text = 'WiFi {} signal weak at {}dBm (band {}, ch {}). May cause packet loss and connectivity drops.', \
+                     e.count = 1, e.last_seen = {}",
+                    self.hostname,
+                    iface, signal_dbm, band, channel,
                     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),
                 );
                 let _ = self.client.query(&diag_q, &[]);

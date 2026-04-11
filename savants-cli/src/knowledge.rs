@@ -462,17 +462,22 @@ pub static PATTERNS: &[KnownPattern] = &[
         category: Category::Network,
         severity: Severity::Warning,
         keywords: &["WiFi", "discarding", "packets", "2.4GHz", "interference"],
-        explanation: "WiFi adapter is dropping a high number of packets. On 2.4 GHz, \
-                      this is almost always interference from other devices on the same \
-                      channel (neighbors' routers, Bluetooth, microwaves). On 5 GHz, \
-                      it may indicate weak signal or driver issues.",
-        fix: "1. Switch to 5 GHz: nmcli connection modify <name> wifi.band a\n\
-              2. Disable power save: 802-11-wireless.powersave 2\n\
-              3. Apply: nmcli connection up <name>\n\
-              4. Best fix: use an ethernet cable for servers.",
+        explanation: "WiFi adapter is dropping a high number of packets. Common causes:\n\
+                      - On 2.4 GHz: interference from other devices (routers, Bluetooth, microwaves)\n\
+                      - On 5 GHz: weak signal (shorter range) or driver issues\n\
+                      - On any band: power management causing micro-disconnects\n\
+                      - Hardware: failing WiFi adapter or antenna",
+        fix: "Diagnose first, then fix:\n\
+              1. Check what band you're on: nmcli dev wifi list | grep '*'\n\
+              2. If 2.4 GHz and router supports 5 GHz: nmcli connection modify <name> wifi.band a\n\
+              3. If 2.4 GHz and NO 5 GHz available: change to a less congested channel on the router\n\
+              4. Disable power save: nmcli connection modify <name> 802-11-wireless.powersave 2\n\
+              5. Apply changes: nmcli connection up <name>\n\
+              6. Best for servers: use an ethernet cable — eliminates all WiFi issues",
         investigate: "Check packet stats: cat /proc/net/wireless\n\
                      Check channel congestion: nmcli dev wifi list\n\
-                     Check power save: iwconfig <iface> | grep Power",
+                     Check available bands: nmcli dev wifi list | awk '{print $5}' | sort -u\n\
+                     Check power save: cat /sys/module/iwlmvm/parameters/power_scheme",
     },
     KnownPattern {
         id: "wifi-weak-signal",
