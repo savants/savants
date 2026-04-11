@@ -3,6 +3,7 @@ use colored::*;
 
 mod alerts;
 mod cloud;
+mod cloud_cost;
 mod remediation;
 mod config;
 mod embedded;
