@@ -282,6 +282,180 @@ pub static PATTERNS: &[KnownPattern] = &[
         investigate: "Check disk space in /nix/store:\n\
                      du -sh /nix/store",
     },
+    // ── Cost / Resource waste ──
+    KnownPattern {
+        id: "pod-pending-unschedulable",
+        category: Category::Performance,
+        severity: Severity::Warning,
+        keywords: &["Unschedulable", "Insufficient cpu", "Insufficient memory",
+                    "didn't match Pod's node affinity"],
+        explanation: "A pod cannot be scheduled because the cluster lacks sufficient \
+                      resources or the pod's affinity rules don't match any node. \
+                      You may be paying for capacity that can't be used.",
+        fix: "Check node capacity vs requests:\n\
+              kubectl describe nodes | grep -A 5 'Allocated resources'\n\
+              Consider: reduce resource requests, add nodes, or relax affinity rules.",
+        investigate: "kubectl get events --field-selector reason=FailedScheduling",
+    },
+    KnownPattern {
+        id: "resource-limits-missing",
+        category: Category::Performance,
+        severity: Severity::Warning,
+        keywords: &["no resource limits", "LimitRange", "requests.cpu: 0",
+                    "requests.memory: 0"],
+        explanation: "Containers without resource limits can consume unbounded CPU/memory, \
+                      starving other workloads and making costs unpredictable.",
+        fix: "Add resource limits to all containers:\n\
+              resources:\n\
+                requests: { cpu: '100m', memory: '128Mi' }\n\
+                limits: { cpu: '500m', memory: '512Mi' }",
+        investigate: "Find all pods without limits:\n\
+                     kubectl get pods -A -o json | jq '.items[] | select(.spec.containers[].resources.limits == null) | .metadata.name'",
+    },
+
+    // ── Vulnerabilities / Security ──
+    KnownPattern {
+        id: "image-pull-backoff",
+        category: Category::Security,
+        severity: Severity::Error,
+        keywords: &["ImagePullBackOff", "ErrImagePull", "unauthorized",
+                    "authentication required"],
+        explanation: "A container image cannot be pulled. Either the image doesn't exist, \
+                      the tag is wrong, or the registry credentials are missing/expired.",
+        fix: "Check the image name and tag:\n\
+              kubectl describe pod <name> | grep Image\n\
+              If it's a private registry, ensure imagePullSecrets are configured:\n\
+              kubectl get secrets -n <namespace> | grep docker",
+        investigate: "Try pulling the image manually:\n\
+                     docker pull <image>:<tag>",
+    },
+    KnownPattern {
+        id: "privileged-container",
+        category: Category::Security,
+        severity: Severity::Warning,
+        keywords: &["privileged: true", "SYS_ADMIN", "hostPID: true",
+                    "hostNetwork: true"],
+        explanation: "A container is running with elevated privileges. This is a \
+                      security risk — a compromised container could access the host.",
+        fix: "Remove privileged mode unless absolutely necessary:\n\
+              securityContext:\n\
+                privileged: false\n\
+                runAsNonRoot: true\n\
+                readOnlyRootFilesystem: true",
+        investigate: "Find all privileged pods:\n\
+                     kubectl get pods -A -o json | jq '.items[] | select(.spec.containers[].securityContext.privileged == true)'",
+    },
+    KnownPattern {
+        id: "exposed-secret-in-env",
+        category: Category::Security,
+        severity: Severity::Critical,
+        keywords: &["password", "secret", "token", "api_key", "API_KEY",
+                    "SECRET_KEY", "PRIVATE_KEY"],
+        explanation: "A secret value may be exposed in environment variables or logs. \
+                      Secrets should be mounted as files, not passed as env vars.",
+        fix: "Use Kubernetes Secrets mounted as volumes instead of env vars:\n\
+              volumeMounts:\n\
+                - name: secrets\n\
+                  mountPath: /etc/secrets\n\
+                  readOnly: true",
+        investigate: "Check if secrets are in pod env:\n\
+                     kubectl get pod <name> -o json | jq '.spec.containers[].env[] | select(.valueFrom.secretKeyRef)'",
+    },
+
+    // ── Rate limits / Throttling ──
+    KnownPattern {
+        id: "rate-limited-429",
+        category: Category::Performance,
+        severity: Severity::Warning,
+        keywords: &["429", "Too Many Requests", "rate limit", "throttl",
+                    "Retry-After", "quota exceeded"],
+        explanation: "An API is returning 429 Too Many Requests. The application is \
+                      being throttled. This causes latency spikes and failures.",
+        fix: "Implement exponential backoff in the client.\n\
+              Check if you're hitting API quota limits and request an increase.\n\
+              Consider caching responses to reduce call frequency.",
+        investigate: "Check which endpoint is being throttled:\n\
+                     Look for the full URL in the log template.",
+    },
+    KnownPattern {
+        id: "api-server-throttled",
+        category: Category::Performance,
+        severity: Severity::Warning,
+        keywords: &["Throttling request", "too many requests",
+                    "client-side throttling", "request throttled"],
+        explanation: "The Kubernetes API server is throttling requests from a client. \
+                      A controller or operator may be making too many API calls.",
+        fix: "Identify the client making excessive calls:\n\
+              kubectl get --raw /metrics | grep apiserver_request_total\n\
+              Consider increasing API server QPS limits or fixing the chatty controller.",
+        investigate: "Check which service account is making the most requests.",
+    },
+
+    // ── DDoS / Attacks ──
+    KnownPattern {
+        id: "brute-force-auth",
+        category: Category::Security,
+        severity: Severity::Critical,
+        keywords: &["authentication failed", "invalid password", "login failed",
+                    "unauthorized", "403 Forbidden", "brute force",
+                    "too many authentication failures"],
+        explanation: "Multiple authentication failures detected. This may indicate \
+                      a brute-force attack or misconfigured credentials.",
+        fix: "If external-facing: enable rate limiting on the auth endpoint.\n\
+              Consider fail2ban or similar for SSH.\n\
+              Check if it's a misconfigured service account (internal).",
+        investigate: "Check the source IPs of failed auth attempts.\n\
+                     If they're from a single IP, block it at the firewall.",
+    },
+    KnownPattern {
+        id: "connection-flood",
+        category: Category::Security,
+        severity: Severity::Critical,
+        keywords: &["SYN flood", "too many open files", "EMFILE", "ENFILE",
+                    "socket: too many open files", "accept4: too many open files"],
+        explanation: "The system is running out of file descriptors due to too many \
+                      concurrent connections. This may be a DDoS attack or a connection leak.",
+        fix: "Increase file descriptor limits:\n\
+              ulimit -n 65535\n\
+              Or in systemd: LimitNOFILE=65535\n\
+              If it's an attack, enable SYN cookies and rate limiting.",
+        investigate: "Check connection count per source:\n\
+                     ss -s  # summary\n\
+                     ss -tn | awk '{print $5}' | sort | uniq -c | sort -rn | head",
+    },
+    KnownPattern {
+        id: "unusual-process",
+        category: Category::Security,
+        severity: Severity::Warning,
+        keywords: &["cryptominer", "xmrig", "kdevtmpfsi", "kinsing",
+                    "suspicious process", "reverse shell"],
+        explanation: "A potentially malicious process was detected. This may indicate \
+                      a compromised container or host.",
+        fix: "Immediately isolate the affected pod/host:\n\
+              kubectl cordon <node>  # prevent new pods\n\
+              kubectl delete pod <name> --force  # kill the pod\n\
+              Investigate how the attacker gained access.",
+        investigate: "Check process tree: ps auxf\n\
+                     Check network connections: ss -tlnp\n\
+                     Check container image for known vulnerabilities.",
+    },
+
+    // ── Certificate ──
+    KnownPattern {
+        id: "cert-expiring",
+        category: Category::Certificate,
+        severity: Severity::Warning,
+        keywords: &["certificate expired", "x509: certificate has expired",
+                    "certificate is not yet valid", "tls: bad certificate"],
+        explanation: "A TLS certificate has expired or is invalid. HTTPS connections \
+                      to this service will fail.",
+        fix: "Check cert-manager for failed certificate renewals:\n\
+              kubectl get certificates -A\n\
+              kubectl describe certificate <name> -n <namespace>\n\
+              Force renewal: kubectl delete certificate <name> -n <namespace>",
+        investigate: "Check the actual certificate expiry:\n\
+                     echo | openssl s_client -connect <host>:443 2>/dev/null | openssl x509 -noout -dates",
+    },
 ];
 
 /// Match a log template or error message against the knowledge base.
