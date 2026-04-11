@@ -456,6 +456,49 @@ pub static PATTERNS: &[KnownPattern] = &[
         investigate: "Check the actual certificate expiry:\n\
                      echo | openssl s_client -connect <host>:443 2>/dev/null | openssl x509 -noout -dates",
     },
+    // ── WiFi / Network quality ──
+    KnownPattern {
+        id: "wifi-high-packet-discard",
+        category: Category::Network,
+        severity: Severity::Warning,
+        keywords: &["WiFi", "discarding", "packets", "2.4GHz", "interference"],
+        explanation: "WiFi adapter is dropping a high number of packets. On 2.4 GHz, \
+                      this is almost always interference from other devices on the same \
+                      channel (neighbors' routers, Bluetooth, microwaves). On 5 GHz, \
+                      it may indicate weak signal or driver issues.",
+        fix: "1. Switch to 5 GHz: nmcli connection modify <name> wifi.band a\n\
+              2. Disable power save: 802-11-wireless.powersave 2\n\
+              3. Apply: nmcli connection up <name>\n\
+              4. Best fix: use an ethernet cable for servers.",
+        investigate: "Check packet stats: cat /proc/net/wireless\n\
+                     Check channel congestion: nmcli dev wifi list\n\
+                     Check power save: iwconfig <iface> | grep Power",
+    },
+    KnownPattern {
+        id: "wifi-weak-signal",
+        category: Category::Network,
+        severity: Severity::Warning,
+        keywords: &["signal", "dBm", "weak", "wifi", "-80", "-85", "-90"],
+        explanation: "WiFi signal is weak (below -70 dBm). This causes packet loss, \
+                      retransmissions, and intermittent connectivity drops.",
+        fix: "Move closer to the access point, or use a WiFi extender.\n\
+              For servers: use an ethernet cable — WiFi is unreliable for production.",
+        investigate: "Check signal: cat /proc/net/wireless\n\
+                     Check which band: nmcli dev wifi list | grep '*'",
+    },
+    KnownPattern {
+        id: "wifi-power-save",
+        category: Category::Performance,
+        severity: Severity::Warning,
+        keywords: &["power_save", "powersave", "Power Management:on"],
+        explanation: "WiFi power management is enabled. The adapter periodically sleeps \
+                      to save battery, causing micro-disconnects. This is fine for laptops \
+                      but terrible for servers.",
+        fix: "Disable power save:\n\
+              nmcli connection modify <name> 802-11-wireless.powersave 2\n\
+              nmcli connection up <name>",
+        investigate: "Check current state: cat /sys/module/iwlmvm/parameters/power_scheme",
+    },
 ];
 
 /// Match a log template or error message against the knowledge base.

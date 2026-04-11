@@ -122,6 +122,12 @@ impl HostIngestor {
             Err(e) => stats.errors.push(format!("interfaces: {}", e)),
         }
 
+        // 3b. WiFi quality (reads /proc/net/wireless)
+        if let Err(e) = self.ingest_wifi_quality() {
+            // WiFi not present is not an error — skip silently
+            let _ = e;
+        }
+
         // 4. Top processes
         match self.ingest_processes() {
             Ok(n) => stats.processes = n,
@@ -331,6 +337,73 @@ impl HostIngestor {
             n += 1;
         }
         Ok(n)
+    }
+
+    // ------------------------------------------------------------------
+    // 3b. WiFi quality from /proc/net/wireless
+    // ------------------------------------------------------------------
+
+    fn ingest_wifi_quality(&self) -> Result<(), String> {
+        let content = fs::read_to_string("/proc/net/wireless")
+            .map_err(|e| format!("no wifi: {}", e))?;
+
+        for line in content.lines().skip(2) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 11 { continue; }
+
+            let iface = parts[0].trim_end_matches(':');
+            let quality = parts[2].trim_end_matches('.').parse::<i32>().unwrap_or(0);
+            let signal_dbm = parts[3].trim_end_matches('.').parse::<i32>().unwrap_or(0);
+            let noise_dbm = parts[4].trim_end_matches('.').parse::<i32>().unwrap_or(0);
+            let discard_nwid = parts[5].parse::<i64>().unwrap_or(0);
+            let discard_crypt = parts[6].parse::<i64>().unwrap_or(0);
+            let discard_frag = parts[7].parse::<i64>().unwrap_or(0);
+            let retry = parts[8].parse::<i64>().unwrap_or(0);
+            let discard_misc = parts[9].parse::<i64>().unwrap_or(0);
+            let missed_beacon = parts[10].parse::<i64>().unwrap_or(0);
+
+            let total_discarded = discard_nwid + discard_crypt + discard_frag + discard_misc;
+
+            // Get WiFi band/channel from NetworkManager
+            let (band, channel, ssid) = get_wifi_info(iface);
+
+            // Write to graph
+            let q = format!(
+                "MERGE (w:WifiStatus {{hostname: '{}', interface: '{}'}}) \
+                 SET w.quality = {}, w.signal_dbm = {}, w.noise_dbm = {}, \
+                 w.retry = {}, w.discarded = {}, w.missed_beacon = {}, \
+                 w.band = '{}', w.channel = '{}', w.ssid = '{}'",
+                self.hostname, iface,
+                quality, signal_dbm, noise_dbm,
+                retry, total_discarded, missed_beacon,
+                band, channel, ssid,
+            );
+            let _ = self.client.query(&q, &[]);
+
+            // Edge: Host HAS_WIFI WifiStatus
+            let edge_q = format!(
+                "MATCH (h:Host {{hostname: '{}'}}) \
+                 MATCH (w:WifiStatus {{hostname: '{}', interface: '{}'}}) \
+                 MERGE (h)-[:HAS_WIFI]->(w)",
+                self.hostname, self.hostname, iface,
+            );
+            let _ = self.client.query(&edge_q, &[]);
+
+            // Auto-diagnose: flag high discard counts
+            if total_discarded > 1000 {
+                let diag_q = format!(
+                    "MERGE (e:HostLogEvent {{hostname: '{}', source: 'wifi', template_hash: 'wifi-discard-high'}}) \
+                     SET e.severity = 'WARNING', e.template_text = 'WiFi {} discarding {} packets (signal {}dBm, band {}, ch {}). If on 2.4GHz, switch to 5GHz.', \
+                     e.count = {}, e.last_seen = {}",
+                    self.hostname,
+                    iface, total_discarded, signal_dbm, band, channel,
+                    total_discarded,
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),
+                );
+                let _ = self.client.query(&diag_q, &[]);
+            }
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1140,6 +1213,26 @@ fn round1(v: f64) -> f64 {
 
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
+}
+
+fn get_wifi_info(iface: &str) -> (String, String, String) {
+    // Try nmcli for band/channel/ssid
+    if let Ok(output) = Command::new("nmcli")
+        .args(["-t", "-f", "ACTIVE,SSID,CHAN,BAND", "dev", "wifi"])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if line.starts_with("yes:") {
+                let parts: Vec<&str> = line.split(':').collect();
+                let ssid = parts.get(1).unwrap_or(&"").to_string();
+                let chan = parts.get(2).unwrap_or(&"").to_string();
+                let band = if chan.parse::<u32>().unwrap_or(0) > 14 { "5GHz" } else { "2.4GHz" };
+                return (band.to_string(), chan, ssid);
+            }
+        }
+    }
+    ("unknown".into(), "unknown".into(), "unknown".into())
 }
 
 // ---------------------------------------------------------------------------
