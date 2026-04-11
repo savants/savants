@@ -333,7 +333,7 @@ pub fn execute(query: &SaqlQuery, client: &GraphClient) -> Result<String, String
                 .map_err(|e| e.to_string())?;
             let n = nodes.rows.first().map(|r| r[0].as_i64()).unwrap_or(0);
             let e = edges.rows.first().map(|r| r[0].as_i64()).unwrap_or(0);
-            Ok(format!("Resources: {}, Connections: {}", n, e))
+            Ok(format!("Resources: {}, Metadata links: {}", n, e))
         }
 
         SaqlQuery::Show { resource, filters, scope, limit } => {

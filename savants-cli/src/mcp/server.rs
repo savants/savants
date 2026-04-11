@@ -102,6 +102,17 @@ impl McpServer {
     fn list_tools(&self) -> Value {
         json!([
             {
+                "name": "diagnose",
+                "description": "THE FIRST TOOL TO CALL. Runs a complete diagnostic of the user's infrastructure: host health (CPU, memory, disk, failed services), K8s cluster state (pod status, errors), and top issues with root cause analysis. Call this BEFORE any other tool when the user asks 'what's wrong', 'check my cluster', 'any issues', or any diagnostic question. Returns a full narrative with severity-ranked issues.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "since_minutes": {"type": "integer", "description": "Look back window in minutes. Default: 60. Use 0 for all time."},
+                        "min_severity": {"type": "string", "description": "WARN or ERROR. Default: WARN"}
+                    }
+                }
+            },
+            {
                 "name": "graph_stats",
                 "description": "Get the total number of resources and connections tracked by Savants.",
                 "inputSchema": {"type": "object", "properties": {}}
@@ -417,6 +428,7 @@ impl McpServer {
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
         let result = match tool_name {
+            "diagnose" => self.tool_diagnose(&args),
             "graph_stats" => self.tool_graph_stats(),
             "cluster_state" => self.tool_cluster_state(&args),
             "list_pods" => self.tool_list_pods(&args),
@@ -2131,10 +2143,79 @@ impl McpServer {
         })
     }
 
+    fn tool_diagnose(&self, args: &Value) -> Result<String, String> {
+        let since = args.get("since_minutes").and_then(|v| v.as_i64()).unwrap_or(60);
+        let sev = args.get("min_severity").and_then(|v| v.as_str()).unwrap_or("WARN");
+
+        let mut sections = Vec::new();
+
+        // Host state
+        match self.tool_host_state(&json!({})) {
+            Ok(s) => sections.push(s),
+            Err(_) => {}
+        }
+
+        // Host story
+        match self.tool_host_story(&json!({"since_minutes": since, "min_severity": sev})) {
+            Ok(s) if !s.contains("No significant") => sections.push(s),
+            _ => {}
+        }
+
+        // Find K8s clusters
+        let cluster_names = self.find_cluster_names();
+        for cluster in &cluster_names {
+            match self.tool_cluster_state(&json!({"cluster": cluster})) {
+                Ok(s) => sections.push(s),
+                Err(_) => {}
+            }
+            match self.tool_pod_story(&json!({
+                "cluster": cluster,
+                "since_minutes": since,
+                "min_severity": sev,
+                "limit": 10
+            })) {
+                Ok(s) if !s.contains("No significant") => sections.push(s),
+                _ => {}
+            }
+        }
+
+        if sections.is_empty() {
+            return Ok("No infrastructure data found. Run `savants up` to ingest your infrastructure first.".into());
+        }
+
+        Ok(sections.join("\n\n---\n\n"))
+    }
+
     fn tool_saql_query(&self, args: &Value) -> Result<String, String> {
         let q_str = arg_str(args, "q")?;
         let parsed = crate::saql::parse(&q_str)?;
         crate::saql::execute(&parsed, &self.client)
+    }
+
+    fn find_cluster_names(&self) -> Vec<String> {
+        let mut clusters = Vec::new();
+        // Check default graph for K8sCluster nodes
+        if let Ok(r) = self.client.query("MATCH (c:K8sCluster) RETURN c.name", &[]) {
+            for row in &r.rows {
+                if let Some(name) = row.first() {
+                    let n = name.as_str().to_string();
+                    if !n.is_empty() { clusters.push(n); }
+                }
+            }
+        }
+        // Also try well-known names
+        for name in &["astra-k3s", "default", "production", "staging"] {
+            if clusters.iter().any(|c| c == *name) { continue; }
+            let graph_name = name.replace("-", "_");
+            if let Ok(c) = GraphClient::new(&graph_name) {
+                if let Ok(r) = c.query("MATCH (p:K8sPod) RETURN count(p)", &[]) {
+                    if r.rows.first().map(|r| r[0].as_i64()).unwrap_or(0) > 0 {
+                        clusters.push(name.to_string());
+                    }
+                }
+            }
+        }
+        clusters
     }
 }
 
