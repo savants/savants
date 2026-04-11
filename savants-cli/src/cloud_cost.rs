@@ -10,6 +10,81 @@
 use crate::graph::GraphClient;
 use std::process::Command;
 
+/// Auto-discover GCP projects with billing exports.
+/// Returns Vec of (project_id, dataset, table_name).
+pub fn discover_gcp_billing() -> Vec<(String, String, String)> {
+    let mut results = vec![];
+
+    // Get all accessible projects
+    let output = Command::new("gcloud")
+        .args(["projects", "list", "--format=value(projectId)"])
+        .output();
+
+    let projects: Vec<String> = match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        }
+        _ => return results,
+    };
+
+    for project in &projects {
+        // Check if this project has a BigQuery dataset with billing data
+        let output = Command::new("bq")
+            .args(["ls", "--project_id", project, "--format=json"])
+            .output();
+
+        if let Ok(o) = output {
+            if o.status.success() {
+                if let Ok(datasets) = serde_json::from_str::<Vec<serde_json::Value>>(
+                    &String::from_utf8_lossy(&o.stdout)
+                ) {
+                    for ds in &datasets {
+                        let dataset_id = ds["datasetReference"]["datasetId"]
+                            .as_str().unwrap_or("");
+
+                        // Look for billing export datasets
+                        if dataset_id.contains("billing") || dataset_id.contains("cost") {
+                            // List tables in this dataset to find the billing export table
+                            let table_output = Command::new("bq")
+                                .args(["ls", "--project_id", project,
+                                       "--format=json", dataset_id])
+                                .output();
+
+                            if let Ok(to) = table_output {
+                                if to.status.success() {
+                                    if let Ok(tables) = serde_json::from_str::<Vec<serde_json::Value>>(
+                                        &String::from_utf8_lossy(&to.stdout)
+                                    ) {
+                                        for table in &tables {
+                                            let table_id = table["tableReference"]["tableId"]
+                                                .as_str().unwrap_or("");
+                                            if table_id.starts_with("gcp_billing_export") {
+                                                println!("[cost] Discovered GCP billing: {}.{}.{}",
+                                                    project, dataset_id, table_id);
+                                                results.push((
+                                                    project.clone(),
+                                                    dataset_id.to_string(),
+                                                    table_id.to_string(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
 /// Ingest GCP billing from BigQuery.
 pub fn ingest_gcp_costs(client: &GraphClient, project: &str, dataset: &str, table: &str) -> Result<usize, String> {
     // Query BigQuery for last 30 days of costs by service

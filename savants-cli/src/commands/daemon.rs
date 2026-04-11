@@ -285,31 +285,31 @@ pub async fn run() {
         loop {
             let state = crate::config::State::load();
             if let Ok(client) = crate::graph::GraphClient::new(&state.graph_name()) {
-                // GCP costs from BigQuery
-                match crate::cloud_cost::ingest_gcp_costs(
-                    &client,
-                    "enve-ai-prod",
-                    "billing_export",
-                    "gcp_billing_export_v1_0132CD_E53261_7EF1A7",
-                ) {
-                    Ok(n) => println!("[cost] GCP: {} services ingested", n),
-                    Err(e) => println!("[cost] GCP error: {}", e),
+                // GCP: auto-discover projects and billing exports
+                let gcp_configs = crate::cloud_cost::discover_gcp_billing();
+                for (project, dataset, table) in &gcp_configs {
+                    match crate::cloud_cost::ingest_gcp_costs(&client, project, dataset, table) {
+                        Ok(n) => println!("[cost] GCP {}: {} services ingested", project, n),
+                        Err(e) => println!("[cost] GCP {} error: {}", project, e),
+                    }
+                }
+                if gcp_configs.is_empty() {
+                    println!("[cost] GCP: no billing exports found (run: gcloud auth login)");
                 }
 
-                // AWS costs
+                // AWS: auto-discovers from configured profile
                 match crate::cloud_cost::ingest_aws_costs(&client) {
                     Ok(n) => println!("[cost] AWS: {} services ingested", n),
-                    Err(e) => println!("[cost] AWS error: {}", e),
+                    Err(e) => println!("[cost] AWS: {}", e),
                 }
 
                 // Check for cost anomalies
                 let anomalies = crate::cloud_cost::check_cost_anomalies(&client);
-                for (service, cost, msg) in &anomalies {
+                for (_service, _cost, msg) in &anomalies {
                     println!("[cost] ⚠️ {}", msg);
                 }
             }
 
-            // Sleep 6 hours
             std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
         }
     });
