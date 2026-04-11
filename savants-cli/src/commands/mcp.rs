@@ -16,12 +16,12 @@ fn find_savants_binary() -> String {
         .unwrap_or_else(|| "savants".to_string())
 }
 
-fn falkordb_port() -> String {
-    env::var("FALKORDB_PORT").unwrap_or_else(|_| "16379".to_string())
+fn savants_port() -> String {
+    env::var("SAVANTS_PORT").unwrap_or_else(|_| "16379".to_string())
 }
 
-fn falkordb_graph() -> String {
-    env::var("FALKORDB_GRAPH").unwrap_or_else(|_| "savants".to_string())
+fn savants_memory() -> String {
+    env::var("SAVANTS_MEMORY").unwrap_or_else(|_| "savants".to_string())
 }
 
 fn mcp_config_json() -> serde_json::Value {
@@ -30,9 +30,9 @@ fn mcp_config_json() -> serde_json::Value {
         "command": bin,
         "args": ["serve"],
         "env": {
-            "FALKORDB_HOST": "localhost",
-            "FALKORDB_PORT": falkordb_port(),
-            "FALKORDB_GRAPH": falkordb_graph()
+            "SAVANTS_HOST": "localhost",
+            "SAVANTS_PORT": savants_port(),
+            "SAVANTS_MEMORY": savants_memory()
         }
     })
 }

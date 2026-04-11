@@ -1,6 +1,7 @@
 use redis::{Client, Commands, RedisResult, Value};
 use std::env;
 
+#[derive(Clone)]
 pub struct GraphClient {
     client: Client,
     graph_name: String,
@@ -52,10 +53,78 @@ impl GraphValue {
     }
 }
 
+/// A typed parameter value for FalkorDB CYPHER queries.
+/// Strings get quoted, numbers and booleans do not.
+#[derive(Debug, Clone)]
+pub enum ParamValue {
+    Str(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    StrList(Vec<String>),
+}
+
+impl ParamValue {
+    /// Format for FalkorDB CYPHER parameter syntax.
+    fn to_cypher_literal(&self) -> String {
+        match self {
+            ParamValue::Str(s) => format!("'{}'", s.replace('\'', "\\'")),
+            ParamValue::Int(i) => i.to_string(),
+            ParamValue::Float(f) => format!("{:.6}", f),
+            ParamValue::Bool(b) => if *b { "true".into() } else { "false".into() },
+            ParamValue::StrList(v) => {
+                let items: Vec<String> = v.iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "\\'")))
+                    .collect();
+                format!("[{}]", items.join(","))
+            }
+        }
+    }
+}
+
+impl From<&str> for ParamValue {
+    fn from(s: &str) -> Self { ParamValue::Str(s.to_string()) }
+}
+impl From<String> for ParamValue {
+    fn from(s: String) -> Self { ParamValue::Str(s) }
+}
+impl From<i64> for ParamValue {
+    fn from(i: i64) -> Self { ParamValue::Int(i) }
+}
+impl From<i32> for ParamValue {
+    fn from(i: i32) -> Self { ParamValue::Int(i as i64) }
+}
+impl From<u64> for ParamValue {
+    fn from(i: u64) -> Self { ParamValue::Int(i as i64) }
+}
+impl From<f64> for ParamValue {
+    fn from(f: f64) -> Self { ParamValue::Float(f) }
+}
+impl From<bool> for ParamValue {
+    fn from(b: bool) -> Self { ParamValue::Bool(b) }
+}
+impl From<Vec<String>> for ParamValue {
+    fn from(v: Vec<String>) -> Self { ParamValue::StrList(v) }
+}
+
 impl GraphClient {
     pub fn new(graph_name: &str) -> RedisResult<Self> {
-        let host = env::var("FALKORDB_HOST").unwrap_or_else(|_| "localhost".to_string());
-        let port = env::var("FALKORDB_PORT").unwrap_or_else(|_| "16379".to_string());
+        let host = "localhost".to_string();
+        // Port resolution order:
+        // 1. SAVANTS_PORT env var (explicit override for CI/automation)
+        // 2. ~/.savants/savants.port (written by the embedded manager)
+        // 3. Default: 6379
+        let port = env::var("SAVANTS_PORT")
+            .ok()
+            .or_else(|| {
+                let port_file = dirs::home_dir()
+                    .unwrap_or_default()
+                    .join(".savants")
+                    .join("savants.port");
+                std::fs::read_to_string(port_file).ok()
+            })
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .unwrap_or(6379);
         let url = format!("redis://{}:{}", host, port);
         let client = Client::open(url)?;
         Ok(Self {
@@ -74,6 +143,31 @@ impl GraphClient {
             let parts: Vec<String> = params
                 .iter()
                 .map(|(k, v)| format!("{}='{}'", k, v.replace('\'', "\\'")))
+                .collect();
+            format!("CYPHER {} ", parts.join(" "))
+        };
+
+        let full_query = format!("{}{}", param_str, cypher);
+
+        let result: Value = redis::cmd("GRAPH.QUERY")
+            .arg(&self.graph_name)
+            .arg(&full_query)
+            .arg("--compact")
+            .query(&mut conn)?;
+
+        Ok(parse_graph_result(result))
+    }
+
+    /// Execute a query with typed parameters (supports int, float, bool, string, string list).
+    pub fn query_typed(&self, cypher: &str, params: &[(&str, ParamValue)]) -> RedisResult<QueryResult> {
+        let mut conn = self.client.get_connection()?;
+
+        let param_str = if params.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<String> = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v.to_cypher_literal()))
                 .collect();
             format!("CYPHER {} ", parts.join(" "))
         };

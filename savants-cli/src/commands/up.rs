@@ -1,28 +1,26 @@
 use colored::*;
 use std::path::Path;
 use crate::find_in_path;
+use crate::embedded::EmbeddedFalkorDB;
 
-pub async fn run(repo: Option<String>, tail_lines: u32) {
+pub async fn run(repo: Option<String>, _tail_lines: u32) {
     println!("{}", "Starting Savants...".bold());
     println!();
 
-    // 1. Ensure graph is running
-    // Try connecting; if it fails, start the embedded FalkorDB
-    let connected = crate::graph::GraphClient::new("savants")
-        .map(|c| c.is_connected())
-        .unwrap_or(false);
-
-    if connected {
-        println!("  {} Graph: connected", "●".green());
-    } else {
-        println!("  {} Graph: starting...", "●".yellow());
-        // Start via Python agent (it handles the embedded FalkorDB lifecycle)
-        super::agent::run_python(&["up",
-            "--tail-lines", &tail_lines.to_string(),
-            &repo.as_deref().map(|r| format!("--repo {}", r)).unwrap_or_default(),
-        ]);
-        return; // Python handled the full flow
+    // 1. Ensure embedded FalkorDB is running
+    let embedded = EmbeddedFalkorDB::new();
+    match embedded.ensure_running() {
+        Ok(true) => println!("  {} Graph: {}", "●".green(), "started".green()),
+        Ok(false) => println!("  {} Graph: {}", "●".green(), "connected".green()),
+        Err(e) => {
+            eprintln!("  {} Graph: {}", "●".red(), e.red());
+            eprintln!("  Install Redis or run the savants installer.");
+            std::process::exit(1);
+        }
     }
+
+    // Set the port for downstream graph queries
+    std::env::set_var("SAVANTS_PORT", embedded.port.to_string());
 
     println!();
     println!("{}...", "Detecting infrastructure".bold());
@@ -37,12 +35,14 @@ pub async fn run(repo: Option<String>, tail_lines: u32) {
     }
 
     // Docker
-    if find_in_path("docker").is_some() {
+    let has_docker = find_in_path("docker").is_some();
+    if has_docker {
         println!("  Found Docker");
     }
 
     // systemd
-    if find_in_path("systemctl").is_some() {
+    let has_systemd = find_in_path("systemctl").is_some();
+    if has_systemd {
         println!("  Found systemd");
     }
 
@@ -62,14 +62,108 @@ pub async fn run(repo: Option<String>, tail_lines: u32) {
 
     println!();
 
-    // Delegate all ingestion to Python agent
-    let mut args = vec!["up".to_string()];
-    args.extend(["--tail-lines".into(), tail_lines.to_string()]);
-    if let Some(r) = repo_path {
-        args.extend(["--repo".into(), r]);
+    let mut issues: Vec<String> = vec![];
+
+    // 2. Ingest host (pure Rust)
+    println!("[{}] Ingesting local machine...", "host".bold());
+    #[cfg(feature = "host")]
+    {
+        match crate::host::snapshot() {
+            Ok(stats) => {
+                println!("  {} disks, {} interfaces, {} systemd units ({} failed), {} journal events",
+                    stats.disks, stats.interfaces, stats.systemd_units,
+                    stats.failed_units, stats.journal_events);
+                if stats.failed_units > 0 {
+                    issues.push(format!("{} failed systemd units", stats.failed_units));
+                }
+                if stats.journal_events > 0 {
+                    issues.push(format!("{} journal error patterns", stats.journal_events));
+                }
+            }
+            Err(e) => println!("  {}: {}", "Error".red(), e),
+        }
     }
-    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    super::agent::run_python(&refs);
+    // Fallback: if host module isn't compiled in, try the graph for existing data
+    #[cfg(not(feature = "host"))]
+    {
+        let graph_name = std::env::var("SAVANTS_MEMORY").unwrap_or_else(|_| "savants".into());
+        if let Ok(client) = crate::graph::GraphClient::new(&graph_name) {
+            // Check if host data exists from a previous run
+            if let Ok(r) = client.query("MATCH (h:Host) RETURN h.hostname", &[]) {
+                if r.rows.is_empty() {
+                    println!("  {}", "(host module building — will be available soon)".dimmed());
+                } else {
+                    println!("  Host data available from previous ingest");
+                }
+            }
+        }
+    }
+
+    // 3. Ingest K8s clusters (pure Rust when available)
+    for cluster in &k8s_clusters {
+        println!("\n[{}] Ingesting cluster '{}'...", "k8s".bold(), cluster.cyan());
+        #[cfg(feature = "k8s")]
+        {
+            let graph_name = crate::config::State::cluster_graph_name(cluster);
+            match crate::graph::GraphClient::new(&graph_name) {
+                Ok(graph) => {
+                    match crate::k8s::K8sIngestor::kube_client_from_kubeconfig(Some(cluster)).await {
+                        Ok(kube_client) => {
+                            let ingestor = crate::k8s::K8sIngestor::new(
+                                graph, cluster.to_string(), kube_client,
+                            );
+                            let stats = ingestor.snapshot().await;
+                            println!("{}", stats.summary());
+                        }
+                        Err(e) => println!("  {}: K8s client: {}", "Error".red(), e),
+                    }
+                }
+                Err(e) => println!("  {}: graph: {}", "Error".red(), e),
+            }
+        }
+        #[cfg(not(feature = "k8s"))]
+        {
+            // Fallback: check graph for existing data
+            let graph_name = cluster.replace("-", "_");
+            if let Ok(client) = crate::graph::GraphClient::new(&graph_name) {
+                if let Ok(r) = client.query("MATCH (p:K8sPod) RETURN p.status, count(p) ORDER BY count(p) DESC", &[]) {
+                    if !r.rows.is_empty() {
+                        let status_str: String = r.rows.iter()
+                            .map(|r| format!("{} {}", r[1].as_i64(), r[0].as_str()))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        println!("  Pods: {}", status_str);
+                    }
+                }
+                if let Ok(r) = client.query(
+                    "MATCH (e:LogEvent) WHERE e.severity IN ['ERROR','FATAL'] RETURN count(DISTINCT e.pod), count(e)", &[]) {
+                    if let Some(row) = r.rows.first() {
+                        let n_pods = row[0].as_i64();
+                        let n_templates = row[1].as_i64();
+                        if n_templates > 0 {
+                            println!("  Log intelligence: {} error templates from {} pods", n_templates, n_pods);
+                            issues.push(format!("{} error patterns across {} pods on {}", n_templates, n_pods, cluster));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Summary
+    println!("\n{}", "=".repeat(60));
+    if issues.is_empty() {
+        println!("{}", "No issues detected. Your infrastructure looks healthy.".green());
+    } else {
+        println!("Found {} issue(s):\n", issues.len().to_string().red());
+        for (i, issue) in issues.iter().enumerate() {
+            println!("  {}. {}", i + 1, issue.red());
+        }
+        println!("\nRun {} for full diagnosis.", "savants story".cyan());
+    }
+    println!("{}", "=".repeat(60));
+    println!("\nSavants is ready. Use the MCP tools from your AI assistant,");
+    println!("or run {} for live monitoring.", "savants k8s watch <cluster>".cyan());
 }
 
 fn detect_k8s() -> Vec<String> {

@@ -61,7 +61,7 @@ impl State {
 
     /// Graph host — env var overrides stored state.
     pub fn graph_host(&self) -> String {
-        env::var("FALKORDB_HOST").unwrap_or_else(|_| {
+        env::var("SAVANTS_HOST").unwrap_or_else(|_| {
             if self.graph_host.is_empty() {
                 "localhost".to_string()
             } else {
@@ -72,17 +72,17 @@ impl State {
 
     /// Graph port — env var overrides stored state.
     pub fn graph_port(&self) -> u16 {
-        env::var("FALKORDB_PORT")
+        env::var("SAVANTS_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or_else(|| {
-                if self.graph_port == 0 { 16379 } else { self.graph_port }
+                if self.graph_port == 0 { 6379 } else { self.graph_port }
             })
     }
 
     /// Graph name — env var overrides stored state.
     pub fn graph_name(&self) -> String {
-        env::var("FALKORDB_GRAPH").unwrap_or_else(|_| {
+        env::var("SAVANTS_MEMORY").unwrap_or_else(|_| {
             if self.graph_name.is_empty() {
                 "savants".to_string()
             } else {

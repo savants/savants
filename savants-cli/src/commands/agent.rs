@@ -35,8 +35,8 @@ fn find_python() -> String {
 
 fn python_env() -> Vec<(String, String)> {
     let mut env_vars = vec![];
-    // Forward FALKORDB env vars
-    for key in &["FALKORDB_HOST", "FALKORDB_PORT", "FALKORDB_GRAPH"] {
+    // Forward Savants env vars
+    for key in &["SAVANTS_HOST", "SAVANTS_PORT", "SAVANTS_MEMORY"] {
         if let Ok(val) = env::var(key) {
             env_vars.push((key.to_string(), val));
         }
