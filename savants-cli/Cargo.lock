@@ -1433,6 +1433,7 @@ dependencies = [
  "hostname",
  "k8s-openapi",
  "kube",
+ "libc",
  "nix",
  "rand",
  "redis",

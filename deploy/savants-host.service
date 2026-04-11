@@ -1,0 +1,15 @@
+[Unit]
+Description=Savants Host Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=SAVANTS_PORT=6379
+ExecStart=/bin/sh -c 'while true; do /home/miguel/git/bernadinm/savants/savants-cli/target/release/savants host snapshot; sleep 30; done'
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

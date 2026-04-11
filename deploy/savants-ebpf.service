@@ -1,0 +1,15 @@
+[Unit]
+Description=Savants eBPF Security Probe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=SAVANTS_PORT=6379
+ExecStart=/home/miguel/git/bernadinm/savants/savants-ebpf/target/release/savants-ebpf --port 6379 --memory savants
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

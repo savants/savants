@@ -66,6 +66,11 @@ enum Commands {
     },
     /// Start the MCP server (for Claude Code / Cursor)
     Serve,
+    /// Manage the Savants daemon (watches all infrastructure continuously)
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
     /// Manage remote agents (Tailscale auth key model)
     Agent {
         #[command(subcommand)]
@@ -126,6 +131,20 @@ enum K8sAction {
 enum HostAction {
     /// One-shot host snapshot
     Snapshot,
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Start the daemon in the background
+    Start,
+    /// Show what the daemon is watching
+    Status,
+    /// Stop the daemon
+    Stop,
+    /// Tail the daemon log
+    Logs,
+    /// Run the daemon in foreground (used internally)
+    Run,
 }
 
 #[derive(Subcommand)]
@@ -201,6 +220,13 @@ async fn main() {
             HostAction::Snapshot => {
                 host::run_snapshot();
             }
+        },
+        Commands::Daemon { action } => match action {
+            DaemonAction::Start => commands::daemon::start(),
+            DaemonAction::Status => commands::daemon::status(),
+            DaemonAction::Stop => commands::daemon::stop(),
+            DaemonAction::Logs => commands::daemon::logs(),
+            DaemonAction::Run => commands::daemon::run().await,
         },
         Commands::Serve => {
             let state = config::State::load();

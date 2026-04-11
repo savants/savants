@@ -1,0 +1,16 @@
+[Unit]
+Description=Savants K8s Watcher for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=miguel
+Environment=SAVANTS_PORT=6379
+Environment=KUBECONFIG=/home/miguel/.kube/config
+ExecStart=/home/miguel/git/bernadinm/savants/savants-cli/target/release/savants k8s watch %i --context %i --logs --tail-lines 500 --retention-hours 168
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
