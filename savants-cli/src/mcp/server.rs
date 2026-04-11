@@ -843,8 +843,8 @@ impl McpServer {
                 &self.client,
                 "MATCH (h:Host {hostname: $hostname}) \
                  RETURN h.hostname, h.os, h.kernel, h.uptime_seconds, \
-                        h.cpu_count, h.cpu_usage_pct, h.memory_total_mb, \
-                        h.memory_used_mb, h.load_1, h.load_5, h.load_15",
+                        h.cpu_count, h.cpu_percent, h.memory_total_mb, \
+                        h.memory_used_mb, h.load_1m, h.load_5m, h.load_15m",
                 &[("hostname", h)],
             )?
         } else {
@@ -852,8 +852,8 @@ impl McpServer {
                 &self.client,
                 "MATCH (h:Host) \
                  RETURN h.hostname, h.os, h.kernel, h.uptime_seconds, \
-                        h.cpu_count, h.cpu_usage_pct, h.memory_total_mb, \
-                        h.memory_used_mb, h.load_1, h.load_5, h.load_15 \
+                        h.cpu_count, h.cpu_percent, h.memory_total_mb, \
+                        h.memory_used_mb, h.load_1m, h.load_5m, h.load_15m \
                  ORDER BY h.hostname",
                 &[],
             )?
@@ -903,8 +903,8 @@ impl McpServer {
             let disk_rows = self.query_text(
                 &self.client,
                 "MATCH (h:Host {hostname: $hostname})-[:HAS_DISK]->(d:HostDisk) \
-                 RETURN d.mount_point, d.device, d.total_mb, d.used_mb, d.usage_pct \
-                 ORDER BY d.usage_pct DESC",
+                 RETURN d.mountpoint, d.device, d.total_gb, d.used_gb, d.percent \
+                 ORDER BY d.percent DESC",
                 &[("hostname", h_name)],
             ).unwrap_or_default();
             if !disk_rows.is_empty() {
@@ -915,7 +915,7 @@ impl McpServer {
                     let used = dr.get(3).map(|v| v.as_f64()).unwrap_or(0.0);
                     let pct = dr.get(4).map(|v| v.as_f64()).unwrap_or(0.0);
                     let warn = if pct > 90.0 { " !!" } else { "" };
-                    lines.push(format!("    {:<20} {:.0}/{:.0} MB ({:.0}% used){}", mount, used, total, pct, warn));
+                    lines.push(format!("    {:<20} {:.0}/{:.0} GB ({:.0}% used){}", mount, used, total, pct, warn));
                 }
             } else {
                 lines.push("  Disks: (none in graph)".to_string());
@@ -925,7 +925,7 @@ impl McpServer {
             // Failed systemd units
             let failed_rows = self.query_text(
                 &self.client,
-                "MATCH (h:Host {hostname: $hostname})-[:RUNS_UNIT]->(u:SystemdUnit) \
+                "MATCH (h:Host {hostname: $hostname})-[:HAS_UNIT]->(u:SystemdUnit) \
                  WHERE u.active_state = 'failed' \
                  RETURN u.name, u.sub_state, u.description ORDER BY u.name",
                 &[("hostname", h_name)],
@@ -951,7 +951,7 @@ impl McpServer {
             // Top 10 processes by memory
             let proc_rows = self.query_text(
                 &self.client,
-                "MATCH (h:Host {hostname: $hostname})-[:RUNS_PROCESS]->(p:HostProcess) \
+                "MATCH (h:Host {hostname: $hostname})-[:RUNS]->(p:HostProcess) \
                  RETURN p.pid, p.name, p.memory_mb, p.cpu_pct, p.user \
                  ORDER BY p.memory_mb DESC LIMIT 10",
                 &[("hostname", h_name)],
