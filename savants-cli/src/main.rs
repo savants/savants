@@ -6,6 +6,7 @@ mod config;
 mod embedded;
 mod engine;
 mod graph;
+mod knowledge;
 mod obfuscate;
 mod saql;
 mod schema;
