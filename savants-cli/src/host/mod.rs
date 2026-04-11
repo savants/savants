@@ -32,6 +32,13 @@ pub struct HostIngestStats {
     pub docker_containers: usize,
     pub kernel_events: usize,
     pub journal_events: usize,
+    pub disk_io_devices: usize,
+    pub dns_checks: usize,
+    pub tls_certs: usize,
+    pub ntp_status: usize,
+    pub ssh_logins: usize,
+    pub pending_updates: usize,
+    pub hardware_health: usize,
     pub errors: Vec<String>,
 }
 
@@ -48,6 +55,13 @@ impl HostIngestStats {
             docker_containers: 0,
             kernel_events: 0,
             journal_events: 0,
+            disk_io_devices: 0,
+            dns_checks: 0,
+            tls_certs: 0,
+            ntp_status: 0,
+            ssh_logins: 0,
+            pending_updates: 0,
+            hardware_health: 0,
             errors: Vec::new(),
         }
     }
@@ -68,6 +82,13 @@ impl HostIngestStats {
             format!("  Docker:       {} containers", self.docker_containers),
             format!("  Kernel:       {} events", self.kernel_events),
             format!("  Journal:      {} events", self.journal_events),
+            format!("  Disk I/O:     {} devices", self.disk_io_devices),
+            format!("  DNS checks:   {}", self.dns_checks),
+            format!("  TLS certs:    {}", self.tls_certs),
+            format!("  NTP status:   {}", self.ntp_status),
+            format!("  SSH logins:   {}", self.ssh_logins),
+            format!("  Pending updates: {}", self.pending_updates),
+            format!("  HW health:    {}", self.hardware_health),
         ];
         if !self.errors.is_empty() {
             lines.push(format!("  Errors:       {}", self.errors.len()));
@@ -159,6 +180,48 @@ impl HostIngestor {
         match self.ingest_journal() {
             Ok(n) => stats.journal_events = n,
             Err(e) => stats.errors.push(format!("journal: {}", e)),
+        }
+
+        // 9. Disk I/O stats
+        match self.ingest_disk_io() {
+            Ok(n) => stats.disk_io_devices = n,
+            Err(e) => stats.errors.push(format!("disk_io: {}", e)),
+        }
+
+        // 10. DNS resolution checks
+        match self.ingest_dns_check() {
+            Ok(n) => stats.dns_checks = n,
+            Err(e) => stats.errors.push(format!("dns: {}", e)),
+        }
+
+        // 11. TLS certificate expiry
+        match self.ingest_tls_certs() {
+            Ok(n) => stats.tls_certs = n,
+            Err(e) => stats.errors.push(format!("tls_certs: {}", e)),
+        }
+
+        // 12. NTP synchronization status
+        match self.ingest_ntp_status() {
+            Ok(n) => stats.ntp_status = n,
+            Err(e) => stats.errors.push(format!("ntp: {}", e)),
+        }
+
+        // 13. SSH login activity
+        match self.ingest_ssh_logins() {
+            Ok(n) => stats.ssh_logins = n,
+            Err(e) => stats.errors.push(format!("ssh_logins: {}", e)),
+        }
+
+        // 14. Pending security updates
+        match self.ingest_pending_updates() {
+            Ok(n) => stats.pending_updates = n,
+            Err(e) => stats.errors.push(format!("pending_updates: {}", e)),
+        }
+
+        // 15. Hardware health (temps, SMART)
+        match self.ingest_hardware_health() {
+            Ok(n) => stats.hardware_health = n,
+            Err(e) => stats.errors.push(format!("hardware_health: {}", e)),
         }
 
         stats.elapsed_seconds = t0.elapsed().as_secs_f64();
@@ -854,6 +917,836 @@ impl HostIngestor {
         }
 
         Ok(buckets.len())
+    }
+
+    // ------------------------------------------------------------------
+    // 8. Journal errors
+    // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // 9. Disk I/O from /proc/diskstats
+    // ------------------------------------------------------------------
+
+    fn ingest_disk_io(&self) -> Result<usize, String> {
+        let content = fs::read_to_string("/proc/diskstats")
+            .map_err(|e| format!("cannot read /proc/diskstats: {}", e))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        let mut n = 0usize;
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // /proc/diskstats has 14+ fields; field indices (0-based):
+            // 2=device, 3=reads_completed, 4=reads_merged, 5=sectors_read,
+            // 6=time_reading_ms, 7=writes_completed, 8=writes_merged,
+            // 9=sectors_written, 10=time_writing_ms, 11=ios_in_progress,
+            // 12=time_io_ms, 13=weighted_io_time_ms
+            if parts.len() < 14 {
+                continue;
+            }
+
+            let device = parts[2];
+            // Skip partition slices (e.g. sda1) — only keep whole devices and dm-*
+            if device.starts_with("loop") || device.starts_with("ram") {
+                continue;
+            }
+
+            let reads_completed: i64 = parts[3].parse().unwrap_or(0);
+            let writes_completed: i64 = parts[7].parse().unwrap_or(0);
+            // Skip devices with zero activity
+            if reads_completed == 0 && writes_completed == 0 {
+                continue;
+            }
+
+            let time_reading_ms: i64 = parts[6].parse().unwrap_or(0);
+            let time_writing_ms: i64 = parts[10].parse().unwrap_or(0);
+            let io_in_progress: i64 = parts[11].parse().unwrap_or(0);
+            let time_io_ms: i64 = parts[12].parse().unwrap_or(0);
+            let weighted_io_time_ms: i64 = parts[13].parse().unwrap_or(0);
+
+            self.merge(
+                "MERGE (d:HostDiskIO {hostname: $hostname, device: $device}) \
+                 SET d.reads_completed = $reads, d.writes_completed = $writes, \
+                 d.time_reading_ms = $tr, d.time_writing_ms = $tw, \
+                 d.io_in_progress = $iop, d.time_io_ms = $tio, \
+                 d.weighted_io_time_ms = $wio, d.last_seen = $now",
+                &[
+                    ("hostname", ParamValue::Str(self.hostname.clone())),
+                    ("device", ParamValue::Str(device.to_string())),
+                    ("reads", ParamValue::Int(reads_completed)),
+                    ("writes", ParamValue::Int(writes_completed)),
+                    ("tr", ParamValue::Int(time_reading_ms)),
+                    ("tw", ParamValue::Int(time_writing_ms)),
+                    ("iop", ParamValue::Int(io_in_progress)),
+                    ("tio", ParamValue::Int(time_io_ms)),
+                    ("wio", ParamValue::Int(weighted_io_time_ms)),
+                    ("now", ParamValue::Float(now)),
+                ],
+            )?;
+
+            self.merge(
+                "MATCH (h:Host {hostname: $hn}) \
+                 MATCH (d:HostDiskIO {hostname: $hn, device: $device}) \
+                 MERGE (h)-[:HAS_DISK_IO]->(d)",
+                &[
+                    ("hn", ParamValue::Str(self.hostname.clone())),
+                    ("device", ParamValue::Str(device.to_string())),
+                ],
+            )?;
+
+            // Flag high weighted I/O time (> 10000ms indicates I/O saturation)
+            if weighted_io_time_ms > 10000 {
+                let diag_q = format!(
+                    "MERGE (e:HostLogEvent {{hostname: '{}', source: 'disk_io', template_hash: 'diskio-high-{}'}}) \
+                     SET e.severity = 'WARNING', e.template_text = 'Disk {} weighted I/O time {}ms exceeds 10000ms threshold — possible I/O saturation.', \
+                     e.count = 1, e.last_seen = {}",
+                    self.hostname, device, device, weighted_io_time_ms, now,
+                );
+                let _ = self.client.query(&diag_q, &[]);
+            }
+
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    // ------------------------------------------------------------------
+    // 10. DNS resolution check
+    // ------------------------------------------------------------------
+
+    fn ingest_dns_check(&self) -> Result<usize, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        let mut n = 0usize;
+
+        // Check against 1.1.1.1 (Cloudflare)
+        if let Some(ms) = self.run_dns_query("1.1.1.1") {
+            self.merge(
+                "MERGE (d:DnsCheck {hostname: $hostname, resolver: $resolver}) \
+                 SET d.response_ms = $ms, d.status = $status, d.last_seen = $now",
+                &[
+                    ("hostname", ParamValue::Str(self.hostname.clone())),
+                    ("resolver", ParamValue::Str("1.1.1.1".to_string())),
+                    ("ms", ParamValue::Float(ms)),
+                    ("status", ParamValue::Str(if ms < 0.0 { "FAIL".to_string() } else { "OK".to_string() })),
+                    ("now", ParamValue::Float(now)),
+                ],
+            )?;
+            self.merge(
+                "MATCH (h:Host {hostname: $hn}) \
+                 MATCH (d:DnsCheck {hostname: $hn, resolver: $resolver}) \
+                 MERGE (h)-[:HAS_DNS]->(d)",
+                &[
+                    ("hn", ParamValue::Str(self.hostname.clone())),
+                    ("resolver", ParamValue::Str("1.1.1.1".to_string())),
+                ],
+            )?;
+
+            if ms < 0.0 || ms > 500.0 {
+                let diag_q = format!(
+                    "MERGE (e:HostLogEvent {{hostname: '{}', source: 'dns', template_hash: 'dns-slow-1.1.1.1'}}) \
+                     SET e.severity = 'WARNING', e.template_text = 'DNS resolution via 1.1.1.1 {}. Possible network or DNS issue.', \
+                     e.count = 1, e.last_seen = {}",
+                    self.hostname,
+                    if ms < 0.0 { "failed".to_string() } else { format!("took {:.0}ms (>500ms)", ms) },
+                    now,
+                );
+                let _ = self.client.query(&diag_q, &[]);
+            }
+            n += 1;
+        }
+
+        // Check system-configured DNS from /etc/resolv.conf
+        if let Ok(resolv) = fs::read_to_string("/etc/resolv.conf") {
+            for line in resolv.lines() {
+                let line = line.trim();
+                if line.starts_with("nameserver") {
+                    if let Some(ns) = line.split_whitespace().nth(1) {
+                        if ns == "1.1.1.1" { continue; } // already checked
+                        if let Some(ms) = self.run_dns_query(ns) {
+                            self.merge(
+                                "MERGE (d:DnsCheck {hostname: $hostname, resolver: $resolver}) \
+                                 SET d.response_ms = $ms, d.status = $status, d.last_seen = $now",
+                                &[
+                                    ("hostname", ParamValue::Str(self.hostname.clone())),
+                                    ("resolver", ParamValue::Str(ns.to_string())),
+                                    ("ms", ParamValue::Float(ms)),
+                                    ("status", ParamValue::Str(if ms < 0.0 { "FAIL".to_string() } else { "OK".to_string() })),
+                                    ("now", ParamValue::Float(now)),
+                                ],
+                            )?;
+                            self.merge(
+                                "MATCH (h:Host {hostname: $hn}) \
+                                 MATCH (d:DnsCheck {hostname: $hn, resolver: $resolver}) \
+                                 MERGE (h)-[:HAS_DNS]->(d)",
+                                &[
+                                    ("hn", ParamValue::Str(self.hostname.clone())),
+                                    ("resolver", ParamValue::Str(ns.to_string())),
+                                ],
+                            )?;
+
+                            if ms < 0.0 || ms > 500.0 {
+                                let diag_q = format!(
+                                    "MERGE (e:HostLogEvent {{hostname: '{}', source: 'dns', template_hash: 'dns-slow-{}'}}) \
+                                     SET e.severity = 'WARNING', e.template_text = 'DNS resolution via {} {}. Possible network or DNS issue.', \
+                                     e.count = 1, e.last_seen = {}",
+                                    self.hostname, ns, ns,
+                                    if ms < 0.0 { "failed".to_string() } else { format!("took {:.0}ms (>500ms)", ms) },
+                                    now,
+                                );
+                                let _ = self.client.query(&diag_q, &[]);
+                            }
+                            n += 1;
+                        }
+                        break; // Only check the first system nameserver
+                    }
+                }
+            }
+        }
+
+        Ok(n)
+    }
+
+    /// Run `dig` against a resolver and return response time in ms, or None if dig is unavailable.
+    /// Returns negative value on failure.
+    fn run_dns_query(&self, resolver: &str) -> Option<f64> {
+        if which("dig").is_none() {
+            return None;
+        }
+        let output = Command::new("timeout")
+            .args(["2", "dig", &format!("@{}", resolver), "google.com", "+time=2", "+tries=1"])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return Some(-1.0);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Parse ";; Query time: <N> msec" from dig output
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.contains("Query time:") {
+                let re = Regex::new(r"Query time:\s*(\d+)\s*msec").unwrap();
+                if let Some(caps) = re.captures(line) {
+                    return Some(caps[1].parse::<f64>().unwrap_or(-1.0));
+                }
+            }
+        }
+        Some(-1.0)
+    }
+
+    // ------------------------------------------------------------------
+    // 11. TLS certificate expiry for listening ports
+    // ------------------------------------------------------------------
+
+    fn ingest_tls_certs(&self) -> Result<usize, String> {
+        if which("openssl").is_none() {
+            return Ok(0);
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        // Parse /proc/net/tcp for LISTEN state (state = 0A)
+        let content = fs::read_to_string("/proc/net/tcp").unwrap_or_default();
+        let mut listen_ports: Vec<u16> = Vec::new();
+
+        for line in content.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 4 { continue; }
+            // state is field 3 (0-indexed)
+            if parts[3] != "0A" { continue; } // 0A = LISTEN
+
+            // local_address is field 1, format hex_ip:hex_port
+            if let Some(port_hex) = parts[1].split(':').nth(1) {
+                if let Ok(port) = u16::from_str_radix(port_hex, 16) {
+                    // Skip common non-TLS ports and very high ephemeral ports
+                    if port > 0 && port < 49152 && !listen_ports.contains(&port) {
+                        listen_ports.push(port);
+                    }
+                }
+            }
+        }
+
+        let mut n = 0usize;
+        for port in &listen_ports {
+            let output = Command::new("timeout")
+                .args([
+                    "2",
+                    "openssl",
+                    "s_client",
+                    "-connect",
+                    &format!("localhost:{}", port),
+                    "-servername",
+                    "localhost",
+                ])
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output();
+
+            let cert_pem = match output {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+                Err(_) => continue,
+            };
+
+            if !cert_pem.contains("BEGIN CERTIFICATE") {
+                continue;
+            }
+
+            // Pipe cert through openssl x509 to get enddate
+            let mut child = match Command::new("openssl")
+                .args(["x509", "-noout", "-enddate", "-subject"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            if let Some(ref mut stdin) = child.stdin {
+                use std::io::Write;
+                let _ = stdin.write_all(cert_pem.as_bytes());
+            }
+
+            let x509_output = match child.wait_with_output() {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+                Err(_) => continue,
+            };
+
+            let mut end_date = String::new();
+            let mut subject = String::new();
+            let mut days_remaining: i64 = -1;
+
+            for line in x509_output.lines() {
+                if line.starts_with("notAfter=") {
+                    end_date = line.trim_start_matches("notAfter=").trim().to_string();
+                    // Parse: "Mon DD HH:MM:SS YYYY GMT" or similar openssl date format
+                    // We'll compute days remaining via a date command
+                    if let Ok(out) = Command::new("date")
+                        .args(["-d", &end_date, "+%s"])
+                        .output()
+                    {
+                        if let Ok(epoch) = String::from_utf8_lossy(&out.stdout).trim().parse::<f64>() {
+                            days_remaining = ((epoch - now) / 86400.0) as i64;
+                        }
+                    }
+                } else if line.starts_with("subject=") {
+                    subject = line.trim_start_matches("subject=").trim().to_string();
+                }
+            }
+
+            if end_date.is_empty() { continue; }
+
+            let flagged = days_remaining >= 0 && days_remaining < 30;
+
+            self.merge(
+                "MERGE (t:TlsCert {hostname: $hostname, port: $port}) \
+                 SET t.subject = $subject, t.expires = $expires, \
+                 t.days_remaining = $days, t.flagged = $flagged, t.last_seen = $now",
+                &[
+                    ("hostname", ParamValue::Str(self.hostname.clone())),
+                    ("port", ParamValue::Int(*port as i64)),
+                    ("subject", ParamValue::Str(subject)),
+                    ("expires", ParamValue::Str(end_date.clone())),
+                    ("days", ParamValue::Int(days_remaining)),
+                    ("flagged", ParamValue::Bool(flagged)),
+                    ("now", ParamValue::Float(now)),
+                ],
+            )?;
+
+            self.merge(
+                "MATCH (h:Host {hostname: $hn}) \
+                 MATCH (t:TlsCert {hostname: $hn, port: $port}) \
+                 MERGE (h)-[:HAS_TLS_CERT]->(t)",
+                &[
+                    ("hn", ParamValue::Str(self.hostname.clone())),
+                    ("port", ParamValue::Int(*port as i64)),
+                ],
+            )?;
+
+            if flagged {
+                let diag_q = format!(
+                    "MERGE (e:HostLogEvent {{hostname: '{}', source: 'tls', template_hash: 'tls-expiry-{}'}}) \
+                     SET e.severity = 'WARNING', e.template_text = 'TLS cert on port {} expires in {} days ({}). Renew soon.', \
+                     e.count = 1, e.last_seen = {}",
+                    self.hostname, port, port, days_remaining, end_date, now,
+                );
+                let _ = self.client.query(&diag_q, &[]);
+            }
+
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    // ------------------------------------------------------------------
+    // 12. NTP synchronization status
+    // ------------------------------------------------------------------
+
+    fn ingest_ntp_status(&self) -> Result<usize, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        let mut synchronized = false;
+        let mut ntp_service = String::new();
+        let mut offset_seconds: f64 = 0.0;
+        let mut source_found = false;
+
+        // Try timedatectl show (systemd-based)
+        if let Ok(output) = Command::new("timedatectl").arg("show").output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let line = line.trim();
+                    if line.starts_with("NTPSynchronized=") {
+                        synchronized = line.ends_with("yes");
+                        source_found = true;
+                    } else if line.starts_with("NTP=") {
+                        ntp_service = line.trim_start_matches("NTP=").to_string();
+                    }
+                }
+            }
+        }
+
+        // Fallback: check /run/systemd/timesync/synchronized
+        if !source_found {
+            if Path::new("/run/systemd/timesync/synchronized").exists() {
+                synchronized = true;
+                ntp_service = "systemd-timesyncd".to_string();
+                source_found = true;
+            }
+        }
+
+        // Try to get offset from timedatectl timesync-status
+        if let Ok(output) = Command::new("timedatectl").arg("timesync-status").output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let re = Regex::new(r"Offset:\s*([+-]?\d+\.?\d*)(us|ms|s)").unwrap();
+                if let Some(caps) = re.captures(&stdout) {
+                    let val: f64 = caps[1].parse().unwrap_or(0.0);
+                    let unit = &caps[2];
+                    offset_seconds = match unit {
+                        "us" => val / 1_000_000.0,
+                        "ms" => val / 1_000.0,
+                        _ => val,
+                    };
+                }
+            }
+        }
+
+        if !source_found {
+            return Ok(0);
+        }
+
+        self.merge(
+            "MERGE (n:NtpStatus {hostname: $hostname}) \
+             SET n.synchronized = $synced, n.service = $svc, \
+             n.offset_seconds = $offset, n.last_seen = $now",
+            &[
+                ("hostname", ParamValue::Str(self.hostname.clone())),
+                ("synced", ParamValue::Bool(synchronized)),
+                ("svc", ParamValue::Str(ntp_service)),
+                ("offset", ParamValue::Float(round2(offset_seconds))),
+                ("now", ParamValue::Float(now)),
+            ],
+        )?;
+
+        self.merge(
+            "MATCH (h:Host {hostname: $hn}) \
+             MATCH (n:NtpStatus {hostname: $hn}) \
+             MERGE (h)-[:HAS_NTP]->(n)",
+            &[("hn", ParamValue::Str(self.hostname.clone()))],
+        )?;
+
+        // Flag if not synchronized or offset > 1 second
+        if !synchronized || offset_seconds.abs() > 1.0 {
+            let reason = if !synchronized {
+                "NTP is not synchronized".to_string()
+            } else {
+                format!("Clock offset {:.3}s exceeds 1s threshold", offset_seconds)
+            };
+            let diag_q = format!(
+                "MERGE (e:HostLogEvent {{hostname: '{}', source: 'ntp', template_hash: 'ntp-drift'}}) \
+                 SET e.severity = 'WARNING', e.template_text = '{}. Time drift can cause TLS failures and log correlation issues.', \
+                 e.count = 1, e.last_seen = {}",
+                self.hostname, reason, now,
+            );
+            let _ = self.client.query(&diag_q, &[]);
+        }
+
+        Ok(1)
+    }
+
+    // ------------------------------------------------------------------
+    // 13. SSH login activity
+    // ------------------------------------------------------------------
+
+    fn ingest_ssh_logins(&self) -> Result<usize, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        let mut n = 0usize;
+
+        // Recent logins via `last`
+        if let Ok(output) = Command::new("last").args(["-n", "20"]).output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // Clear old SSH login nodes
+                let _ = self.merge(
+                    "MATCH (s:SshLogin {hostname: $hn}) DETACH DELETE s",
+                    &[("hn", ParamValue::Str(self.hostname.clone()))],
+                );
+
+                for line in stdout.lines() {
+                    let line = line.trim();
+                    if line.is_empty()
+                        || line.starts_with("wtmp begins")
+                        || line.starts_with("reboot")
+                    {
+                        continue;
+                    }
+
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() < 4 { continue; }
+
+                    let user = parts[0];
+                    let terminal = parts[1];
+                    let source = if parts[2].contains('.') || parts[2].contains(':') {
+                        parts[2]
+                    } else {
+                        ""
+                    };
+
+                    self.merge(
+                        "CREATE (s:SshLogin {hostname: $hostname, user: $user, \
+                         terminal: $terminal, source: $source, login_type: $ltype, \
+                         last_seen: $now})",
+                        &[
+                            ("hostname", ParamValue::Str(self.hostname.clone())),
+                            ("user", ParamValue::Str(user.to_string())),
+                            ("terminal", ParamValue::Str(terminal.to_string())),
+                            ("source", ParamValue::Str(source.to_string())),
+                            ("ltype", ParamValue::Str("recent".to_string())),
+                            ("now", ParamValue::Float(now)),
+                        ],
+                    )?;
+
+                    self.merge(
+                        "MATCH (h:Host {hostname: $hn}) \
+                         MATCH (s:SshLogin {hostname: $hn, user: $user, terminal: $terminal}) \
+                         MERGE (h)-[:HAS_SSH_LOGIN]->(s)",
+                        &[
+                            ("hn", ParamValue::Str(self.hostname.clone())),
+                            ("user", ParamValue::Str(user.to_string())),
+                            ("terminal", ParamValue::Str(terminal.to_string())),
+                        ],
+                    )?;
+                    n += 1;
+                }
+            }
+        }
+
+        // Check failed SSH attempts from auth.log or journalctl
+        let failed_output = if Path::new("/var/log/auth.log").exists() {
+            Command::new("sh")
+                .args(["-c", "grep 'Failed password' /var/log/auth.log 2>/dev/null | tail -200"])
+                .output()
+                .ok()
+        } else {
+            Command::new("journalctl")
+                .args(["--no-pager", "-u", "sshd", "-g", "Failed password", "-n", "200"])
+                .output()
+                .ok()
+        };
+
+        if let Some(output) = failed_output {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let re_ip = Regex::new(r"from\s+(\S+)\s+port").unwrap();
+                let mut ip_counts: HashMap<String, i64> = HashMap::new();
+
+                for line in stdout.lines() {
+                    if let Some(caps) = re_ip.captures(line) {
+                        let ip = caps[1].to_string();
+                        *ip_counts.entry(ip).or_insert(0) += 1;
+                    }
+                }
+
+                for (ip, count) in &ip_counts {
+                    if *count > 10 {
+                        let diag_q = format!(
+                            "MERGE (e:HostLogEvent {{hostname: '{}', source: 'ssh', template_hash: 'ssh-brute-{}'}}) \
+                             SET e.severity = 'WARNING', e.template_text = '{} failed SSH login attempts from {}. Possible brute-force attack.', \
+                             e.count = {}, e.last_seen = {}",
+                            self.hostname, ip, count, ip, count, now,
+                        );
+                        let _ = self.client.query(&diag_q, &[]);
+                    }
+                }
+            }
+        }
+
+        Ok(n)
+    }
+
+    // ------------------------------------------------------------------
+    // 14. Pending security updates
+    // ------------------------------------------------------------------
+
+    fn ingest_pending_updates(&self) -> Result<usize, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        let mut total_pending: usize = 0;
+        let mut security_pending: usize = 0;
+        let mut pkg_manager = String::new();
+
+        // Try apt (Debian/Ubuntu)
+        if which("apt").is_some() {
+            if let Ok(output) = Command::new("apt")
+                .args(["list", "--upgradable"])
+                .env("DEBIAN_FRONTEND", "noninteractive")
+                .output()
+            {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    pkg_manager = "apt".to_string();
+                    for line in stdout.lines() {
+                        if line.contains("upgradable from") || line.contains("/") {
+                            if line.starts_with("Listing...") { continue; }
+                            total_pending += 1;
+                            if line.contains("-security") {
+                                security_pending += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Try dnf (RHEL/Fedora)
+        else if which("dnf").is_some() {
+            if let Ok(output) = Command::new("dnf")
+                .args(["check-update", "--quiet"])
+                .output()
+            {
+                // dnf check-update exits 100 if updates available, 0 if none
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                pkg_manager = "dnf".to_string();
+                for line in stdout.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with("Last metadata") { continue; }
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        total_pending += 1;
+                    }
+                }
+            }
+        }
+        // Try nix-channel (NixOS)
+        else if which("nix-channel").is_some() {
+            if let Ok(output) = Command::new("nix-channel").args(["--list"]).output() {
+                if output.status.success() {
+                    pkg_manager = "nix".to_string();
+                    // For nix we just note the channels exist; can't easily count pending
+                }
+            }
+        }
+
+        if pkg_manager.is_empty() {
+            return Ok(0);
+        }
+
+        // Write pending_updates to Host node
+        self.merge(
+            "MERGE (h:Host {hostname: $hostname}) \
+             SET h.pending_updates = $total, h.security_updates = $sec, \
+             h.pkg_manager = $pm, h.updates_checked = $now",
+            &[
+                ("hostname", ParamValue::Str(self.hostname.clone())),
+                ("total", ParamValue::Int(total_pending as i64)),
+                ("sec", ParamValue::Int(security_pending as i64)),
+                ("pm", ParamValue::Str(pkg_manager)),
+                ("now", ParamValue::Float(now)),
+            ],
+        )?;
+
+        // Flag if security updates pending
+        if security_pending > 0 {
+            let diag_q = format!(
+                "MERGE (e:HostLogEvent {{hostname: '{}', source: 'updates', template_hash: 'security-updates-pending'}}) \
+                 SET e.severity = 'WARNING', e.template_text = '{} security update(s) pending ({} total). Run package updates to patch vulnerabilities.', \
+                 e.count = {}, e.last_seen = {}",
+                self.hostname, security_pending, total_pending, security_pending, now,
+            );
+            let _ = self.client.query(&diag_q, &[]);
+        }
+
+        Ok(total_pending)
+    }
+
+    // ------------------------------------------------------------------
+    // 15. Hardware health (temps, SMART)
+    // ------------------------------------------------------------------
+
+    fn ingest_hardware_health(&self) -> Result<usize, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        let mut temps: Vec<(String, f64)> = Vec::new();
+        let mut smart_status = String::new();
+        let mut flagged = false;
+
+        // Read CPU thermal zones: /sys/class/thermal/thermal_zone*/temp
+        if let Ok(entries) = fs::read_dir("/sys/class/thermal") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.starts_with("thermal_zone") { continue; }
+
+                let temp_path = entry.path().join("temp");
+                let type_path = entry.path().join("type");
+
+                let zone_type = fs::read_to_string(&type_path)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+
+                if let Ok(raw) = fs::read_to_string(&temp_path) {
+                    if let Ok(millideg) = raw.trim().parse::<f64>() {
+                        let celsius = millideg / 1000.0;
+                        let label = if zone_type.is_empty() { name.clone() } else { zone_type };
+                        temps.push((label, round1(celsius)));
+                        if celsius > 80.0 {
+                            flagged = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Read hwmon sensors: /sys/class/hwmon/hwmon*/temp*_input
+        if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
+            for entry in entries.flatten() {
+                let hwmon_path = entry.path();
+                let hwmon_name = fs::read_to_string(hwmon_path.join("name"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+
+                if let Ok(files) = fs::read_dir(&hwmon_path) {
+                    for file in files.flatten() {
+                        let fname = file.file_name().to_string_lossy().to_string();
+                        if fname.ends_with("_input") && fname.starts_with("temp") {
+                            if let Ok(raw) = fs::read_to_string(file.path()) {
+                                if let Ok(millideg) = raw.trim().parse::<f64>() {
+                                    let celsius = millideg / 1000.0;
+                                    let label_path = file.path().to_string_lossy()
+                                        .replace("_input", "_label");
+                                    let label = fs::read_to_string(&label_path)
+                                        .unwrap_or_else(|_| format!("{}:{}", hwmon_name, fname))
+                                        .trim()
+                                        .to_string();
+                                    temps.push((label, round1(celsius)));
+                                    if celsius > 80.0 {
+                                        flagged = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check SMART status if smartctl is available
+        if which("smartctl").is_some() {
+            // Try /dev/sda first, then /dev/nvme0
+            for dev in &["/dev/sda", "/dev/nvme0n1"] {
+                if !Path::new(dev).exists() { continue; }
+                if let Ok(output) = Command::new("smartctl")
+                    .args(["-H", dev])
+                    .output()
+                {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if stdout.contains("PASSED") {
+                        smart_status = "PASSED".to_string();
+                    } else if stdout.contains("FAILED") {
+                        smart_status = "FAILED".to_string();
+                        flagged = true;
+                    }
+                    if !smart_status.is_empty() { break; }
+                }
+            }
+        }
+
+        if temps.is_empty() && smart_status.is_empty() {
+            return Ok(0);
+        }
+
+        // Build temp summary strings
+        let temp_labels: Vec<String> = temps.iter().map(|(l, _)| l.clone()).collect();
+        let temp_values: Vec<String> = temps.iter().map(|(_, v)| format!("{:.1}", v)).collect();
+        let max_temp = temps.iter().map(|(_, v)| *v).fold(0.0f64, f64::max);
+
+        self.merge(
+            "MERGE (hw:HardwareHealth {hostname: $hostname}) \
+             SET hw.temp_labels = $labels, hw.temp_values = $values, \
+             hw.max_temp_celsius = $max_temp, hw.smart_status = $smart, \
+             hw.flagged = $flagged, hw.last_seen = $now",
+            &[
+                ("hostname", ParamValue::Str(self.hostname.clone())),
+                ("labels", ParamValue::StrList(temp_labels)),
+                ("values", ParamValue::StrList(temp_values)),
+                ("max_temp", ParamValue::Float(round1(max_temp))),
+                ("smart", ParamValue::Str(smart_status.clone())),
+                ("flagged", ParamValue::Bool(flagged)),
+                ("now", ParamValue::Float(now)),
+            ],
+        )?;
+
+        self.merge(
+            "MATCH (h:Host {hostname: $hn}) \
+             MATCH (hw:HardwareHealth {hostname: $hn}) \
+             MERGE (h)-[:HAS_HARDWARE_HEALTH]->(hw)",
+            &[("hn", ParamValue::Str(self.hostname.clone()))],
+        )?;
+
+        if flagged {
+            let reason = if max_temp > 80.0 && smart_status == "FAILED" {
+                format!("CPU temp {:.1}C exceeds 80C AND SMART status FAILED", max_temp)
+            } else if max_temp > 80.0 {
+                format!("CPU temp {:.1}C exceeds 80C threshold", max_temp)
+            } else {
+                "SMART disk health check FAILED".to_string()
+            };
+            let diag_q = format!(
+                "MERGE (e:HostLogEvent {{hostname: '{}', source: 'hardware', template_hash: 'hw-health-flag'}}) \
+                 SET e.severity = 'WARNING', e.template_text = '{}. Investigate hardware health immediately.', \
+                 e.count = 1, e.last_seen = {}",
+                self.hostname, reason, now,
+            );
+            let _ = self.client.query(&diag_q, &[]);
+        }
+
+        Ok(1)
     }
 
     // ------------------------------------------------------------------
