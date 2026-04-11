@@ -67,6 +67,11 @@ pub fn check_and_alert(client: &crate::graph::GraphClient, config: &AlertConfig)
 
     let mut alerts = vec![];
 
+    // ── Run the v2 dynamic diagnosis engine across all log events ──
+    // This is the "savant brain" — it finds patterns, queries context,
+    // and generates the FULL diagnosis with root cause + fix.
+    run_smart_diagnosis(client, config, &mut alerts);
+
     // ── K8s alerts ──
 
     // CrashLoopBackOff pods
@@ -363,6 +368,70 @@ fn fire_alert(alert: &Alert, config: &AlertConfig) {
                 .json(&payload)
                 .timeout(std::time::Duration::from_secs(5))
                 .send();
+        });
+    }
+}
+
+/// Run the v2 diagnosis engine: detect patterns → query graph for context → generate rich alerts.
+fn run_smart_diagnosis(
+    client: &crate::graph::GraphClient,
+    config: &AlertConfig,
+    alerts: &mut Vec<Alert>,
+) {
+    // Collect all log events from all clusters + host
+    let mut events: Vec<(String, i64, String)> = vec![];
+
+    // Host log events
+    if let Ok(r) = client.query(
+        "MATCH (e:HostLogEvent) WHERE e.severity IN ['ERROR', 'FATAL'] \
+         RETURN e.template_text, e.count, e.severity ORDER BY e.count DESC LIMIT 20",
+        &[],
+    ) {
+        for row in &r.rows {
+            events.push((row[0].as_str().to_string(), row[1].as_i64(), row[2].as_str().to_string()));
+        }
+    }
+
+    // K8s log events from all clusters
+    for cluster_graph in &["taria_prod", "taria_dev", "default"] {
+        if let Ok(cc) = crate::graph::GraphClient::new(cluster_graph) {
+            if let Ok(r) = cc.query(
+                "MATCH (e:LogEvent) WHERE e.severity IN ['ERROR', 'FATAL'] \
+                 RETURN e.template_text, e.count, e.severity ORDER BY e.count DESC LIMIT 20",
+                &[],
+            ) {
+                for row in &r.rows {
+                    events.push((row[0].as_str().to_string(), row[1].as_i64(), row[2].as_str().to_string()));
+                }
+            }
+        }
+    }
+
+    // Run the v2 dynamic diagnosis engine
+    let diagnoses = crate::knowledge::diagnose_with_context(&events, client);
+
+    for diag in &diagnoses {
+        let severity = match diag.pattern.severity {
+            crate::knowledge::Severity::Critical => AlertSeverity::Critical,
+            crate::knowledge::Severity::Error => AlertSeverity::Critical,
+            crate::knowledge::Severity::Warning => AlertSeverity::Warning,
+            crate::knowledge::Severity::Info => AlertSeverity::Info,
+        };
+
+        // Build the rich message: explanation + context-aware fix
+        let message = format!(
+            "{}\n\n{}\n\n{}",
+            diag.pattern.explanation,
+            if diag.suggested_fix.is_empty() { diag.pattern.fix.to_string() } else { diag.suggested_fix.clone() },
+            format!("({} occurrences)", diag.occurrences),
+        );
+
+        alerts.push(Alert {
+            id: format!("knowledge:{}", diag.pattern.id),
+            severity,
+            title: format!("{:?}: {}", diag.pattern.category, diag.pattern.id.replace('-', " ")),
+            message,
+            source: "knowledge-engine".to_string(),
         });
     }
 }
