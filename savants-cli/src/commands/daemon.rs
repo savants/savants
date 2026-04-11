@@ -279,6 +279,41 @@ pub async fn run() {
         }
     });
 
+    // Start cloud cost ingestion thread (every 6 hours)
+    std::thread::spawn(|| {
+        // Run immediately on startup, then every 6 hours
+        loop {
+            let state = crate::config::State::load();
+            if let Ok(client) = crate::graph::GraphClient::new(&state.graph_name()) {
+                // GCP costs from BigQuery
+                match crate::cloud_cost::ingest_gcp_costs(
+                    &client,
+                    "enve-ai-prod",
+                    "billing_export",
+                    "gcp_billing_export_v1_0132CD_E53261_7EF1A7",
+                ) {
+                    Ok(n) => println!("[cost] GCP: {} services ingested", n),
+                    Err(e) => println!("[cost] GCP error: {}", e),
+                }
+
+                // AWS costs
+                match crate::cloud_cost::ingest_aws_costs(&client) {
+                    Ok(n) => println!("[cost] AWS: {} services ingested", n),
+                    Err(e) => println!("[cost] AWS error: {}", e),
+                }
+
+                // Check for cost anomalies
+                let anomalies = crate::cloud_cost::check_cost_anomalies(&client);
+                for (service, cost, msg) in &anomalies {
+                    println!("[cost] ⚠️ {}", msg);
+                }
+            }
+
+            // Sleep 6 hours
+            std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+        }
+    });
+
     // Wait forever (or until Ctrl-C)
     println!("Daemon running. Ctrl-C to stop.");
     tokio::signal::ctrl_c().await.ok();
