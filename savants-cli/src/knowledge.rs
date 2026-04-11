@@ -577,3 +577,535 @@ impl Diagnosis {
         )
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2 Dynamic Diagnosis Engine
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The static patterns above detect WHAT is wrong.
+// The dynamic engine below queries the graph to understand WHY and HOW to fix
+// it based on the actual environment.
+
+use crate::graph::GraphClient;
+
+/// Contextual data pulled from the graph for a specific host/cluster.
+pub struct DiagnosisContext {
+    pub wifi_band: Option<String>,
+    pub wifi_channel: Option<i64>,
+    pub wifi_5ghz_available: bool,
+    pub has_ethernet: bool,
+    pub disk_mounts: Vec<DiskMount>,
+    pub dns_system_resolver: Option<String>,
+    pub dns_system_response_ms: Option<f64>,
+    pub dns_alt_response_ms: Option<f64>,
+    pub k8s_cluster_healthy: bool,
+    pub dns_resolving: bool,
+    pub crashloop_pods: Vec<CrashloopPod>,
+}
+
+pub struct DiskMount {
+    pub mountpoint: String,
+    pub percent: f64,
+}
+
+pub struct CrashloopPod {
+    pub name: String,
+    pub namespace: String,
+    pub restart_count: i64,
+    pub caused_by: Vec<String>,
+}
+
+/// A diagnosis enriched with graph-sourced context and a dynamically generated fix.
+pub struct DynamicDiagnosis {
+    pub pattern: &'static KnownPattern,
+    pub context: DiagnosisContext,
+    pub suggested_fix: String,
+    pub template: String,
+    pub occurrences: i64,
+    pub log_severity: String,
+}
+
+impl DynamicDiagnosis {
+    pub fn format(&self) -> String {
+        let sev_icon = match self.pattern.severity {
+            Severity::Critical => "🔴",
+            Severity::Error => "🟠",
+            Severity::Warning => "🟡",
+            Severity::Info => "🔵",
+        };
+        let cat = format!("{:?}", self.pattern.category).to_uppercase();
+        format!(
+            "{} {} [{}] ({} occurrences)\n\n\
+             {}\n\n\
+             Context-aware fix:\n{}\n\n\
+             Static fallback fix:\n{}\n\n\
+             If that doesn't work:\n{}",
+            sev_icon, cat, self.log_severity, self.occurrences,
+            self.pattern.explanation, self.suggested_fix,
+            self.pattern.fix, self.pattern.investigate,
+        )
+    }
+}
+
+impl Default for DiagnosisContext {
+    fn default() -> Self {
+        Self {
+            wifi_band: None,
+            wifi_channel: None,
+            wifi_5ghz_available: false,
+            has_ethernet: false,
+            disk_mounts: Vec::new(),
+            dns_system_resolver: None,
+            dns_system_response_ms: None,
+            dns_alt_response_ms: None,
+            k8s_cluster_healthy: true,
+            dns_resolving: true,
+            crashloop_pods: Vec::new(),
+        }
+    }
+}
+
+// ── Graph query helpers ──────────────────────────────────────────────────────
+
+/// Query WiFi context from the graph.
+fn query_wifi_context(client: &GraphClient) -> DiagnosisContext {
+    let mut ctx = DiagnosisContext::default();
+
+    // Current WiFi status
+    if let Ok(result) = client.query(
+        "MATCH (w:WifiStatus) RETURN w.band, w.channel",
+        &[],
+    ) {
+        if let Some(row) = result.rows.first() {
+            if row.len() >= 2 {
+                let band = row[0].as_str().to_string();
+                if !band.is_empty() {
+                    ctx.wifi_band = Some(band);
+                }
+                let ch = row[1].as_i64();
+                if ch > 0 {
+                    ctx.wifi_channel = Some(ch);
+                }
+            }
+        }
+    }
+
+    // Check if 5 GHz networks are available
+    if let Ok(result) = client.query(
+        "MATCH (n:WifiNetwork) WHERE n.band = '5GHz' OR n.frequency > 5000 RETURN count(n)",
+        &[],
+    ) {
+        if let Some(row) = result.rows.first() {
+            ctx.wifi_5ghz_available = row.first().map(|v| v.as_i64() > 0).unwrap_or(false);
+        }
+    }
+
+    // Check for ethernet
+    if let Ok(result) = client.query(
+        "MATCH (i:NetworkInterface) WHERE i.type = 'ethernet' AND i.state = 'up' RETURN count(i)",
+        &[],
+    ) {
+        if let Some(row) = result.rows.first() {
+            ctx.has_ethernet = row.first().map(|v| v.as_i64() > 0).unwrap_or(false);
+        }
+    }
+
+    ctx
+}
+
+/// Query disk context from the graph.
+fn query_disk_context(client: &GraphClient) -> DiagnosisContext {
+    let mut ctx = DiagnosisContext::default();
+
+    if let Ok(result) = client.query(
+        "MATCH (d:HostDisk) RETURN d.mountpoint, d.percent ORDER BY d.percent DESC",
+        &[],
+    ) {
+        for row in &result.rows {
+            if row.len() >= 2 {
+                let mountpoint = row[0].as_str().to_string();
+                let percent = row[1].as_f64();
+                if !mountpoint.is_empty() {
+                    ctx.disk_mounts.push(DiskMount { mountpoint, percent });
+                }
+            }
+        }
+    }
+
+    ctx
+}
+
+/// Query DNS context from the graph.
+fn query_dns_context(client: &GraphClient) -> DiagnosisContext {
+    let mut ctx = DiagnosisContext::default();
+
+    if let Ok(result) = client.query(
+        "MATCH (d:DnsCheck) RETURN d.resolver, d.response_time_ms ORDER BY d.response_time_ms ASC",
+        &[],
+    ) {
+        for row in &result.rows {
+            if row.len() >= 2 {
+                let resolver = row[0].as_str().to_string();
+                let response_ms = row[1].as_f64();
+
+                // Categorize: system resolver vs well-known public resolvers
+                if resolver == "1.1.1.1" || resolver == "8.8.8.8" || resolver == "9.9.9.9" {
+                    // Keep the fastest alt resolver
+                    if ctx.dns_alt_response_ms.is_none()
+                        || response_ms < ctx.dns_alt_response_ms.unwrap_or(f64::MAX)
+                    {
+                        ctx.dns_alt_response_ms = Some(response_ms);
+                    }
+                } else if ctx.dns_system_resolver.is_none() {
+                    ctx.dns_system_resolver = Some(resolver);
+                    ctx.dns_system_response_ms = Some(response_ms);
+                }
+            }
+        }
+
+        // If both are slow (> 500ms), it's a network issue
+        let sys_slow = ctx.dns_system_response_ms.map(|ms| ms > 200.0).unwrap_or(false);
+        let alt_slow = ctx.dns_alt_response_ms.map(|ms| ms > 200.0).unwrap_or(true);
+        ctx.dns_resolving = !(sys_slow && alt_slow);
+    }
+
+    ctx
+}
+
+/// Query CrashLoopBackOff pod context from the graph.
+fn query_crashloop_context(client: &GraphClient) -> DiagnosisContext {
+    let mut ctx = DiagnosisContext::default();
+
+    if let Ok(result) = client.query(
+        "MATCH (p:K8sPod) WHERE p.status = 'CrashLoopBackOff' \
+         RETURN p.name, p.namespace, p.restart_count ORDER BY p.restart_count DESC",
+        &[],
+    ) {
+        for row in &result.rows {
+            if row.len() >= 3 {
+                let name = row[0].as_str().to_string();
+                let namespace = row[1].as_str().to_string();
+                let restart_count = row[2].as_i64();
+
+                // Query CAUSED_BY edges for temporal correlation
+                let mut caused_by = Vec::new();
+                if let Ok(cause_result) = client.query(
+                    &format!(
+                        "MATCH (p:K8sPod {{name: '{}'}})-[:CAUSED_BY]->(e) \
+                         RETURN labels(e), e.description, e.template \
+                         LIMIT 5",
+                        name.replace('\'', "\\'")
+                    ),
+                    &[],
+                ) {
+                    for cause_row in &cause_result.rows {
+                        let desc = if cause_row.len() >= 3 {
+                            let d = cause_row[1].as_str();
+                            let t = cause_row[2].as_str();
+                            if !d.is_empty() {
+                                d.to_string()
+                            } else {
+                                t.to_string()
+                            }
+                        } else if !cause_row.is_empty() {
+                            cause_row[0].as_str().to_string()
+                        } else {
+                            continue;
+                        };
+                        if !desc.is_empty() {
+                            caused_by.push(desc);
+                        }
+                    }
+                }
+
+                ctx.crashloop_pods.push(CrashloopPod {
+                    name,
+                    namespace,
+                    restart_count,
+                    caused_by,
+                });
+            }
+        }
+    }
+
+    ctx
+}
+
+// ── Dynamic fix generators ───────────────────────────────────────────────────
+
+fn generate_wifi_fix(ctx: &DiagnosisContext) -> String {
+    let mut fix = String::new();
+
+    match ctx.wifi_band.as_deref() {
+        Some(band) if band.contains("2.4") || band == "bg" || band == "bgn" => {
+            if ctx.wifi_5ghz_available {
+                fix.push_str(&format!(
+                    "You are on 2.4 GHz (channel {}). A 5 GHz network is available.\n\
+                     Switch to 5 GHz for less interference and higher throughput:\n\
+                     nmcli connection modify <name> wifi.band a\n\
+                     nmcli connection up <name>",
+                    ctx.wifi_channel.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())
+                ));
+            } else {
+                fix.push_str(&format!(
+                    "You are on 2.4 GHz (channel {}) and no 5 GHz network is available.\n\
+                     Change the channel on your router to reduce interference.\n\
+                     Current channel: {}. Recommended non-overlapping channels: 1, 6, or 11.\n\
+                     Pick whichever has the least congestion (check: nmcli dev wifi list).",
+                    ctx.wifi_channel.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into()),
+                    ctx.wifi_channel.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into()),
+                ));
+            }
+        }
+        Some(band) if band.contains("5") || band == "a" || band == "ac" || band == "ax" => {
+            fix.push_str(
+                "You are on 5 GHz. Signal may be weak due to shorter range.\n\
+                 Check signal strength: cat /proc/net/wireless\n\
+                 If link quality is low, move closer to the access point or add a repeater.\n\
+                 Consider a wired ethernet connection for stability."
+            );
+        }
+        Some(band) => {
+            fix.push_str(&format!(
+                "Detected WiFi band: {}. Check signal quality: cat /proc/net/wireless\n\
+                 If packet discard rate is high, consider switching bands or channels.",
+                band
+            ));
+        }
+        None => {
+            fix.push_str(
+                "Could not determine WiFi band from graph. Check manually:\n\
+                 nmcli dev wifi list | grep '*'\n\
+                 If on 2.4 GHz and 5 GHz is available, switch to 5 GHz."
+            );
+        }
+    }
+
+    if ctx.has_ethernet {
+        fix.push_str("\n\nEthernet is connected on this host. For maximum reliability, \
+                      switch the primary workload traffic to the wired interface.");
+    }
+
+    fix.push_str("\n\nFor servers, ethernet is the most reliable option.");
+    fix
+}
+
+fn generate_disk_fix(ctx: &DiagnosisContext) -> String {
+    let mut fix = String::new();
+
+    if ctx.disk_mounts.is_empty() {
+        fix.push_str(
+            "Could not query disk data from graph. Check manually:\n\
+             df -h\n\
+             du -sh /* | sort -rh | head -20"
+        );
+        return fix;
+    }
+
+    for mount in &ctx.disk_mounts {
+        if mount.percent > 90.0 {
+            fix.push_str(&format!(
+                "CRITICAL: {} is at {:.1}%. Disk is nearly full.\n\
+                 Immediate actions:\n\
+                 du -sh {}/* 2>/dev/null | sort -rh | head -20\n\
+                 journalctl --vacuum-size=100M\n\
+                 docker system prune -f  # if Docker is present\n\
+                 crictl rmi --prune       # if containerd/CRI is present\n\
+                 find {} -name '*.log' -size +100M -exec truncate -s 0 {{}} \\;\n",
+                mount.mountpoint, mount.percent, mount.mountpoint, mount.mountpoint,
+            ));
+        } else if mount.percent > 80.0 {
+            fix.push_str(&format!(
+                "WARNING: {} is at {:.1}%, approaching full.\n\
+                 Investigate top space consumers:\n\
+                 du -sh {}/* 2>/dev/null | sort -rh | head -20\n\
+                 Consider setting up log rotation and container image pruning.\n",
+                mount.mountpoint, mount.percent, mount.mountpoint,
+            ));
+        } else {
+            fix.push_str(&format!(
+                "{} is at {:.1}% (healthy).\n",
+                mount.mountpoint, mount.percent,
+            ));
+        }
+    }
+
+    fix
+}
+
+fn generate_dns_fix(ctx: &DiagnosisContext) -> String {
+    let mut fix = String::new();
+
+    let sys_ms = ctx.dns_system_response_ms;
+    let alt_ms = ctx.dns_alt_response_ms;
+    let sys_resolver = ctx.dns_system_resolver.as_deref().unwrap_or("unknown");
+
+    match (sys_ms, alt_ms) {
+        (Some(sys), Some(alt)) if sys > 200.0 && alt < 100.0 => {
+            fix.push_str(&format!(
+                "System DNS ({}) is slow: {:.0}ms. Public DNS (1.1.1.1) is fast: {:.0}ms.\n\
+                 Your DNS resolver is the bottleneck. Switch to a faster resolver:\n\
+                 For systemd-resolved:\n\
+                   sudo mkdir -p /etc/systemd/resolved.conf.d\n\
+                   echo -e '[Resolve]\\nDNS=1.1.1.1 8.8.8.8' | sudo tee /etc/systemd/resolved.conf.d/dns.conf\n\
+                   sudo systemctl restart systemd-resolved\n\
+                 For /etc/resolv.conf:\n\
+                   echo 'nameserver 1.1.1.1' | sudo tee /etc/resolv.conf",
+                sys_resolver, sys, alt,
+            ));
+        }
+        (Some(sys), Some(alt)) if sys > 200.0 && alt > 200.0 => {
+            fix.push_str(&format!(
+                "Both system DNS ({}: {:.0}ms) and public DNS (1.1.1.1: {:.0}ms) are slow.\n\
+                 This is a network-level issue, not a DNS configuration problem.\n\
+                 Check: is the host's uplink saturated? Is there packet loss?\n\
+                 ping -c 10 1.1.1.1  # check for packet loss\n\
+                 mtr 1.1.1.1         # trace the path",
+                sys_resolver, sys, alt,
+            ));
+        }
+        (Some(sys), _) if sys < 100.0 => {
+            fix.push_str(&format!(
+                "System DNS ({}) response time is {:.0}ms (healthy).\n\
+                 DNS resolution is working. The issue may be intermittent or resolved.",
+                sys_resolver, sys,
+            ));
+        }
+        _ => {
+            fix.push_str(
+                "Could not determine DNS performance from graph. Check manually:\n\
+                 dig @127.0.0.53 example.com  # system resolver\n\
+                 dig @1.1.1.1 example.com     # public resolver\n\
+                 Compare response times to isolate the issue."
+            );
+        }
+    }
+
+    fix
+}
+
+fn generate_crashloop_fix(ctx: &DiagnosisContext) -> String {
+    let mut fix = String::new();
+
+    if ctx.crashloop_pods.is_empty() {
+        fix.push_str(
+            "No CrashLoopBackOff pods found in graph. The issue may have self-resolved.\n\
+             Check current state: kubectl get pods -A | grep CrashLoopBackOff"
+        );
+        return fix;
+    }
+
+    fix.push_str(&format!(
+        "{} pod(s) in CrashLoopBackOff:\n\n",
+        ctx.crashloop_pods.len()
+    ));
+
+    for pod in &ctx.crashloop_pods {
+        fix.push_str(&format!(
+            "  {} (namespace: {}, restarts: {})\n",
+            pod.name, pod.namespace, pod.restart_count
+        ));
+
+        if !pod.caused_by.is_empty() {
+            fix.push_str("    Correlated causes (CAUSED_BY edges):\n");
+            for cause in &pod.caused_by {
+                fix.push_str(&format!("    - {}\n", cause));
+            }
+        }
+
+        fix.push_str(&format!(
+            "    Investigate:\n\
+             kubectl logs {} -n {} --previous\n\
+             kubectl describe pod {} -n {}\n\n",
+            pod.name, pod.namespace, pod.name, pod.namespace,
+        ));
+    }
+
+    if ctx.crashloop_pods.len() > 3 {
+        fix.push_str(
+            "Multiple pods crashing simultaneously often indicates a shared root cause:\n\
+             DNS failure, node resource pressure, or a bad config change.\n\
+             Check node conditions: kubectl describe nodes | grep -A5 Conditions"
+        );
+    }
+
+    fix
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/// Match events against static patterns, then query the graph for each match
+/// to produce context-aware dynamic diagnoses.
+///
+/// This is the v2 replacement for `diagnose_events`. The static `diagnose_events`
+/// function still works and is not modified — this function is an addition.
+pub fn diagnose_with_context(
+    events: &[(String, i64, String)],
+    client: &GraphClient,
+) -> Vec<DynamicDiagnosis> {
+    let mut diagnoses = Vec::new();
+
+    for (template, count, severity) in events {
+        let patterns = match_patterns(template);
+        if let Some(pattern) = patterns.first() {
+            let (ctx, suggested_fix) = build_dynamic_diagnosis(pattern, client);
+
+            diagnoses.push(DynamicDiagnosis {
+                pattern,
+                context: ctx,
+                suggested_fix,
+                template: template.clone(),
+                occurrences: *count,
+                log_severity: severity.clone(),
+            });
+        }
+    }
+
+    // Deduplicate by pattern id, keeping higher severity
+    diagnoses.sort_by(|a, b| b.pattern.severity.partial_cmp(&a.pattern.severity).unwrap());
+    diagnoses.dedup_by(|a, b| a.pattern.id == b.pattern.id);
+    diagnoses
+}
+
+/// For a single matched pattern, query the graph and generate a context-aware fix.
+fn build_dynamic_diagnosis(
+    pattern: &'static KnownPattern,
+    client: &GraphClient,
+) -> (DiagnosisContext, String) {
+    match pattern.category {
+        Category::Network if is_wifi_pattern(pattern) => {
+            let ctx = query_wifi_context(client);
+            let fix = generate_wifi_fix(&ctx);
+            (ctx, fix)
+        }
+        Category::Disk => {
+            let ctx = query_disk_context(client);
+            let fix = generate_disk_fix(&ctx);
+            (ctx, fix)
+        }
+        Category::Dns => {
+            let ctx = query_dns_context(client);
+            let fix = generate_dns_fix(&ctx);
+            (ctx, fix)
+        }
+        Category::Crash if pattern.id == "crash-loop-backoff" => {
+            let ctx = query_crashloop_context(client);
+            let fix = generate_crashloop_fix(&ctx);
+            (ctx, fix)
+        }
+        _ => {
+            // No dynamic enrichment for this category yet — return static fix
+            let ctx = DiagnosisContext::default();
+            let fix = pattern.fix.to_string();
+            (ctx, fix)
+        }
+    }
+}
+
+/// Check whether a pattern is WiFi-related (within the Network category).
+fn is_wifi_pattern(pattern: &KnownPattern) -> bool {
+    matches!(
+        pattern.id,
+        "wifi-high-packet-discard" | "wifi-weak-signal" | "wifi-power-save"
+    )
+}
