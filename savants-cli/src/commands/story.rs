@@ -193,6 +193,96 @@ pub async fn run(
 
         println!();
     }
+
+    // ── Slack context ──
+    let slack_since_filter = if since > 0.0 {
+        format!("AND m.timestamp >= {}", since)
+    } else {
+        String::new()
+    };
+    let slack_where_filter = if since > 0.0 {
+        format!("WHERE m.timestamp >= {}", since)
+    } else {
+        String::new()
+    };
+    // Symptom reports from Slack
+    if let Ok(msgs) = client.query(
+        &format!(
+            "MATCH (m:SlackMessage) WHERE m.has_symptom = true {} \
+             RETURN m.channel_name, m.user_id, m.text, m.timestamp \
+             ORDER BY m.timestamp DESC LIMIT 10",
+            slack_since_filter
+        ),
+        &[],
+    ) {
+        if !msgs.rows.is_empty() {
+            println!("{}", "# Slack: reported issues".bold());
+            println!();
+            for row in &msgs.rows {
+                let channel = row[0].as_str();
+                let user_id = row[1].as_str();
+                let text: String = row[2].as_str().chars().take(120).collect();
+                let ts = row[3].as_f64();
+
+                // Format timestamp
+                let dt = chrono::DateTime::from_timestamp(ts as i64, 0)
+                    .map(|d| d.format("%H:%M").to_string())
+                    .unwrap_or_default();
+
+                // Try to get user name
+                let user_name = if !user_id.is_empty() {
+                    if let Ok(u) = client.query(
+                        &format!("MATCH (u:SlackUser {{id: '{}'}}) RETURN u.name, u.real_name", user_id),
+                        &[],
+                    ) {
+                        u.rows.first()
+                            .map(|r| {
+                                let name = r[0].as_str();
+                                let real = r[1].as_str();
+                                if !real.is_empty() { real.to_string() } else { name.to_string() }
+                            })
+                            .unwrap_or_else(|| user_id.to_string())
+                    } else {
+                        user_id.to_string()
+                    }
+                } else {
+                    "?".to_string()
+                };
+
+                println!("    {} #{} {}: {}",
+                    dt.dimmed(),
+                    channel,
+                    user_name.cyan(),
+                    text.dimmed(),
+                );
+            }
+            println!();
+        }
+    }
+
+    // Service mentions from Slack (cross-layer)
+    if let Ok(mentions) = client.query(
+        &format!(
+            "MATCH (m:SlackMessage)-[:MENTIONS_SERVICE]->(s) {} \
+             RETURN s.name, count(m), m.channel_name \
+             ORDER BY count(m) DESC LIMIT 5",
+            slack_where_filter
+        ),
+        &[],
+    ) {
+        if !mentions.rows.is_empty() {
+            println!("{}", "# Slack: services being discussed".bold());
+            println!();
+            for row in &mentions.rows {
+                let svc = row[0].as_str();
+                let count = row[1].as_i64();
+                let channel = row[2].as_str();
+                println!("    {} mentioned {} time(s) in #{}",
+                    svc.cyan(), count, channel);
+            }
+            println!();
+        }
+    }
 }
 
 fn severity_filter(min: &str) -> String {
