@@ -10,6 +10,7 @@
 
 ASTRA_IP ?= 100.95.164.99
 PORT ?= 6379
+MINIO_PORT ?= 30900
 BIN = savants-cli/target/release/savants
 
 .PHONY: setup build run status story mcp install clean

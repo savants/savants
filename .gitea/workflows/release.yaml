@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            cross: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          . "$HOME/.cargo/env"
+          rustup target add ${{ matrix.target }}
+
+      - name: Install cross-compile deps (aarch64)
+        if: matrix.cross
+        run: |
+          apt-get update && apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p savants-cli/.cargo
+          echo '[target.aarch64-unknown-linux-gnu]' >> savants-cli/.cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> savants-cli/.cargo/config.toml
+
+      - name: Build
+        working-directory: savants-cli
+        run: |
+          . "$HOME/.cargo/env"
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          FILENAME="savants-${{ matrix.target }}"
+          cp "savants-cli/target/${{ matrix.target }}/release/savants" "dist/${FILENAME}"
+          chmod +x "dist/${FILENAME}"
+          cd dist && tar czf "${FILENAME}.tar.gz" "${FILENAME}"
+
+      - name: Upload to MinIO
+        env:
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+        run: |
+          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+          chmod +x /usr/local/bin/mc
+          mc alias set releases http://minio.minio.svc.cluster.local:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+          TAG="${GITHUB_REF_NAME:-latest}"
+          FILENAME="savants-${{ matrix.target }}.tar.gz"
+          mc cp "dist/${FILENAME}" "releases/savants-releases/${TAG}/${FILENAME}"
+          mc cp "dist/${FILENAME}" "releases/savants-releases/latest/${FILENAME}"
+
+      - name: Create Gitea release and attach binary
+        env:
+          GITEA_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          REPO="miguel/savants"
+          API="http://gitea-http.gitea.svc.cluster.local:3000/api/v1"
+          FILENAME="savants-${{ matrix.target }}.tar.gz"
+
+          # Create release if it doesn't exist (first matrix job creates it, others skip)
+          RELEASE_ID=$(curl -s -H "Authorization: token ${GITEA_TOKEN}" \
+            "${API}/repos/${REPO}/releases/tags/${TAG}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "None" ]; then
+            RELEASE_ID=$(curl -s -X POST \
+              -H "Authorization: token ${GITEA_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Savants ${TAG}\",\"body\":\"Multi-arch release for Linux x86_64 and aarch64.\n\nInstall:\n\`\`\`\ncurl -fsSL http://100.95.164.99:30900/savants-releases/install.sh | sh\n\`\`\`\",\"draft\":false,\"prerelease\":false}" \
+              "${API}/repos/${REPO}/releases" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+            echo "Created release ${TAG} (id: ${RELEASE_ID})"
+          else
+            echo "Release ${TAG} already exists (id: ${RELEASE_ID})"
+          fi
+
+          # Attach binary as release asset
+          curl -s -X POST \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -F "attachment=@dist/${FILENAME}" \
+            "${API}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${FILENAME}"
+          echo "Attached ${FILENAME} to release ${TAG}"
+
+  publish-installer:
+    name: Publish install script to MinIO
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload install.sh
+        env:
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+        run: |
+          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+          chmod +x /usr/local/bin/mc
+          mc alias set releases http://minio.minio.svc.cluster.local:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+          mc cp scripts/install.sh "releases/savants-releases/install.sh"
