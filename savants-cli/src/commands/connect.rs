@@ -187,8 +187,94 @@ pub fn slack(webhook: Option<String>, bot_token: Option<String>, user_token: Opt
                         }
                         if !data.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
                             let err = data.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            eprintln!("  {} Slack API error: {}", "✗".red(), err);
-                            eprintln!("  Token may have expired. Try restarting the Slack desktop app.");
+                            if err == "invalid_auth" {
+                                println!("  {} Token needs a cookie (macOS Keychain restriction)", "⚠️".yellow());
+                                println!();
+                                println!("  The Slack desktop token requires a session cookie that's");
+                                println!("  locked in the macOS Keychain. Quick fix:");
+                                println!();
+                                println!("  {} Open {} in your browser", "1.".bold(), "app.slack.com".cyan());
+                                println!("  {} Open DevTools → Console (F12)", "2.".bold());
+                                println!("  {} Paste this:", "3.".bold());
+                                println!();
+                                println!("     {}", "copy(document.cookie.match(/d=([^;]+)/)[1])".dimmed());
+                                println!();
+                                println!("  {} Paste the cookie value here:", "4.".bold());
+                                print!("     d=");
+                                use std::io::Write;
+                                let _ = std::io::stdout().flush();
+
+                                let mut cookie_input = String::new();
+                                if std::io::stdin().read_line(&mut cookie_input).is_ok() {
+                                    let cookie_val = cookie_input.trim().to_string();
+                                    if !cookie_val.is_empty() {
+                                        // Retry with cookie
+                                        let resp2 = client.get("https://slack.com/api/conversations.list")
+                                            .query(&[("types", "public_channel,private_channel"), ("limit", "100"), ("exclude_archived", "true")])
+                                            .header("Authorization", format!("Bearer {}", token))
+                                            .header("Cookie", format!("d={}", cookie_val))
+                                            .timeout(std::time::Duration::from_secs(10))
+                                            .send();
+
+                                        if let Ok(resp2) = resp2 {
+                                            if let Ok(data2) = resp2.json::<serde_json::Value>() {
+                                                if data2.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                                    println!();
+                                                    println!("  {} Authenticated!", "✅".green());
+
+                                                    // Parse channels from this response
+                                                    if let Some(ch_list) = data2.get("channels").and_then(|c| c.as_array()) {
+                                                        for ch in ch_list {
+                                                            let id = ch.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                                            let name = ch.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                                            let is_member = ch.get("is_member").and_then(|v| v.as_bool()).unwrap_or(false);
+                                                            if is_member && !id.is_empty() {
+                                                                channels.push((id.to_string(), name.to_string()));
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Save config with cookie
+                                                    if !channels.is_empty() {
+                                                        println!();
+                                                        for (i, (_, name)) in channels.iter().enumerate() {
+                                                            println!("    {}. #{}", (i + 1).to_string().bold(), name);
+                                                        }
+                                                        println!();
+                                                        print!("  Which channel for Savants alerts? [1-{}]: ", channels.len());
+                                                        let _ = std::io::stdout().flush();
+
+                                                        let mut ch_input = String::new();
+                                                        if std::io::stdin().read_line(&mut ch_input).is_ok() {
+                                                            let choice: usize = ch_input.trim().parse().unwrap_or(1);
+                                                            if choice >= 1 && choice <= channels.len() {
+                                                                let (ref ch_id, ref ch_name) = channels[choice - 1];
+                                                                let config_content = format!(
+                                                                    "user_token = \"{}\"\ncookie = \"{}\"\nchannel = \"{}\"\nworkspace = \"{}\"\n",
+                                                                    token, cookie_val, ch_id, team_name
+                                                                );
+                                                                let _ = std::fs::write(&config_path, &config_content);
+                                                                println!();
+                                                                println!("  {} Connected to #{} on {}!", "✅".green(), ch_name.cyan(), team_name.cyan());
+                                                                println!();
+                                                                println!("  To start getting alerts:");
+                                                                println!("    export SAVANTS_SLACK_USER_TOKEN=\"{}\"", token);
+                                                                println!("    export SAVANTS_SLACK_COOKIE=\"{}\"", cookie_val);
+                                                                println!("    export SAVANTS_SLACK_CHANNEL=\"{}\"", ch_id);
+                                                                println!("    {} && {}", "savants daemon stop".dimmed(), "savants daemon start".cyan());
+                                                            }
+                                                        }
+                                                    }
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        eprintln!("  {} Cookie didn't work either. Try logging out and back in to Slack.", "✗".red());
+                                    }
+                                }
+                            } else {
+                                eprintln!("  {} Slack API error: {}", "✗".red(), err);
+                            }
                             return;
                         }
                     }
