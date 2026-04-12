@@ -476,16 +476,16 @@ pub async fn slack_from_browser() {
 
     println!("  {} Open your Slack workspace in the browser (e.g. yourcompany.slack.com)", "2.".bold());
     println!("  {} Open DevTools → Console (F12)", "3.".bold());
-    println!("  {} Paste this and press Enter:", "4.".bold());
+    println!("  {} Paste these two lines (one at a time):", "4.".bold());
     println!();
 
-    // This snippet:
-    // 1. Extracts the token from the page's boot data
-    // 2. Calls conversations.list using the browser's cookies (HttpOnly d= cookie included)
-    // 3. Sends token + channel list to localhost:9876
-    let snippet = r#"(async()=>{let t="";document.querySelectorAll("script").forEach(s=>{let m=s.textContent.match(/"token":"(xoxc-[^"]+)"/);if(m)t=m[1]});if(!t){let b=document.querySelector("[data-boot]");if(b)try{t=JSON.parse(b.dataset.boot).token}catch{}}if(!t)try{t=Object.values(JSON.parse(localStorage.getItem("localConfig_v2")||"{}").teams||{})[0]?.token||""}catch{}if(!t)return console.log("Token not found. Make sure you are on your Slack workspace page.");let r=await fetch("/api/conversations.list",{method:"POST",credentials:"include",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"token="+t+"&types=public_channel,private_channel&limit=200&exclude_archived=true"});let d=await r.json();if(!d.ok)return console.log("Slack API error: "+d.error);let a=await fetch("/api/auth.test",{method:"POST",credentials:"include",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"token="+t});let u=await a.json();let ch=d.channels.filter(c=>c.is_member).map(c=>({id:c.id,name:c.name}));await fetch("http://localhost:9876",{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain"},body:JSON.stringify({token:t,workspace:u.team||"",user:u.user||"",channels:ch})});console.log("Sent to Savants! Check your terminal.")})()"#;
-
-    println!("     {}", snippet.dimmed());
+    // Step 1: Find the token from network requests in the page
+    // Slack embeds the token in script tags or boot data
+    println!("     {}", "Step A:".bold());
+    println!("     {}", r#"var t="";document.querySelectorAll("script").forEach(s=>{var m=s.textContent.match(/"token":"(xoxc-[^"]+)"/);if(m)t=m[1]});if(!t)t=prompt("Paste token from Network tab (look for xoxc- in any request body):");console.log("Token: "+t.slice(0,30)+"...")"#.dimmed());
+    println!();
+    println!("     {}", "Step B:".bold());
+    println!("     {}", r#"fetch("/api/conversations.list",{method:"POST",credentials:"include",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"token="+t+"&types=public_channel,private_channel&limit=200"}).then(r=>r.json()).then(d=>{var a=d.channels.filter(c=>c.is_member).map(c=>({id:c.id,name:c.name}));fetch("http://localhost:9876",{method:"POST",mode:"no-cors",body:JSON.stringify({token:t,workspace:location.hostname.split(".")[0],user:"",channels:a})});console.log("Sent "+a.length+" channels to Savants!")})"#.dimmed());
     println!();
     println!("  {} Waiting for data from browser...", "⏳");
     println!();
