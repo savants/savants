@@ -558,6 +558,7 @@ pub async fn slack_from_browser() {
                         // The daemon will need to use the browser-proxy pattern too,
                         // OR we store just for graph reads (the browser-proxy handles writes)
                         let savants_home = dirs::home_dir().unwrap_or_default().join(".savants");
+                        let _ = std::fs::create_dir_all(&savants_home);
                         let config_path = savants_home.join("slack.toml");
                         let config_content = format!(
                             "user_token = \"{}\"\nchannel = \"{}\"\nworkspace = \"{}\"\nbrowser_proxy = true\n",
