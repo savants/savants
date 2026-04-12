@@ -77,10 +77,16 @@ impl CodeIndexer {
             stats.files += 1;
         }
 
+        // Index git history
+        let git_indexer = GitHistoryIndexer::new(self.graph.clone(), &self.repo_name);
+        let (commit_count, change_count) = git_indexer.index(repo_path, 500);
+        stats.commits = commit_count;
+        stats.file_changes = change_count;
+
         // Create repo node
         let _ = self.graph.query(
-            &format!("MERGE (r:CodeRepo {{name: '{}'}}) SET r.path = '{}', r.files = {}, r.functions = {}, r.classes = {}",
-                esc(&self.repo_name), esc(repo_path), stats.files, stats.functions, stats.classes),
+            &format!("MERGE (r:CodeRepo {{name: '{}'}}) SET r.path = '{}', r.files = {}, r.functions = {}, r.classes = {}, r.commits = {}",
+                esc(&self.repo_name), esc(repo_path), stats.files, stats.functions, stats.classes, stats.commits),
             &[],
         );
 
@@ -312,11 +318,187 @@ pub struct IndexStats {
     pub files: usize,
     pub functions: usize,
     pub classes: usize,
+    pub commits: usize,
+    pub file_changes: usize,
 }
 
 impl IndexStats {
     pub fn summary(&self) -> String {
-        format!("{} files, {} functions, {} classes", self.files, self.functions, self.classes)
+        format!("{} files, {} functions, {} classes, {} commits, {} file changes",
+            self.files, self.functions, self.classes, self.commits, self.file_changes)
+    }
+}
+
+/// Index git history — commits, authors, file changes, and links to code entities.
+pub struct GitHistoryIndexer {
+    graph: GraphClient,
+    repo_name: String,
+}
+
+impl GitHistoryIndexer {
+    pub fn new(graph: GraphClient, repo_name: &str) -> Self {
+        Self { graph, repo_name: repo_name.to_string() }
+    }
+
+    /// Index git log into the graph. Creates Commit, Author nodes and
+    /// AUTHORED, MODIFIED_FILE, MODIFIED edges.
+    pub fn index(&self, repo_path: &str, max_commits: usize) -> (usize, usize) {
+        use std::process::Command;
+
+        // git log with file changes: hash, author, date, subject, files
+        let output = match Command::new("git")
+            .args([
+                "log",
+                &format!("--max-count={}", max_commits),
+                "--format=COMMIT_START%n%H%n%an%n%ae%n%aI%n%s",
+                "--name-status",
+            ])
+            .current_dir(repo_path)
+            .output()
+        {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => return (0, 0),
+        };
+
+        let mut commits = 0;
+        let mut file_changes = 0;
+
+        let mut current_hash = String::new();
+        let mut current_author = String::new();
+        let mut current_email = String::new();
+        let mut current_date = String::new();
+        let mut current_message = String::new();
+        let mut current_files: Vec<(String, String)> = vec![]; // (status, path)
+        let mut in_commit = false;
+        let mut line_idx = 0; // line within current commit block
+
+        for line in output.lines() {
+            if line == "COMMIT_START" {
+                // Process previous commit
+                if in_commit && !current_hash.is_empty() {
+                    self.ingest_commit(
+                        &current_hash, &current_author, &current_email,
+                        &current_date, &current_message, &current_files,
+                    );
+                    commits += 1;
+                    file_changes += current_files.len();
+                }
+                in_commit = true;
+                line_idx = 0;
+                current_files.clear();
+                continue;
+            }
+
+            if in_commit {
+                line_idx += 1;
+                match line_idx {
+                    1 => current_hash = line.to_string(),
+                    2 => current_author = line.to_string(),
+                    3 => current_email = line.to_string(),
+                    4 => current_date = line.to_string(),
+                    5 => current_message = line.to_string(),
+                    _ => {
+                        // File change lines: M\tpath, A\tpath, D\tpath
+                        let trimmed = line.trim();
+                        if trimmed.len() > 2 {
+                            let status = &trimmed[..1];
+                            let path = trimmed[1..].trim();
+                            if !path.is_empty() && (status == "M" || status == "A" || status == "D" || status == "R") {
+                                current_files.push((status.to_string(), path.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Process last commit
+        if in_commit && !current_hash.is_empty() {
+            self.ingest_commit(
+                &current_hash, &current_author, &current_email,
+                &current_date, &current_message, &current_files,
+            );
+            commits += 1;
+            file_changes += current_files.len();
+        }
+
+        // Create MODIFIED edges: Commit → CodeFunction (if the commit touched a file containing that function)
+        self.link_commits_to_functions();
+
+        (commits, file_changes)
+    }
+
+    fn ingest_commit(
+        &self,
+        hash: &str, author: &str, email: &str,
+        date: &str, message: &str, files: &[(String, String)],
+    ) {
+        let short_hash = &hash[..std::cmp::min(12, hash.len())];
+
+        // Create commit node
+        let _ = self.graph.query(
+            &format!(
+                "MERGE (c:Commit {{hash: '{}', repo: '{}'}}) \
+                 SET c.short_hash = '{}', c.author = '{}', c.email = '{}', \
+                 c.date = '{}', c.message = '{}', c.files_changed = {}",
+                esc(hash), esc(&self.repo_name),
+                esc(short_hash), esc(author), esc(email),
+                esc(date), esc(&message.chars().take(200).collect::<String>()),
+                files.len(),
+            ),
+            &[],
+        );
+
+        // Create author node + edge
+        let _ = self.graph.query(
+            &format!(
+                "MERGE (a:Author {{email: '{}', repo: '{}'}}) \
+                 SET a.name = '{}' \
+                 WITH a \
+                 MATCH (c:Commit {{hash: '{}', repo: '{}'}}) \
+                 MERGE (a)-[:AUTHORED]->(c)",
+                esc(email), esc(&self.repo_name),
+                esc(author),
+                esc(hash), esc(&self.repo_name),
+            ),
+            &[],
+        );
+
+        // File change edges
+        for (status, path) in files {
+            let change_type = match status.as_str() {
+                "A" => "added",
+                "D" => "deleted",
+                "M" => "modified",
+                "R" => "renamed",
+                _ => "changed",
+            };
+
+            let _ = self.graph.query(
+                &format!(
+                    "MATCH (c:Commit {{hash: '{}', repo: '{}'}}) \
+                     MERGE (f:CodeFile {{repo: '{}', path: '{}'}}) \
+                     MERGE (c)-[:MODIFIED_FILE {{change: '{}'}}]->(f)",
+                    esc(hash), esc(&self.repo_name),
+                    esc(&self.repo_name), esc(path),
+                    change_type,
+                ),
+                &[],
+            );
+        }
+    }
+
+    /// Link commits to functions: if a commit modified a file, and that file
+    /// contains a function, create a MODIFIED edge from the commit to the function.
+    fn link_commits_to_functions(&self) {
+        let _ = self.graph.query(
+            &format!(
+                "MATCH (c:Commit {{repo: '{}'}})-[:MODIFIED_FILE]->(fi:CodeFile {{repo: '{}'}})-[:CONTAINS]->(fn:CodeFunction {{repo: '{}'}}) \
+                 MERGE (c)-[:MODIFIED]->(fn)",
+                esc(&self.repo_name), esc(&self.repo_name), esc(&self.repo_name),
+            ),
+            &[],
+        );
     }
 }
 
