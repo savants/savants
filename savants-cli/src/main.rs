@@ -79,8 +79,11 @@ enum Commands {
         #[command(subcommand)]
         action: AgentAction,
     },
-    /// Connect to savants.cloud (opens browser, like tailscale up)
-    Connect,
+    /// Connect to external services (Slack, PagerDuty, savants.cloud)
+    Connect {
+        #[command(subcommand)]
+        action: Option<ConnectAction>,
+    },
     /// Disconnect from savants.cloud
     Disconnect,
     /// View internal state
@@ -176,6 +179,24 @@ enum AgentAction {
         #[arg(long)]
         cluster: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum ConnectAction {
+    /// Connect Slack for alerts and interactive RCA
+    Slack {
+        /// Slack incoming webhook URL
+        #[arg(long)]
+        webhook: Option<String>,
+        /// Slack bot token (for interactive mode)
+        #[arg(long)]
+        bot_token: Option<String>,
+        /// Slack channel for alerts (required with --bot-token)
+        #[arg(long)]
+        channel: Option<String>,
+    },
+    /// Connect to savants.cloud for team federation
+    Cloud,
 }
 
 #[derive(Subcommand)]
@@ -308,9 +329,14 @@ async fn main() {
                 println!("For local monitoring, use: {}", "savants k8s watch".cyan());
             }
         },
-        Commands::Connect => {
-            commands::connect::run().await;
-        }
+        Commands::Connect { action } => match action {
+            Some(ConnectAction::Slack { webhook, bot_token, channel }) => {
+                commands::connect::slack(webhook, bot_token, channel);
+            }
+            Some(ConnectAction::Cloud) | None => {
+                commands::connect::run().await;
+            }
+        },
         Commands::Disconnect => {
             commands::connect::disconnect();
         }

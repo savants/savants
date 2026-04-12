@@ -67,6 +67,7 @@ pub fn start() {
 
     // Forward alert config env vars
     for key in &["SAVANTS_GOTIFY_URL", "SAVANTS_GOTIFY_TOKEN", "SAVANTS_WEBHOOK_URL",
+                 "SAVANTS_SLACK_WEBHOOK_URL", "SAVANTS_SLACK_BOT_TOKEN", "SAVANTS_SLACK_CHANNEL",
                  "KUBECONFIG", "HOME", "PATH", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
                  "AWS_DEFAULT_REGION", "GOOGLE_APPLICATION_CREDENTIALS"] {
         if let Ok(val) = std::env::var(key) {

@@ -45,6 +45,9 @@ pub struct AlertConfig {
     pub gotify_url: Option<String>,
     pub gotify_token: Option<String>,
     pub webhook_url: Option<String>,
+    pub slack_webhook_url: Option<String>,
+    pub slack_bot_token: Option<String>,
+    pub slack_channel: Option<String>,
     pub min_severity: AlertSeverity,
 }
 
@@ -54,12 +57,15 @@ impl AlertConfig {
             gotify_url: std::env::var("SAVANTS_GOTIFY_URL").ok(),
             gotify_token: std::env::var("SAVANTS_GOTIFY_TOKEN").ok(),
             webhook_url: std::env::var("SAVANTS_WEBHOOK_URL").ok(),
+            slack_webhook_url: std::env::var("SAVANTS_SLACK_WEBHOOK_URL").ok(),
+            slack_bot_token: std::env::var("SAVANTS_SLACK_BOT_TOKEN").ok(),
+            slack_channel: std::env::var("SAVANTS_SLACK_CHANNEL").ok(),
             min_severity: AlertSeverity::Warning,
         }
     }
 
     pub fn is_configured(&self) -> bool {
-        self.gotify_url.is_some() || self.webhook_url.is_some()
+        self.gotify_url.is_some() || self.webhook_url.is_some() || self.slack_webhook_url.is_some() || self.slack_bot_token.is_some()
     }
 }
 
@@ -392,6 +398,81 @@ fn fire_alert(alert: &Alert, config: &AlertConfig) {
                 .json(&payload)
                 .timeout(std::time::Duration::from_secs(5))
                 .send();
+        });
+    }
+
+    // Slack — via incoming webhook OR Bot API
+    let slack_url = if let Some(wh) = &config.slack_webhook_url {
+        Some(wh.clone())
+    } else if config.slack_bot_token.is_some() {
+        Some("https://slack.com/api/chat.postMessage".to_string())
+    } else {
+        None
+    };
+
+    if let Some(url) = slack_url {
+        let severity_emoji = match alert.severity {
+            AlertSeverity::Emergency => "🔴",
+            AlertSeverity::Critical => "🟠",
+            AlertSeverity::Warning => "🟡",
+            AlertSeverity::Info => "🔵",
+        };
+        let severity_label = match alert.severity {
+            AlertSeverity::Emergency => "EMERGENCY",
+            AlertSeverity::Critical => "CRITICAL",
+            AlertSeverity::Warning => "WARNING",
+            AlertSeverity::Info => "INFO",
+        };
+
+        // Build Slack Block Kit payload for rich formatting
+        let blocks = serde_json::json!([
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": format!("{} Savants: {}", severity_emoji, alert.title),
+                    "emoji": true
+                }
+            },
+            {
+                "type": "section",
+                "fields": [
+                    { "type": "mrkdwn", "text": format!("*Severity:*\n{} {}", severity_emoji, severity_label) },
+                    { "type": "mrkdwn", "text": format!("*Source:*\n`{}`", alert.source) }
+                ]
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": alert.message.chars().take(2900).collect::<String>()
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    { "type": "mrkdwn", "text": format!("Savants • {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")) }
+                ]
+            }
+        ]);
+
+        let mut payload = serde_json::json!({ "blocks": blocks });
+
+        // If using Bot API, add channel and auth
+        let bot_token = config.slack_bot_token.clone();
+        if let Some(channel) = &config.slack_channel {
+            payload["channel"] = serde_json::json!(channel);
+        }
+
+        let _ = std::thread::spawn(move || {
+            let client = reqwest::blocking::Client::new();
+            let mut req = client.post(&url)
+                .json(&payload)
+                .timeout(std::time::Duration::from_secs(5));
+            if let Some(token) = bot_token {
+                req = req.header("Authorization", format!("Bearer {}", token));
+            }
+            let _ = req.send();
         });
     }
 }
