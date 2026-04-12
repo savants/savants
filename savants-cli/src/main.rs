@@ -17,6 +17,7 @@ mod commands;
 mod host;
 mod k8s;
 mod mcp;
+mod slack;
 mod utils;
 
 pub use utils::find_in_path;
@@ -191,9 +192,18 @@ enum ConnectAction {
         /// Slack bot token (for interactive mode)
         #[arg(long)]
         bot_token: Option<String>,
-        /// Slack channel for alerts (required with --bot-token)
+        /// Personal user token from browser (xoxc-*)
+        #[arg(long)]
+        user_token: Option<String>,
+        /// Browser cookie 'd' value (required with --user-token)
+        #[arg(long)]
+        cookie: Option<String>,
+        /// Slack channel for alerts (required with --bot-token or --user-token)
         #[arg(long)]
         channel: Option<String>,
+        /// Auto-extract token from browser (starts local server, paste one-liner in Slack console)
+        #[arg(long)]
+        from_browser: bool,
     },
     /// Connect to savants.cloud for team federation
     Cloud,
@@ -330,8 +340,12 @@ async fn main() {
             }
         },
         Commands::Connect { action } => match action {
-            Some(ConnectAction::Slack { webhook, bot_token, channel }) => {
-                commands::connect::slack(webhook, bot_token, channel);
+            Some(ConnectAction::Slack { webhook, bot_token, user_token, cookie, channel, from_browser }) => {
+                if from_browser {
+                    commands::connect::slack_from_browser().await;
+                } else {
+                    commands::connect::slack(webhook, bot_token, user_token, cookie, channel);
+                }
             }
             Some(ConnectAction::Cloud) | None => {
                 commands::connect::run().await;

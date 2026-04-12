@@ -8,6 +8,7 @@
 //!   savants daemon logs      # tail the daemon log
 
 use colored::*;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -67,7 +68,8 @@ pub fn start() {
 
     // Forward alert config env vars
     for key in &["SAVANTS_GOTIFY_URL", "SAVANTS_GOTIFY_TOKEN", "SAVANTS_WEBHOOK_URL",
-                 "SAVANTS_SLACK_WEBHOOK_URL", "SAVANTS_SLACK_BOT_TOKEN", "SAVANTS_SLACK_CHANNEL",
+                 "SAVANTS_SLACK_WEBHOOK_URL", "SAVANTS_SLACK_BOT_TOKEN",
+                 "SAVANTS_SLACK_USER_TOKEN", "SAVANTS_SLACK_COOKIE", "SAVANTS_SLACK_CHANNEL",
                  "KUBECONFIG", "HOME", "PATH", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
                  "AWS_DEFAULT_REGION", "GOOGLE_APPLICATION_CREDENTIALS"] {
         if let Ok(val) = std::env::var(key) {
@@ -279,6 +281,65 @@ pub async fn run() {
             std::thread::sleep(std::time::Duration::from_secs(60)); // check every minute
         }
     });
+
+    // Start Slack ingestion thread (observe mode — read only, never posts)
+    if let Some(slack) = crate::slack::SlackIngestor::from_env() {
+        let graph_name_slack = crate::config::State::load().graph_name();
+        std::thread::spawn(move || {
+            println!("[slack] Slack integration active (observe mode)");
+
+            // First run: backfill last 7 days (or full history if no prior data)
+            let state = crate::config::State::load();
+            let savants_home = dirs::home_dir().unwrap_or_default().join(".savants");
+            let slack_cursor_file = savants_home.join("slack-cursor.txt");
+
+            let since_ts = if slack_cursor_file.exists() {
+                std::fs::read_to_string(&slack_cursor_file)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            } else {
+                // First run: backfill last 7 days
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
+                now - (7.0 * 86400.0)
+            };
+
+            if let Ok(graph) = crate::graph::GraphClient::new(&graph_name_slack) {
+                let stats = slack.ingest(&graph, since_ts);
+                println!("[slack] Initial ingest: {}", stats.summary());
+
+                // Resolve user names
+                slack.resolve_users(&graph);
+            }
+
+            // Save cursor
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
+            let _ = std::fs::write(&slack_cursor_file, format!("{}", now));
+
+            // Then poll for new messages every 5 minutes
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(300));
+
+                let since = std::fs::read_to_string(&slack_cursor_file)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                    .unwrap_or(0.0);
+
+                if let Ok(graph) = crate::graph::GraphClient::new(&graph_name_slack) {
+                    let stats = slack.ingest(&graph, since);
+                    if stats.messages > 0 {
+                        println!("[slack] Poll: {}", stats.summary());
+                        slack.resolve_users(&graph);
+                    }
+                }
+
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
+                let _ = std::fs::write(&slack_cursor_file, format!("{}", now));
+            }
+        });
+    } else {
+        println!("[slack] Not configured (set SAVANTS_SLACK_USER_TOKEN to enable)");
+    }
 
     // Start cloud cost ingestion thread (every 6 hours)
     std::thread::spawn(|| {

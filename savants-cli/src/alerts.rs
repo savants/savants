@@ -47,6 +47,8 @@ pub struct AlertConfig {
     pub webhook_url: Option<String>,
     pub slack_webhook_url: Option<String>,
     pub slack_bot_token: Option<String>,
+    pub slack_user_token: Option<String>,
+    pub slack_cookie: Option<String>,
     pub slack_channel: Option<String>,
     pub min_severity: AlertSeverity,
 }
@@ -59,13 +61,17 @@ impl AlertConfig {
             webhook_url: std::env::var("SAVANTS_WEBHOOK_URL").ok(),
             slack_webhook_url: std::env::var("SAVANTS_SLACK_WEBHOOK_URL").ok(),
             slack_bot_token: std::env::var("SAVANTS_SLACK_BOT_TOKEN").ok(),
+            slack_user_token: std::env::var("SAVANTS_SLACK_USER_TOKEN").ok(),
+            slack_cookie: std::env::var("SAVANTS_SLACK_COOKIE").ok(),
             slack_channel: std::env::var("SAVANTS_SLACK_CHANNEL").ok(),
             min_severity: AlertSeverity::Warning,
         }
     }
 
     pub fn is_configured(&self) -> bool {
-        self.gotify_url.is_some() || self.webhook_url.is_some() || self.slack_webhook_url.is_some() || self.slack_bot_token.is_some()
+        self.gotify_url.is_some() || self.webhook_url.is_some()
+            || self.slack_webhook_url.is_some() || self.slack_bot_token.is_some()
+            || self.slack_user_token.is_some()
     }
 }
 
@@ -401,16 +407,18 @@ fn fire_alert(alert: &Alert, config: &AlertConfig) {
         });
     }
 
-    // Slack — via incoming webhook OR Bot API
-    let slack_url = if let Some(wh) = &config.slack_webhook_url {
-        Some(wh.clone())
+    // Slack — via incoming webhook, Bot API, or user token
+    let slack_mode = if config.slack_webhook_url.is_some() {
+        Some("webhook")
     } else if config.slack_bot_token.is_some() {
-        Some("https://slack.com/api/chat.postMessage".to_string())
+        Some("bot")
+    } else if config.slack_user_token.is_some() {
+        Some("user")
     } else {
         None
     };
 
-    if let Some(url) = slack_url {
+    if let Some(mode) = slack_mode {
         let severity_emoji = match alert.severity {
             AlertSeverity::Emergency => "🔴",
             AlertSeverity::Critical => "🟠",
@@ -458,22 +466,52 @@ fn fire_alert(alert: &Alert, config: &AlertConfig) {
 
         let mut payload = serde_json::json!({ "blocks": blocks });
 
-        // If using Bot API, add channel and auth
-        let bot_token = config.slack_bot_token.clone();
-        if let Some(channel) = &config.slack_channel {
-            payload["channel"] = serde_json::json!(channel);
-        }
-
-        let _ = std::thread::spawn(move || {
-            let client = reqwest::blocking::Client::new();
-            let mut req = client.post(&url)
-                .json(&payload)
-                .timeout(std::time::Duration::from_secs(5));
-            if let Some(token) = bot_token {
-                req = req.header("Authorization", format!("Bearer {}", token));
+        match mode {
+            "webhook" => {
+                let url = config.slack_webhook_url.clone().unwrap();
+                let _ = std::thread::spawn(move || {
+                    let client = reqwest::blocking::Client::new();
+                    let _ = client.post(&url)
+                        .json(&payload)
+                        .timeout(std::time::Duration::from_secs(5))
+                        .send();
+                });
             }
-            let _ = req.send();
-        });
+            "bot" => {
+                let url = "https://slack.com/api/chat.postMessage".to_string();
+                let token = config.slack_bot_token.clone().unwrap();
+                if let Some(channel) = &config.slack_channel {
+                    payload["channel"] = serde_json::json!(channel);
+                }
+                let _ = std::thread::spawn(move || {
+                    let client = reqwest::blocking::Client::new();
+                    let _ = client.post(&url)
+                        .header("Authorization", format!("Bearer {}", token))
+                        .json(&payload)
+                        .timeout(std::time::Duration::from_secs(5))
+                        .send();
+                });
+            }
+            "user" => {
+                // User token (xoxc-*) from browser — requires d cookie
+                let url = "https://slack.com/api/chat.postMessage".to_string();
+                let token = config.slack_user_token.clone().unwrap();
+                let cookie = config.slack_cookie.clone().unwrap_or_default();
+                if let Some(channel) = &config.slack_channel {
+                    payload["channel"] = serde_json::json!(channel);
+                }
+                let _ = std::thread::spawn(move || {
+                    let client = reqwest::blocking::Client::new();
+                    let _ = client.post(&url)
+                        .header("Authorization", format!("Bearer {}", token))
+                        .header("Cookie", format!("d={}", cookie))
+                        .json(&payload)
+                        .timeout(std::time::Duration::from_secs(5))
+                        .send();
+                });
+            }
+            _ => {}
+        }
     }
 }
 
