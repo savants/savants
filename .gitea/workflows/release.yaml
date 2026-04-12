@@ -44,13 +44,17 @@ jobs:
           echo '[target.aarch64-unknown-linux-gnu]' >> savants-cli/.cargo/config.toml
           echo 'linker = "aarch64-linux-gnu-gcc"' >> savants-cli/.cargo/config.toml
 
-      - name: Install zigbuild (macOS cross-compile)
+      - name: Install zigbuild + macOS SDK (macOS cross-compile)
         if: matrix.zigbuild
         run: |
           . "$HOME/.cargo/env"
-          apt-get update && apt-get install -y python3-pip
+          apt-get update && apt-get install -y python3-pip xz-utils
           pip3 install ziglang --break-system-packages
           cargo install cargo-zigbuild
+          # Download macOS 14 SDK for framework linking
+          mkdir -p /opt/macos-sdk
+          curl -fsSL https://github.com/joseluisq/macosx-sdks/releases/download/14.5/MacOSX14.5.sdk.tar.xz \
+            | tar xJ -C /opt/macos-sdk --strip-components=1
 
       - name: Build (native/cross-linux)
         if: '!matrix.zigbuild'
@@ -62,6 +66,8 @@ jobs:
       - name: Build (macOS via zigbuild)
         if: matrix.zigbuild
         working-directory: savants-cli
+        env:
+          SDKROOT: /opt/macos-sdk
         run: |
           . "$HOME/.cargo/env"
           cargo zigbuild --release --target ${{ matrix.target }}
