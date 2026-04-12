@@ -16,6 +16,7 @@ mod schema;
 mod commands;
 mod host;
 mod k8s;
+mod code_index;
 mod mcp;
 mod slack;
 mod utils;

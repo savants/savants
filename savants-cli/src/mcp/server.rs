@@ -1383,23 +1383,54 @@ impl McpServer {
 
     fn tool_search_code(&self, args: &Value) -> Result<String, String> {
         let pattern = arg_str(args, "pattern")?;
-        let rows = self.query_text(
-            &self.client,
-            "MATCH (n) WHERE (n:Function OR n:Class) AND n.name CONTAINS $pattern \
-             RETURN labels(n)[0], n.name, n.file_path LIMIT 50",
-            &[("pattern", &pattern)],
-        )?;
 
-        if rows.is_empty() {
-            return Ok(format!("No functions or classes matching '{}'.", pattern));
+        // Search both old-style (Function/Class) and new tree-sitter (CodeFunction/CodeClass) nodes
+        // Also search function bodies for the pattern
+        let mut results = Vec::new();
+
+        // Search by name
+        if let Ok(rows) = self.query_text(
+            &self.client,
+            "MATCH (n) WHERE (n:Function OR n:Class OR n:CodeFunction OR n:CodeClass) AND toLower(n.name) CONTAINS toLower($pattern) \
+             RETURN labels(n)[0], n.name, n.file_path, n.file, n.line, n.repo LIMIT 50",
+            &[("pattern", &pattern)],
+        ) {
+            for r in &rows {
+                let label = r.get(0).map(|v| v.as_str()).unwrap_or("?");
+                let name = r.get(1).map(|v| v.as_str()).unwrap_or("?");
+                let fp = r.get(2).map(|v| v.as_str()).unwrap_or("");
+                let file = r.get(3).map(|v| v.as_str()).unwrap_or("");
+                let line = r.get(4).map(|v| v.as_i64()).unwrap_or(0);
+                let repo = r.get(5).map(|v| v.as_str()).unwrap_or("");
+                let path = if !fp.is_empty() { fp } else { file };
+                let loc = if line > 0 { format!(":{}",line) } else { String::new() };
+                let repo_prefix = if !repo.is_empty() { format!("{}/", repo) } else { String::new() };
+                results.push(format!("[{}] {} ({}{}{})", label, name, repo_prefix, path, loc));
+            }
         }
 
-        let mut results = Vec::new();
-        for r in &rows {
-            let label = r.get(0).map(|v| v.as_str()).unwrap_or("?");
-            let name = r.get(1).map(|v| v.as_str()).unwrap_or("?");
-            let fp = r.get(2).map(|v| v.as_str()).unwrap_or("?");
-            results.push(format!("[{}] {} ({})", label, name, fp));
+        // Search function bodies for the pattern (finds usage, not just definitions)
+        if let Ok(rows) = self.query_text(
+            &self.client,
+            "MATCH (n:CodeFunction) WHERE toLower(n.body) CONTAINS toLower($pattern) \
+             RETURN n.name, n.file, n.line, n.repo LIMIT 20",
+            &[("pattern", &pattern)],
+        ) {
+            if !rows.is_empty() {
+                results.push(String::new());
+                results.push(format!("Functions containing '{}' in body:", pattern));
+                for r in &rows {
+                    let name = r.get(0).map(|v| v.as_str()).unwrap_or("?");
+                    let file = r.get(1).map(|v| v.as_str()).unwrap_or("?");
+                    let line = r.get(2).map(|v| v.as_i64()).unwrap_or(0);
+                    let repo = r.get(3).map(|v| v.as_str()).unwrap_or("");
+                    results.push(format!("  {} ({}{}:{})", name, if !repo.is_empty() { format!("{}/",repo) } else { String::new() }, file, line));
+                }
+            }
+        }
+
+        if results.is_empty() {
+            return Ok(format!("No functions or classes matching '{}'.", pattern));
         }
         Ok(results.join("\n"))
     }
@@ -2109,12 +2140,25 @@ impl McpServer {
         }
     }
 
-    fn tool_reindex(&self, _args: &Value) -> Result<String, String> {
-        // Stub -- needs tree-sitter integration in Rust
-        Ok("reindex is not yet implemented in the Rust MCP server. \
-            It requires tree-sitter integration for parsing source code. \
-            Use the Python server for this tool."
-            .to_string())
+    fn tool_reindex(&self, args: &Value) -> Result<String, String> {
+        let repo_path = args.get("repo_path")
+            .and_then(|v| v.as_str())
+            .ok_or("repo_path is required")?;
+
+        if !std::path::Path::new(repo_path).is_dir() {
+            return Err(format!("Not a directory: {}", repo_path));
+        }
+
+        // Derive repo name from path
+        let repo_name = std::path::Path::new(repo_path)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let indexer = crate::code_index::CodeIndexer::new(self.client.clone(), &repo_name);
+        let stats = indexer.index_repo(repo_path);
+
+        Ok(format!("Indexed {}: {}", repo_name, stats.summary()))
     }
 
     // ---------------------------------------------------------------
