@@ -16,9 +16,17 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
+            zigbuild: false
             cross: false
           - target: aarch64-unknown-linux-gnu
+            zigbuild: false
             cross: true
+          - target: x86_64-apple-darwin
+            zigbuild: true
+            cross: false
+          - target: aarch64-apple-darwin
+            zigbuild: true
+            cross: false
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +36,7 @@ jobs:
           . "$HOME/.cargo/env"
           rustup target add ${{ matrix.target }}
 
-      - name: Install cross-compile deps (aarch64)
+      - name: Install cross-compile deps (aarch64 Linux)
         if: matrix.cross
         run: |
           apt-get update && apt-get install -y gcc-aarch64-linux-gnu
@@ -36,11 +44,26 @@ jobs:
           echo '[target.aarch64-unknown-linux-gnu]' >> savants-cli/.cargo/config.toml
           echo 'linker = "aarch64-linux-gnu-gcc"' >> savants-cli/.cargo/config.toml
 
-      - name: Build
+      - name: Install zigbuild (macOS cross-compile)
+        if: matrix.zigbuild
+        run: |
+          . "$HOME/.cargo/env"
+          pip3 install ziglang || apt-get update && apt-get install -y python3-pip && pip3 install ziglang --break-system-packages
+          cargo install cargo-zigbuild
+
+      - name: Build (native/cross-linux)
+        if: '!matrix.zigbuild'
         working-directory: savants-cli
         run: |
           . "$HOME/.cargo/env"
           cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (macOS via zigbuild)
+        if: matrix.zigbuild
+        working-directory: savants-cli
+        run: |
+          . "$HOME/.cargo/env"
+          cargo zigbuild --release --target ${{ matrix.target }}
 
       - name: Package
         run: |
@@ -80,7 +103,7 @@ jobs:
             RELEASE_ID=$(curl -s -X POST \
               -H "Authorization: token ${GITEA_TOKEN}" \
               -H "Content-Type: application/json" \
-              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Savants ${TAG}\",\"body\":\"Multi-arch release for Linux x86_64 and aarch64.\n\nInstall:\n\`\`\`\ncurl -fsSL http://100.95.164.99:30900/savants-releases/install.sh | sh\n\`\`\`\",\"draft\":false,\"prerelease\":false}" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Savants ${TAG}\",\"body\":\"Multi-arch release (Linux + macOS, x86_64 + aarch64).\n\nInstall:\n\`\`\`\ncurl -fsSL http://100.95.164.99:30900/savants-releases/install.sh | sh\n\`\`\`\",\"draft\":false,\"prerelease\":false}" \
               "${API}/repos/${REPO}/releases" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
             echo "Created release ${TAG} (id: ${RELEASE_ID})"
           else
