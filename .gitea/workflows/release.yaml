@@ -48,7 +48,8 @@ jobs:
         if: matrix.zigbuild
         run: |
           . "$HOME/.cargo/env"
-          pip3 install ziglang || apt-get update && apt-get install -y python3-pip && pip3 install ziglang --break-system-packages
+          apt-get update && apt-get install -y python3-pip
+          pip3 install ziglang --break-system-packages
           cargo install cargo-zigbuild
 
       - name: Build (native/cross-linux)

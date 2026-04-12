@@ -2062,8 +2062,8 @@ fn get_disk_partitions() -> Vec<DiskPartition> {
 fn disk_usage(mountpoint: &str) -> Result<DiskUsage, String> {
     let stat = statvfs(mountpoint).map_err(|e| e.to_string())?;
     let block_size = stat.block_size() as u64;
-    let total = stat.blocks() * block_size;
-    let free = stat.blocks_available() * block_size;
+    let total = stat.blocks() as u64 * block_size;
+    let free = stat.blocks_available() as u64 * block_size;
     let used = total.saturating_sub(free);
     Ok(DiskUsage { total, used, free })
 }
