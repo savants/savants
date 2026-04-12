@@ -455,16 +455,16 @@ pub fn slack(webhook: Option<String>, bot_token: Option<String>, user_token: Opt
     }
 }
 
-/// Auto-extract Slack token from browser.
-/// Starts a tiny local HTTP server, user pastes a one-liner in Slack's browser console,
-/// token flows back automatically. Zero copy-paste of credentials.
+/// Browser-as-proxy Slack setup.
+/// The browser makes Slack API calls (with its own HttpOnly cookies) and
+/// sends the results to a local server. One paste in the console, fully automatic.
 pub async fn slack_from_browser() {
     use tokio::net::TcpListener;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     println!("{}", "Savants Slack Setup".bold());
     println!();
-    println!("  {} Starting local server on port 9876...", "1.".bold());
+    println!("  {} Starting local server...", "1.".bold());
 
     let listener = match TcpListener::bind("127.0.0.1:9876").await {
         Ok(l) => l,
@@ -474,140 +474,107 @@ pub async fn slack_from_browser() {
         }
     };
 
-    println!("  {} Open {} in your browser (make sure you're logged in)", "2.".bold(), "app.slack.com".cyan());
-    println!("  {} Open DevTools → Console (press F12)", "3.".bold());
+    println!("  {} Open your Slack workspace in the browser (e.g. yourcompany.slack.com)", "2.".bold());
+    println!("  {} Open DevTools → Console (F12)", "3.".bold());
     println!("  {} Paste this and press Enter:", "4.".bold());
     println!();
 
-    let snippet = r#"fetch("http://localhost:9876",{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain"},body:JSON.stringify({token:(()=>{try{let t=JSON.parse(localStorage.getItem("localConfig_v2")||"{}");return Object.values(t.teams||{})[0]?.token||""}catch{return""}})(),cookie:document.cookie.split(";").map(c=>c.trim()).find(c=>c.startsWith("d="))?.slice(2)||"",workspace:(()=>{try{let t=JSON.parse(localStorage.getItem("localConfig_v2")||"{}");return Object.values(t.teams||{})[0]?.name||""}catch{return""}})()})})"#;
+    // This snippet:
+    // 1. Extracts the token from the page's boot data
+    // 2. Calls conversations.list using the browser's cookies (HttpOnly d= cookie included)
+    // 3. Sends token + channel list to localhost:9876
+    let snippet = r#"(async()=>{let t="";document.querySelectorAll("script").forEach(s=>{let m=s.textContent.match(/"token":"(xoxc-[^"]+)"/);if(m)t=m[1]});if(!t){let b=document.querySelector("[data-boot]");if(b)try{t=JSON.parse(b.dataset.boot).token}catch{}}if(!t)try{t=Object.values(JSON.parse(localStorage.getItem("localConfig_v2")||"{}").teams||{})[0]?.token||""}catch{}if(!t)return console.log("Token not found. Make sure you are on your Slack workspace page.");let r=await fetch("/api/conversations.list",{method:"POST",credentials:"include",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"token="+t+"&types=public_channel,private_channel&limit=200&exclude_archived=true"});let d=await r.json();if(!d.ok)return console.log("Slack API error: "+d.error);let a=await fetch("/api/auth.test",{method:"POST",credentials:"include",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"token="+t});let u=await a.json();let ch=d.channels.filter(c=>c.is_member).map(c=>({id:c.id,name:c.name}));await fetch("http://localhost:9876",{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain"},body:JSON.stringify({token:t,workspace:u.team||"",user:u.user||"",channels:ch})});console.log("Sent to Savants! Check your terminal.")})()"#;
 
-    println!("  {}", snippet.dimmed());
+    println!("     {}", snippet.dimmed());
     println!();
-    println!("  {} Waiting for token...", "⏳");
+    println!("  {} Waiting for data from browser...", "⏳");
     println!();
 
-    // Wait for the browser to POST the token
+    // Wait for the browser to POST
     loop {
         let (mut socket, _) = match listener.accept().await {
             Ok(s) => s,
             Err(_) => continue,
         };
 
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; 65536]; // channels list can be large
         let n = match socket.read(&mut buf).await {
             Ok(n) => n,
             Err(_) => continue,
         };
         let request = String::from_utf8_lossy(&buf[..n]);
 
-        // Send CORS-friendly response regardless
-        let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nOK";
+        // Send CORS response
+        let response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 2\r\n\r\nOK";
         let _ = socket.write_all(response.as_bytes()).await;
 
-        // Handle OPTIONS preflight
-        if request.starts_with("OPTIONS") {
-            continue;
-        }
+        if request.starts_with("OPTIONS") { continue; }
 
-        // Parse POST body — it's after the \r\n\r\n
         if let Some(body_start) = request.find("\r\n\r\n") {
             let body = &request[body_start + 4..];
             if let Ok(data) = serde_json::from_str::<serde_json::Value>(body) {
                 let token = data.get("token").and_then(|v| v.as_str()).unwrap_or("");
-                let cookie = data.get("cookie").and_then(|v| v.as_str()).unwrap_or("");
                 let workspace = data.get("workspace").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let user = data.get("user").and_then(|v| v.as_str()).unwrap_or("");
 
                 if token.is_empty() || !token.starts_with("xox") {
-                    println!("  {} Token not found. Make sure you're logged into Slack in the browser.", "✗".red());
+                    println!("  {} Token not found in browser data.", "✗".red());
                     continue;
                 }
 
-                println!("  {} Got token from {}", "✅".green(), workspace.cyan());
+                println!("  {} Authenticated as {} on {}", "✅".green(), user.cyan(), workspace.cyan());
 
-                // Save to config
-                let savants_home = dirs::home_dir().unwrap_or_default().join(".savants");
-                let config_path = savants_home.join("slack.toml");
-                let mut lines = vec![
-                    format!("user_token = \"{}\"", token),
-                ];
-                if !cookie.is_empty() {
-                    lines.push(format!("cookie = \"{}\"", cookie));
-                }
-                lines.push(format!("workspace = \"{}\"", workspace));
-
-                // Fetch channel list using the token
-                println!("  {} Fetching your channels...", "⏳");
-                let client = reqwest::blocking::Client::new();
-                let mut req = client.get("https://slack.com/api/conversations.list")
-                    .query(&[("types", "public_channel,private_channel"), ("limit", "100")])
-                    .header("Authorization", format!("Bearer {}", token));
-                if !cookie.is_empty() {
-                    req = req.header("Cookie", format!("d={}", cookie));
-                }
-
-                let mut channels: Vec<(String, String)> = vec![];
-                if let Ok(resp) = req.timeout(std::time::Duration::from_secs(10)).send() {
-                    if let Ok(data) = resp.json::<serde_json::Value>() {
-                        if let Some(ch_list) = data.get("channels").and_then(|c| c.as_array()) {
-                            for ch in ch_list {
-                                let id = ch.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                let name = ch.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                let is_member = ch.get("is_member").and_then(|v| v.as_bool()).unwrap_or(false);
-                                if is_member && !id.is_empty() {
-                                    channels.push((id.to_string(), name.to_string()));
-                                }
-                            }
-                        }
-                    }
-                }
+                // Parse channels from browser response
+                let channels: Vec<(String, String)> = data.get("channels")
+                    .and_then(|c| c.as_array())
+                    .map(|arr| arr.iter().filter_map(|ch| {
+                        let id = ch.get("id")?.as_str()?.to_string();
+                        let name = ch.get("name")?.as_str()?.to_string();
+                        Some((id, name))
+                    }).collect())
+                    .unwrap_or_default();
 
                 if channels.is_empty() {
-                    println!("  Could not fetch channels. You can set the channel manually:");
-                    println!("  {} {}", "savants connect slack --user-token".dimmed(), format!("{} --channel C0123ABC", &token[..20]).dimmed());
-                } else {
-                    println!();
-                    println!("  Your channels:");
-                    for (i, (_, name)) in channels.iter().enumerate() {
-                        println!("    {}. #{}", i + 1, name);
-                    }
-                    println!();
-                    println!("  Which channel for Savants alerts? [1-{}]", channels.len());
-
-                    // Read user input
-                    let mut input = String::new();
-                    if std::io::stdin().read_line(&mut input).is_ok() {
-                        let choice: usize = input.trim().parse().unwrap_or(1);
-                        if choice >= 1 && choice <= channels.len() {
-                            let (ref ch_id, ref ch_name) = channels[choice - 1];
-                            lines.push(format!("channel = \"{}\"", ch_id));
-                            println!();
-                            println!("  {} Connected to #{} on {}!", "✅".green(), ch_name.cyan(), workspace.cyan());
-                        }
-                    }
-                }
-
-                // Save config
-                let config_content = lines.join("\n") + "\n";
-                if let Err(e) = std::fs::write(&config_path, &config_content) {
-                    eprintln!("{}: {}", "Error".red(), e);
+                    println!("  No channels received.");
                     return;
                 }
 
                 println!();
-                println!("  Config saved to {}", config_path.display().to_string().dimmed());
+                for (i, (_, name)) in channels.iter().enumerate() {
+                    println!("    {}. #{}", (i + 1).to_string().bold(), name);
+                }
                 println!();
-                println!("  To start getting alerts in Slack:");
-                for line in &lines {
-                    let parts: Vec<&str> = line.splitn(2, " = ").collect();
-                    if parts.len() == 2 {
-                        let key = parts[0].trim();
-                        let val = parts[1].trim().trim_matches('"');
-                        let env_key = format!("SAVANTS_SLACK_{}", key.to_uppercase());
-                        println!("    export {}=\"{}\"", env_key, val);
+                print!("  Which channel for Savants? [1-{}]: ", channels.len());
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok() {
+                    let choice: usize = input.trim().parse().unwrap_or(1);
+                    if choice >= 1 && choice <= channels.len() {
+                        let (ref ch_id, ref ch_name) = channels[choice - 1];
+
+                        // Save config — note: token requires browser cookies to work
+                        // The daemon will need to use the browser-proxy pattern too,
+                        // OR we store just for graph reads (the browser-proxy handles writes)
+                        let savants_home = dirs::home_dir().unwrap_or_default().join(".savants");
+                        let config_path = savants_home.join("slack.toml");
+                        let config_content = format!(
+                            "user_token = \"{}\"\nchannel = \"{}\"\nworkspace = \"{}\"\nbrowser_proxy = true\n",
+                            token, ch_id, workspace
+                        );
+                        let _ = std::fs::write(&config_path, &config_content);
+
+                        println!();
+                        println!("  {} Connected to #{} on {}!", "✅".green(), ch_name.cyan(), workspace.cyan());
+                        println!();
+                        println!("  {} The token requires browser cookies for API access.", "Note:".yellow());
+                        println!("  For the daemon to read Slack, create a Slack app for a standalone token:");
+                        println!("    {} → Create App → Bot Token → {}", "api.slack.com/apps".cyan(), "savants connect slack --bot-token xoxb-...".dimmed());
+                        println!();
+                        println!("  Or use the token directly for graph queries (read-only via browser).");
                     }
                 }
-                println!("    {} && {}", "savants daemon stop".dimmed(), "savants daemon start".cyan());
-
                 return;
             }
         }
