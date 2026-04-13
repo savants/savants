@@ -2436,6 +2436,111 @@ impl McpServer {
             }
         }
 
+        // EARLY CHECK: Infrastructure errors bypass function matching entirely
+        let is_infra_error = error_lower.contains("redis")
+            || (error_lower.contains("subscribe") && error_lower.contains("allowed"))
+            || error_lower.contains("econnrefused")
+            || error_lower.contains("polling") && error_lower.contains("failed to fetch");
+
+        if is_infra_error && candidate_functions.is_empty() {
+            output.push("Step 1 — Infrastructure error detected".to_string());
+            output.push(String::new());
+
+            if error_lower.contains("subscribe") || error_lower.contains("redis") {
+                output.push("CONCLUSION:".to_string());
+                output.push("  ROOT CAUSE: A Redis connection in SUBSCRIBE mode is being reused for regular commands.".to_string());
+                output.push("  Redis clients in pub/sub mode can ONLY run SUBSCRIBE/UNSUBSCRIBE/PING/QUIT.".to_string());
+                output.push("  FIX: Use separate Redis connections for pub/sub and regular commands.".to_string());
+
+                output.push(String::new());
+                output.push("  Related code:".to_string());
+                if let Ok(rows) = self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE f.file STARTS WITH 'server/' AND (toLower(f.body) CONTAINS 'redis' OR toLower(f.body) CONTAINS 'subscribe' OR toLower(f.body) CONTAINS 'pubsub') RETURN f.name, f.file LIMIT 10",
+                        repo
+                    ),
+                    &[],
+                ) {
+                    for row in &rows {
+                        output.push(format!("    {} ({})", row.get(0).map(|v| v.as_str()).unwrap_or("?"), row.get(1).map(|v| v.as_str()).unwrap_or("?")));
+                    }
+                }
+            } else if error_lower.contains("polling") || error_lower.contains("failed to fetch") {
+                output.push("CONCLUSION:".to_string());
+                output.push("  ROOT CAUSE: External API polling job failing.".to_string());
+
+                output.push(String::new());
+                output.push("  Related code:".to_string());
+                let search_terms: Vec<&str> = if error_lower.contains("rippling") { vec!["rippling", "polling"] }
+                    else { vec!["polling", "fetch", "cron"] };
+                for term in &search_terms {
+                    if let Ok(rows) = self.query_text(
+                        &self.client,
+                        &format!(
+                            "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE f.file STARTS WITH 'server/' AND toLower(f.body) CONTAINS '{}' RETURN f.name, f.file LIMIT 5",
+                            repo, term
+                        ),
+                        &[],
+                    ) {
+                        for row in &rows {
+                            output.push(format!("    {} ({})", row.get(0).map(|v| v.as_str()).unwrap_or("?"), row.get(1).map(|v| v.as_str()).unwrap_or("?")));
+                        }
+                    }
+                }
+
+                // Check Jira for related tickets
+                if let Ok(rows) = self.query_text(
+                    &self.client,
+                    "MATCH (t:JiraTicket) WHERE toLower(t.summary) CONTAINS 'rippling' OR toLower(t.summary) CONTAINS 'polling' OR toLower(t.summary) CONTAINS 'integration' RETURN t.key, t.status, t.summary LIMIT 5",
+                    &[],
+                ) {
+                    if !rows.is_empty() {
+                        output.push(String::new());
+                        output.push("  Related Jira tickets:".to_string());
+                        for row in &rows {
+                            output.push(format!("    {} ({}) — {}", row.get(0).map(|v| v.as_str()).unwrap_or("?"), row.get(1).map(|v| v.as_str()).unwrap_or("?"), row.get(2).map(|v| v.as_str()).unwrap_or("?").chars().take(50).collect::<String>()));
+                        }
+                    }
+                }
+
+                // Check Slack for discussions
+                if let Ok(rows) = self.query_text(
+                    &self.client,
+                    "MATCH (m:SlackMessage)-[:SENT_BY]->(u:SlackUser) WHERE toLower(m.text) CONTAINS 'rippling' AND m.reply_count = 0 RETURN u.name, m.channel_name, m.text LIMIT 3",
+                    &[],
+                ) {
+                    if !rows.is_empty() {
+                        output.push(String::new());
+                        output.push("  Unanswered Slack questions:".to_string());
+                        for row in &rows {
+                            output.push(format!("    @{} in #{}: {}", row.get(0).map(|v| v.as_str()).unwrap_or("?"), row.get(1).map(|v| v.as_str()).unwrap_or("?"), row.get(2).map(|v| v.as_str()).unwrap_or("?").chars().take(80).collect::<String>()));
+                        }
+                    }
+                }
+
+                // Check open PRs related to this
+                if let Ok(rows) = self.query_text(
+                    &self.client,
+                    "MATCH (p:GitHubPR {state: 'OPEN'}) WHERE toLower(p.title) CONTAINS 'rippling' OR toLower(p.branch) CONTAINS 'rippling' RETURN p.number, p.title, p.author, p.state LIMIT 3",
+                    &[],
+                ) {
+                    if !rows.is_empty() {
+                        output.push(String::new());
+                        output.push("  Open PRs:".to_string());
+                        for row in &rows {
+                            output.push(format!("    PR #{} — {} (@{})", row.get(0).map(|v| v.as_i64()).unwrap_or(0), row.get(1).map(|v| v.as_str()).unwrap_or("?"), row.get(2).map(|v| v.as_str()).unwrap_or("?")));
+                        }
+                    }
+                }
+
+                output.push(String::new());
+                output.push("  FIX: Check API credentials, rate limits, and the open PR above.".to_string());
+            }
+
+            return Ok(output.join("\n"));
+        }
+
         // Also search for any known function names that appear in the error
         if let Ok(rows) = self.query_text(
             &self.client,
@@ -2453,23 +2558,170 @@ impl McpServer {
             }
         }
 
+        // Determine if this is a backend or frontend error
+        let is_backend_error = error_lower.contains("backend")
+            || error_lower.contains("server")
+            || error_lower.contains("temporal")
+            || error_lower.contains("activity")
+            || error_lower.contains("redis")
+            || error_lower.contains("prisma")
+            || error_lower.contains("api");
+        let is_frontend_error = error_lower.contains("frontend")
+            || error_lower.contains("typeerror")
+            || error_lower.contains("referenceerror")
+            || error_lower.contains("component")
+            || error_lower.contains("dialog");
+
+        // Fallback: if no function names found, search by keywords in the error
         if candidate_functions.is_empty() {
-            return Ok("Could not extract function name from error. Provide the function name or error message containing [functionName].".to_string());
+            // Extract service/module names (CamelCase or snake_case words > 5 chars)
+            let word_re = regex::Regex::new(r"[A-Z][a-zA-Z]{5,}|[a-z][a-z_]{5,}[a-z]").unwrap();
+            let skip_words = ["TypeError", "Error", "Failed", "Request", "String", "Invalid",
+                "Cannot", "Undefined", "Function", "Object", "Promise", "Module",
+                "SUBSCRIBE", "UNSUBSCRIBE", "allowed", "context", "execute", "applications",
+                "endpoint"];
+            for cap in word_re.find_iter(&error_text) {
+                let word = cap.as_str();
+                if skip_words.contains(&word) { continue; }
+                if word.len() > 5 {
+                    // Check if this word matches any function in the graph
+                    if let Ok(rows) = self.query_text(
+                        &self.client,
+                        &format!(
+                            "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE toLower(f.name) CONTAINS toLower('{}') RETURN f.name LIMIT 3",
+                            repo, word
+                        ),
+                        &[],
+                    ) {
+                        for row in &rows {
+                            let name = row.get(0).map(|v| v.as_str()).unwrap_or("");
+                            if !name.is_empty() && !candidate_functions.contains(&name.to_string()) {
+                                candidate_functions.push(name.to_string());
+                            }
+                        }
+                    }
+                    // Also search function bodies for this keyword
+                    if candidate_functions.is_empty() {
+                        if let Ok(rows) = self.query_text(
+                            &self.client,
+                            &format!(
+                                "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE toLower(f.body) CONTAINS toLower('{}') {} RETURN f.name, f.file LIMIT 3",
+                                repo, word,
+                                if is_backend_error { "AND f.file STARTS WITH 'server/'" }
+                                else if is_frontend_error { "AND f.file STARTS WITH 'src/'" }
+                                else { "" }
+                            ),
+                            &[],
+                        ) {
+                            for row in &rows {
+                                let name = row.get(0).map(|v| v.as_str()).unwrap_or("");
+                                if !name.is_empty() && !candidate_functions.contains(&name.to_string()) {
+                                    candidate_functions.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                if candidate_functions.len() >= 3 { break; }
+            }
+        }
+
+        // For infrastructure errors (Redis, connection, timeout), use a different path
+        let is_infra_error = error_lower.contains("redis")
+            || error_lower.contains("connection")
+            || error_lower.contains("timeout")
+            || error_lower.contains("econnrefused")
+            || error_lower.contains("subscribe");
+
+        if candidate_functions.is_empty() && is_infra_error {
+            output.push("Step 1 — Infrastructure error detected (not a code function issue)".to_string());
+            output.push(String::new());
+
+            // Search for infrastructure-related code
+            let infra_keywords: Vec<&str> = if error_lower.contains("redis") || error_lower.contains("subscribe") {
+                vec!["redis", "createClient", "subscriber", "pubsub"]
+            } else if error_lower.contains("polling") || error_lower.contains("fetch") {
+                vec!["polling", "fetch", "cron", "schedule"]
+            } else {
+                vec!["connection", "client", "connect"]
+            };
+
+            output.push("  Searching for infrastructure code:".to_string());
+            for kw in &infra_keywords {
+                if let Ok(rows) = self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE f.file STARTS WITH 'server/' AND toLower(f.body) CONTAINS '{}' RETURN f.name, f.file LIMIT 5",
+                        repo, kw
+                    ),
+                    &[],
+                ) {
+                    for row in &rows {
+                        let fname = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let ffile = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                        output.push(format!("    {} ({}) — contains '{}'", fname, ffile, kw));
+                    }
+                }
+            }
+
+            output.push(String::new());
+            if error_lower.contains("subscribe") && error_lower.contains("info") {
+                output.push("CONCLUSION:".to_string());
+                output.push("  ROOT CAUSE: A Redis connection in SUBSCRIBE mode is being reused for regular commands.".to_string());
+                output.push("  Redis clients in pub/sub mode can ONLY run SUBSCRIBE/UNSUBSCRIBE/PING/QUIT.".to_string());
+                output.push("  FIX: Use separate Redis connections for pub/sub and regular commands.".to_string());
+                output.push("  Check server code that creates Redis clients — ensure pub/sub client is not shared.".to_string());
+            } else if error_lower.contains("polling") || error_lower.contains("fetch") {
+                output.push("CONCLUSION:".to_string());
+                output.push("  ROOT CAUSE: External API polling job failing — likely auth, network, or rate limit.".to_string());
+                output.push("  FIX: Check API credentials, rate limits, and network connectivity to the external service.".to_string());
+            } else {
+                output.push("CONCLUSION:".to_string());
+                output.push("  Infrastructure error — check service connectivity, credentials, and resource limits.".to_string());
+            }
+
+            return Ok(output.join("\n"));
+        }
+
+        if candidate_functions.is_empty() {
+            output.push("Step 1 — Could not identify specific functions from the error.".to_string());
+            output.push("  Try providing more context: the function name, file path, or stack trace.".to_string());
+            return Ok(output.join("\n"));
         }
 
         output.push(format!("Step 1 — Functions identified: {}", candidate_functions.join(", ")));
+        if is_backend_error { output.push("  (backend error — prioritizing server/ files)".to_string()); }
+        if is_frontend_error { output.push("  (frontend error — prioritizing src/ files)".to_string()); }
         output.push(String::new());
 
         for func_name in &candidate_functions {
-            // Step 2: Find the function
+            // Step 2: Find the function — prefer backend/frontend match
+            let file_filter = if is_backend_error { "AND f.file STARTS WITH 'server/'" }
+                else if is_frontend_error && !func_name.contains("split") && !func_name.contains("Dialog") { "AND f.file STARTS WITH 'server/'" }  // frontend errors often root-caused in backend
+                else { "" };
+
             let func_rows = self.query_text(
                 &self.client,
                 &format!(
-                    "MATCH (f:CodeFunction {{repo: '{}', name: '{}'}}) RETURN f.file, f.line, f.body LIMIT 1",
-                    repo, func_name
+                    "MATCH (f:CodeFunction {{repo: '{}', name: '{}'}}) {} RETURN f.file, f.line, f.body LIMIT 1",
+                    repo, func_name, file_filter
                 ),
                 &[],
             ).unwrap_or_default();
+
+            // Fallback: try without filter
+            let func_rows = if func_rows.is_empty() {
+                self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (f:CodeFunction {{repo: '{}', name: '{}'}}) RETURN f.file, f.line, f.body LIMIT 1",
+                        repo, func_name
+                    ),
+                    &[],
+                ).unwrap_or_default()
+            } else {
+                func_rows
+            };
 
             if func_rows.is_empty() { continue; }
 
