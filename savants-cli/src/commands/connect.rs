@@ -582,6 +582,158 @@ pub async fn slack_from_browser() {
     }
 }
 
+/// Connect Sentry for error tracking.
+pub fn sentry(token: Option<String>, org: Option<String>) {
+    println!("{}", "Connecting Sentry...".bold());
+
+    let savants_home = dirs::home_dir().unwrap_or_default().join(".savants");
+    let _ = std::fs::create_dir_all(&savants_home);
+    let config_path = savants_home.join("sentry.toml");
+
+    if token.is_none() && org.is_none() {
+        if config_path.exists() {
+            println!("  {} Sentry is configured", "OK".green());
+            println!("  Config: {}", config_path.display());
+        } else {
+            println!("  Sentry is not configured.");
+            println!();
+            println!("  Run:");
+            println!("    {} {}", "savants connect sentry --token".cyan(), "<auth-token> --org <org-slug>".dimmed());
+            println!();
+            println!("  Get your token at: https://sentry.io/settings/auth-tokens/");
+        }
+        return;
+    }
+
+    let token_val = token.unwrap_or_default();
+    let org_val = org.unwrap_or_default();
+
+    // Test connection
+    let client = reqwest::blocking::Client::new();
+    let resp = client.get(&format!("https://sentry.io/api/0/organizations/{}/", org_val))
+        .header("Authorization", format!("Bearer {}", token_val))
+        .timeout(std::time::Duration::from_secs(10))
+        .send();
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let config = format!("token = \"{}\"\norg = \"{}\"\n", token_val, org_val);
+            let _ = std::fs::write(&config_path, &config);
+            println!("  {} Connected to Sentry org: {}", "OK".green(), org_val.cyan());
+            println!();
+            println!("  Set env vars for the daemon:");
+            println!("    export SAVANTS_SENTRY_TOKEN=\"{}\"", token_val);
+            println!("    export SAVANTS_SENTRY_ORG=\"{}\"", org_val);
+        }
+        Ok(r) => {
+            eprintln!("  {} Sentry returned HTTP {}", "Error".red(), r.status());
+        }
+        Err(e) => {
+            eprintln!("  {} Failed to reach Sentry: {}", "Error".red(), e);
+        }
+    }
+}
+
+/// Connect Jira for ticket tracking.
+pub fn jira(url: Option<String>, user: Option<String>, token: Option<String>, project: Option<String>) {
+    println!("{}", "Connecting Jira...".bold());
+
+    let savants_home = dirs::home_dir().unwrap_or_default().join(".savants");
+    let _ = std::fs::create_dir_all(&savants_home);
+    let config_path = savants_home.join("jira.toml");
+
+    if url.is_none() && token.is_none() {
+        if config_path.exists() {
+            println!("  {} Jira is configured", "OK".green());
+        } else {
+            println!("  Jira is not configured.");
+            println!();
+            println!("  Run:");
+            println!("    {} {}", "savants connect jira".cyan(), "--url https://yourcompany.atlassian.net --user you@email.com --token <api-token> --project VSCV".dimmed());
+            println!();
+            println!("  Get your API token at: https://id.atlassian.net/manage-profile/security/api-tokens");
+        }
+        return;
+    }
+
+    let url_val = url.unwrap_or_default();
+    let user_val = user.unwrap_or_default();
+    let token_val = token.unwrap_or_default();
+    let project_val = project.unwrap_or_else(|| "VSCV".to_string());
+
+    // Test connection
+    let client = reqwest::blocking::Client::new();
+    let resp = client.get(&format!("{}/rest/api/3/myself", url_val))
+        .basic_auth(&user_val, Some(&token_val))
+        .timeout(std::time::Duration::from_secs(10))
+        .send();
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let config = format!("url = \"{}\"\nuser = \"{}\"\ntoken = \"{}\"\nproject = \"{}\"\n",
+                url_val, user_val, token_val, project_val);
+            let _ = std::fs::write(&config_path, &config);
+            println!("  {} Connected to Jira: {}", "OK".green(), url_val.cyan());
+            println!();
+            println!("  Set env vars for the daemon:");
+            println!("    export SAVANTS_JIRA_URL=\"{}\"", url_val);
+            println!("    export SAVANTS_JIRA_USER=\"{}\"", user_val);
+            println!("    export SAVANTS_JIRA_TOKEN=\"{}\"", token_val);
+            println!("    export SAVANTS_JIRA_PROJECT=\"{}\"", project_val);
+        }
+        Ok(r) => {
+            eprintln!("  {} Jira returned HTTP {}", "Error".red(), r.status());
+        }
+        Err(e) => {
+            eprintln!("  {} Failed to reach Jira: {}", "Error".red(), e);
+        }
+    }
+}
+
+/// Connect GitHub for PR tracking.
+pub fn github(repo: Option<String>) {
+    println!("{}", "Connecting GitHub...".bold());
+
+    let savants_home = dirs::home_dir().unwrap_or_default().join(".savants");
+    let _ = std::fs::create_dir_all(&savants_home);
+    let config_path = savants_home.join("github.toml");
+
+    if repo.is_none() {
+        if config_path.exists() {
+            println!("  {} GitHub is configured", "OK".green());
+        } else {
+            println!("  GitHub is not configured.");
+            println!();
+            println!("  Run:");
+            println!("    {} {}", "savants connect github".cyan(), "--repo owner/repo-name".dimmed());
+            println!();
+            println!("  Make sure gh CLI is authenticated: gh auth login");
+        }
+        return;
+    }
+
+    let repo_val = repo.unwrap_or_default();
+
+    // Test with gh CLI
+    let output = std::process::Command::new("gh")
+        .args(["repo", "view", &repo_val, "--json", "name"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let config = format!("repo = \"{}\"\n", repo_val);
+            let _ = std::fs::write(&config_path, &config);
+            println!("  {} Connected to GitHub: {}", "OK".green(), repo_val.cyan());
+            println!();
+            println!("  Set env var for the daemon:");
+            println!("    export SAVANTS_GITHUB_REPO=\"{}\"", repo_val);
+        }
+        _ => {
+            eprintln!("  {} Failed to access repo. Run: gh auth login", "Error".red());
+        }
+    }
+}
+
 /// Disconnect from savants.cloud.
 pub fn disconnect() {
     let mut state = State::load();

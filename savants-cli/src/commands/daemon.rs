@@ -70,6 +70,9 @@ pub fn start() {
     for key in &["SAVANTS_GOTIFY_URL", "SAVANTS_GOTIFY_TOKEN", "SAVANTS_WEBHOOK_URL",
                  "SAVANTS_SLACK_WEBHOOK_URL", "SAVANTS_SLACK_BOT_TOKEN",
                  "SAVANTS_SLACK_USER_TOKEN", "SAVANTS_SLACK_COOKIE", "SAVANTS_SLACK_CHANNEL",
+                 "SAVANTS_SENTRY_TOKEN", "SAVANTS_SENTRY_ORG",
+                 "SAVANTS_JIRA_URL", "SAVANTS_JIRA_USER", "SAVANTS_JIRA_TOKEN", "SAVANTS_JIRA_PROJECT",
+                 "SAVANTS_GITHUB_REPO", "GITHUB_TOKEN", "GH_TOKEN",
                  "KUBECONFIG", "HOME", "PATH", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
                  "AWS_DEFAULT_REGION", "GOOGLE_APPLICATION_CREDENTIALS"] {
         if let Ok(val) = std::env::var(key) {
@@ -339,6 +342,66 @@ pub async fn run() {
         });
     } else {
         println!("[slack] Not configured (set SAVANTS_SLACK_USER_TOKEN to enable)");
+    }
+
+    // Start Sentry ingestion thread (every 10 minutes)
+    if let Some(sentry) = crate::sentry::SentryIngestor::from_env() {
+        let graph_name_sentry = crate::config::State::load().graph_name();
+        let repo_name = std::env::var("SAVANTS_GITHUB_REPO")
+            .map(|r| r.split('/').last().unwrap_or("unknown").to_string())
+            .unwrap_or_else(|_| "talent-pipeline".to_string());
+        std::thread::spawn(move || {
+            println!("[sentry] Sentry integration active");
+            loop {
+                if let Ok(graph) = crate::graph::GraphClient::new(&graph_name_sentry) {
+                    let stats = sentry.ingest(&graph, &repo_name);
+                    if stats.issues > 0 {
+                        println!("[sentry] {}", stats.summary());
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(600)); // 10 min
+            }
+        });
+    } else {
+        println!("[sentry] Not configured (set SAVANTS_SENTRY_TOKEN + SAVANTS_SENTRY_ORG)");
+    }
+
+    // Start Jira ingestion thread (every 15 minutes)
+    if let Some(jira) = crate::jira::JiraIngestor::from_env() {
+        let graph_name_jira = crate::config::State::load().graph_name();
+        std::thread::spawn(move || {
+            println!("[jira] Jira integration active");
+            loop {
+                if let Ok(graph) = crate::graph::GraphClient::new(&graph_name_jira) {
+                    let stats = jira.ingest(&graph);
+                    if stats.tickets > 0 {
+                        println!("[jira] {}", stats.summary());
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(900)); // 15 min
+            }
+        });
+    } else {
+        println!("[jira] Not configured (set SAVANTS_JIRA_URL + SAVANTS_JIRA_USER + SAVANTS_JIRA_TOKEN)");
+    }
+
+    // Start GitHub PR ingestion thread (every 10 minutes)
+    if let Some(gh) = crate::github::GitHubIngestor::from_env() {
+        let graph_name_gh = crate::config::State::load().graph_name();
+        std::thread::spawn(move || {
+            println!("[github] GitHub PR integration active");
+            loop {
+                if let Ok(graph) = crate::graph::GraphClient::new(&graph_name_gh) {
+                    let stats = gh.ingest(&graph);
+                    if stats.prs > 0 {
+                        println!("[github] {}", stats.summary());
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(600)); // 10 min
+            }
+        });
+    } else {
+        println!("[github] Not configured (set SAVANTS_GITHUB_REPO)");
     }
 
     // Start cloud cost ingestion thread (every 6 hours)

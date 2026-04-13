@@ -1,0 +1,103 @@
+# Savants PR Risk Check
+# Add this to your repo's .github/workflows/ directory.
+# It runs savants pr_risk on every PR and posts a comment with the risk analysis.
+#
+# Requirements:
+#   - Savants binary available (installed via curl or pre-built)
+#   - FalkorDB running (or use savants embedded engine)
+#   - Repository indexed (savants reindex runs as part of the check)
+
+name: Savants PR Risk Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pr-risk:
+    name: Savants Risk Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for git blame + co-change analysis
+
+      - name: Install Savants
+        run: |
+          curl -fsSL http://100.95.164.99:30900/savants-releases/install.sh | sh
+          echo "$HOME/.savants/bin" >> $GITHUB_PATH
+
+      - name: Start embedded graph engine
+        run: |
+          savants config init || true
+          # Wait for FalkorDB to start
+          sleep 3
+
+      - name: Index repository
+        run: |
+          savants serve <<< '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}
+          {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"reindex","arguments":{"repo_path":"'$(pwd)'"}}}' 2>/dev/null | tail -1
+
+      - name: Run PR Risk Analysis
+        id: risk
+        run: |
+          RESULT=$(savants serve <<< '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}
+          {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pr_risk","arguments":{"repo":"'$(basename $(pwd))'"}}}' 2>/dev/null | tail -1 | python3 -c "import sys,json;print(json.loads(sys.stdin.read()).get('result',{}).get('content',[{}])[0].get('text','No analysis available'))")
+
+          # Save to file for the comment step
+          echo "$RESULT" > /tmp/pr-risk.txt
+
+          # Check if any HIGH risk items
+          if echo "$RESULT" | grep -q "HIGH"; then
+            echo "risk_level=high" >> $GITHUB_OUTPUT
+          else
+            echo "risk_level=low" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const analysis = fs.readFileSync('/tmp/pr-risk.txt', 'utf8');
+
+            const body = `## Savants PR Risk Analysis
+
+            \`\`\`
+            ${analysis}
+            \`\`\`
+
+            ---
+            *Powered by [Savants](https://savants.dev) - infrastructure intelligence*`;
+
+            // Find existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c => c.body.includes('Savants PR Risk Analysis'));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+      - name: Fail on HIGH risk (optional)
+        if: steps.risk.outputs.risk_level == 'high'
+        run: |
+          echo "HIGH risk items detected in PR. Review the analysis above."
+          # Uncomment to make HIGH risk a blocking check:
+          # exit 1

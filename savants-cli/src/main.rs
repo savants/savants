@@ -17,7 +17,10 @@ mod commands;
 mod host;
 mod k8s;
 mod code_index;
+mod github;
+mod jira;
 mod mcp;
+mod sentry;
 mod slack;
 mod utils;
 
@@ -206,6 +209,36 @@ enum ConnectAction {
         #[arg(long)]
         from_browser: bool,
     },
+    /// Connect Sentry for error tracking
+    Sentry {
+        /// Sentry auth token
+        #[arg(long)]
+        token: Option<String>,
+        /// Sentry organization slug
+        #[arg(long)]
+        org: Option<String>,
+    },
+    /// Connect Jira for ticket tracking
+    Jira {
+        /// Jira instance URL (e.g. https://yourcompany.atlassian.net)
+        #[arg(long)]
+        url: Option<String>,
+        /// Jira user email
+        #[arg(long)]
+        user: Option<String>,
+        /// Jira API token
+        #[arg(long)]
+        token: Option<String>,
+        /// Jira project key (e.g. VSCV)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Connect GitHub for PR tracking
+    Github {
+        /// GitHub repo in owner/repo format
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Connect to savants.cloud for team federation
     Cloud,
 }
@@ -347,6 +380,15 @@ async fn main() {
                 } else {
                     commands::connect::slack(webhook, bot_token, user_token, cookie, channel);
                 }
+            }
+            Some(ConnectAction::Sentry { token, org }) => {
+                commands::connect::sentry(token, org);
+            }
+            Some(ConnectAction::Jira { url, user, token, project }) => {
+                commands::connect::jira(url, user, token, project);
+            }
+            Some(ConnectAction::Github { repo }) => {
+                commands::connect::github(repo);
             }
             Some(ConnectAction::Cloud) | None => {
                 commands::connect::run().await;

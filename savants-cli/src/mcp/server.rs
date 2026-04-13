@@ -406,7 +406,7 @@ impl McpServer {
             },
             {
                 "name": "reindex",
-                "description": "Rebuild the graph for a repository. Stub -- needs tree-sitter integration in Rust.",
+                "description": "Index a repository's source code into the graph using tree-sitter. Extracts functions, classes, imports, call chains, git history. Also analyzes open PRs for risk.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -414,6 +414,28 @@ impl McpServer {
                         "full": {"type": "boolean", "default": true, "description": "Drop and rebuild the entire graph"}
                     },
                     "required": ["repo_path"]
+                }
+            },
+            {
+                "name": "pr_risk",
+                "description": "Analyze open PRs for risk: removed null guards, schema changes, deleted files, co-change gaps, blast radius, high-churn functions, unanswered Slack questions, Jira mismatches, and known prod errors.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string", "description": "Repository name (default: talent-pipeline)"}
+                    }
+                }
+            },
+            {
+                "name": "diagnose_error",
+                "description": "Deep diagnosis of a production error. Traces upstream through the call chain to find the root cause. Cross-references with Slack discussions, Jira tickets, git history, and Sentry. Returns confidence score and blind spots.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "error": {"type": "string", "description": "The error message from Sentry, logs, or Slack"},
+                        "repo": {"type": "string", "description": "Repository name (default: talent-pipeline)"}
+                    },
+                    "required": ["error"]
                 }
             }
         ])
