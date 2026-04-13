@@ -186,6 +186,35 @@ impl GraphClient {
     pub fn is_connected(&self) -> bool {
         self.client.get_connection().is_ok()
     }
+
+    /// List all graph names known to the server (via GRAPH.LIST).
+    pub fn list_graphs(&self) -> Vec<String> {
+        let Ok(mut conn) = self.client.get_connection() else { return vec![]; };
+        let result: RedisResult<Value> = redis::cmd("GRAPH.LIST").query(&mut conn);
+        match result {
+            Ok(Value::Bulk(items)) => {
+                items.iter().filter_map(|v| {
+                    if let Value::Data(bytes) = v {
+                        Some(String::from_utf8_lossy(bytes).to_string())
+                    } else {
+                        None
+                    }
+                }).collect()
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Discover cluster graph names — returns graph names that contain K8sPod nodes.
+    /// Falls back to all graphs except the main "savants" graph.
+    pub fn discover_cluster_graphs(&self) -> Vec<String> {
+        let all = self.list_graphs();
+        let state = crate::config::State::load();
+        let main_graph = state.graph_name();
+        all.into_iter()
+            .filter(|g| g != &main_graph)
+            .collect()
+    }
 }
 
 fn parse_graph_result(value: Value) -> QueryResult {

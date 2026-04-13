@@ -282,7 +282,7 @@ pub fn slack(webhook: Option<String>, bot_token: Option<String>, user_token: Opt
 
                 if channels.is_empty() {
                     println!("  No channels found. Saving token — set channel manually:");
-                    println!("  {} {}", "savants connect slack --channel".cyan(), "C0123ABC".dimmed());
+                    println!("  {} {}", "savants connect slack --channel".cyan(), "YOUR_CHANNEL_ID".dimmed());
 
                     // Save just the token
                     let config_content = format!("user_token = \"{}\"\nworkspace = \"{}\"\n", token, team_name);

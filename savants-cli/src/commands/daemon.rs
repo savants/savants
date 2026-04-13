@@ -130,12 +130,12 @@ pub fn status() {
                     }
                 }
 
-                // Clusters
+                // Clusters (dynamically discovered from graph)
                 println!();
                 println!("{}:", "Clusters".bold());
-                for cluster in &["astra-k3s", "taria-prod", "taria-dev", "default"] {
-                    let graph_name = cluster.replace("-", "_");
-                    if let Ok(cc) = crate::graph::GraphClient::new(&graph_name) {
+                for graph_name in &client.discover_cluster_graphs() {
+                    let cluster = graph_name.replace("_", "-");
+                    if let Ok(cc) = crate::graph::GraphClient::new(graph_name) {
                         if let Ok(r) = cc.query("MATCH (p:K8sPod) RETURN p.status, count(p) ORDER BY count(p) DESC", &[]) {
                             if !r.rows.is_empty() {
                                 let status_str: String = r.rows.iter()
@@ -349,7 +349,7 @@ pub async fn run() {
         let graph_name_sentry = crate::config::State::load().graph_name();
         let repo_name = std::env::var("SAVANTS_GITHUB_REPO")
             .map(|r| r.split('/').last().unwrap_or("unknown").to_string())
-            .unwrap_or_else(|_| "talent-pipeline".to_string());
+            .unwrap_or_else(|_| "unknown".to_string());
         std::thread::spawn(move || {
             println!("[sentry] Sentry integration active");
             loop {
@@ -462,15 +462,55 @@ pub async fn run() {
 }
 
 fn discover_git_repos() -> Vec<(String, String)> {
-    // Look for known repo paths
-    let candidates = [
-        ("/home/miguel/git/sourcecoders-ai/talent-pipeline", "main"),
-        ("/home/miguel/git/bernadinm/savants", "master"),
-    ];
-    candidates.iter()
-        .filter(|(path, _)| Path::new(path).join(".git").exists())
-        .map(|(p, b)| (p.to_string(), b.to_string()))
-        .collect()
+    // Discover repos from SAVANTS_WATCH_REPOS env var (comma-separated path:branch pairs)
+    // or by scanning common directories for .git folders.
+    if let Ok(repos_env) = std::env::var("SAVANTS_WATCH_REPOS") {
+        return repos_env.split(',')
+            .filter_map(|entry| {
+                let parts: Vec<&str> = entry.trim().splitn(2, ':').collect();
+                if parts.is_empty() { return None; }
+                let path = parts[0].trim();
+                let branch = parts.get(1).map(|s| s.trim()).unwrap_or("main");
+                if Path::new(path).join(".git").exists() {
+                    Some((path.to_string(), branch.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+    }
+
+    // Auto-discover: scan ~/git for repos (1-2 levels deep)
+    let mut repos = vec![];
+    let home = dirs::home_dir().unwrap_or_default();
+    let git_dir = home.join("git");
+    if git_dir.is_dir() {
+        for org_entry in std::fs::read_dir(&git_dir).into_iter().flatten().flatten() {
+            let org_path = org_entry.path();
+            if org_path.join(".git").exists() {
+                repos.push((org_path.to_string_lossy().to_string(), detect_default_branch(&org_path)));
+            } else if org_path.is_dir() {
+                for repo_entry in std::fs::read_dir(&org_path).into_iter().flatten().flatten() {
+                    let repo_path = repo_entry.path();
+                    if repo_path.join(".git").exists() {
+                        repos.push((repo_path.to_string_lossy().to_string(), detect_default_branch(&repo_path)));
+                    }
+                }
+            }
+        }
+    }
+    repos
+}
+
+fn detect_default_branch(repo_path: &Path) -> String {
+    // Read .git/HEAD or check for common branch names
+    let head = repo_path.join(".git/HEAD");
+    if let Ok(content) = std::fs::read_to_string(&head) {
+        if let Some(branch) = content.trim().strip_prefix("ref: refs/heads/") {
+            return branch.to_string();
+        }
+    }
+    "main".to_string()
 }
 
 fn fire_gotify(config: &crate::alerts::AlertConfig, title: &str, message: &str, priority: u8) {
@@ -492,10 +532,22 @@ fn fire_gotify(config: &crate::alerts::AlertConfig, title: &str, message: &str, 
 }
 
 fn check_aws_health(config: &crate::alerts::AlertConfig) {
-    // Check EKS cluster status
-    for cluster in &["taria-prod-eks", "taria-dev-eks"] {
+    // Discover EKS clusters dynamically via AWS CLI
+    let cluster_output = Command::new("aws")
+        .args(["eks", "list-clusters", "--query", "clusters[]", "--output", "text"])
+        .output();
+    let clusters: Vec<String> = match cluster_output {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Err(_) => vec![],
+    };
+
+    for cluster in &clusters {
         let output = Command::new("aws")
-            .args(["eks", "describe-cluster", "--name", cluster, "--region", "us-west-2",
+            .args(["eks", "describe-cluster", "--name", cluster,
                    "--query", "cluster.status", "--output", "text"])
             .output();
         if let Ok(o) = output {

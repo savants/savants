@@ -18,7 +18,7 @@ pub struct Alert {
     pub severity: AlertSeverity,
     pub title: String,
     pub message: String,
-    pub source: String,   // "k8s:taria-prod", "host:astra", "ebpf:astra"
+    pub source: String,   // "k8s:<cluster>", "host:<hostname>", "ebpf:<hostname>"
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,7 +89,8 @@ pub fn check_and_alert(client: &crate::graph::GraphClient, config: &AlertConfig)
     // ── K8s alerts ──
 
     // CrashLoopBackOff pods
-    for cluster_graph in &["taria_prod", "taria_dev", "default"] {
+    let cluster_graphs = client.discover_cluster_graphs();
+    for cluster_graph in &cluster_graphs {
         if let Ok(cc) = crate::graph::GraphClient::new(cluster_graph) {
             if let Ok(r) = cc.query(
                 "MATCH (p:K8sPod) WHERE p.status = 'CrashLoopBackOff' RETURN p.name, p.namespace, p.restart_count",
@@ -544,7 +545,8 @@ fn run_smart_diagnosis(
     }
 
     // K8s log events from all clusters — only truly new ones
-    for cluster_graph in &["taria_prod", "taria_dev", "default"] {
+    let cluster_graphs = client.discover_cluster_graphs();
+    for cluster_graph in &cluster_graphs {
         if let Ok(cc) = crate::graph::GraphClient::new(cluster_graph) {
             if let Ok(r) = cc.query(
                 &format!(

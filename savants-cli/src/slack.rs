@@ -380,8 +380,8 @@ impl SlackIngestor {
             }
         }
 
-        // Also check other cluster graphs
-        for graph_name in &["taria_prod", "taria_dev"] {
+        // Also check other cluster graphs (dynamically discovered)
+        for graph_name in &graph.discover_cluster_graphs() {
             if let Ok(g) = GraphClient::new(graph_name) {
                 if let Ok(r) = g.query("MATCH (s:K8sService) RETURN s.name", &[]) {
                     for row in &r.rows {
