@@ -456,6 +456,7 @@ impl McpServer {
             "query" => self.tool_saql_query(&args),
             "advanced_graph_query" => self.tool_advanced_graph_query(&args),  // hidden, not in tool list
             "reindex" => self.tool_reindex(&args),
+            "pr_risk" => self.tool_pr_risk(&args),
             _ => Err(format!("Unknown tool: {}", tool_name)),
         };
 
@@ -2158,7 +2159,100 @@ impl McpServer {
         let indexer = crate::code_index::CodeIndexer::new(self.client.clone(), &repo_name);
         let stats = indexer.index_repo(repo_path);
 
-        Ok(format!("Indexed {}: {}", repo_name, stats.summary()))
+        // Also analyze open PRs if they exist in the graph
+        let pr_analyzer = crate::code_index::PRAnalyzer::new(self.client.clone(), &repo_name);
+        let prs_analyzed = pr_analyzer.analyze_open_prs(repo_path);
+
+        Ok(format!("Indexed {}: {}. Analyzed {} open PRs.", repo_name, stats.summary(), prs_analyzed))
+    }
+
+    fn tool_pr_risk(&self, args: &Value) -> Result<String, String> {
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+
+        // Query all analyzed PRs with risk info
+        let rows = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (p:GitHubPR {{repo: '{}', state: 'OPEN'}}) \
+                 RETURN p.number, p.title, p.author, p.risk_level, p.risk_details, p.files_changed, p.branch \
+                 ORDER BY CASE p.risk_level WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END",
+                repo
+            ),
+            &[],
+        )?;
+
+        if rows.is_empty() {
+            return Ok("No analyzed open PRs. Run reindex first.".to_string());
+        }
+
+        let mut output = vec![format!("{} open PRs analyzed:\n", rows.len())];
+
+        for row in &rows {
+            let num = row.get(0).map(|v| v.as_i64()).unwrap_or(0);
+            let title = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+            let author = row.get(2).map(|v| v.as_str()).unwrap_or("?");
+            let risk = row.get(3).map(|v| v.as_str()).unwrap_or("?");
+            let details = row.get(4).map(|v| v.as_str()).unwrap_or("");
+            let files = row.get(5).map(|v| v.as_i64()).unwrap_or(0);
+            let branch = row.get(6).map(|v| v.as_str()).unwrap_or("?");
+
+            let emoji = match risk {
+                "HIGH" => "🔴",
+                "MEDIUM" => "🟡",
+                _ => "🟢",
+            };
+
+            output.push(format!("{} PR #{} — {} ({})", emoji, num, title, risk));
+            output.push(format!("  Author: @{} | Branch: {} | Files: {}", author, branch, files));
+            if !details.is_empty() {
+                output.push(format!("  Risk: {}", details));
+            }
+
+            // Show affected functions with known issues
+            if let Ok(affected) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                     RETURN f.name, f.file, ch.change_type LIMIT 10",
+                    num, repo
+                ),
+                &[],
+            ) {
+                if !affected.is_empty() {
+                    output.push("  Functions affected:".to_string());
+                    for a in &affected {
+                        let fname = a.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let ffile = a.get(1).map(|v| v.as_str()).unwrap_or("?");
+                        let change = a.get(2).map(|v| v.as_str()).unwrap_or("?");
+                        output.push(format!("    {} {} ({})", change, fname, ffile));
+                    }
+                }
+            }
+
+            // Show known Slack issues for affected functions
+            if let Ok(issues) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:HAS_KNOWN_ISSUE]->(m:SlackMessage) \
+                     RETURN m.channel_name, m.text LIMIT 3",
+                    num, repo
+                ),
+                &[],
+            ) {
+                if !issues.is_empty() {
+                    output.push("  ⚠️ Known issues in Slack for functions this PR touches:".to_string());
+                    for i in &issues {
+                        let ch = i.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let text: String = i.get(1).map(|v| v.as_str()).unwrap_or("?").chars().take(80).collect();
+                        output.push(format!("    #{}: {}", ch, text));
+                    }
+                }
+            }
+
+            output.push(String::new());
+        }
+
+        Ok(output.join("\n"))
     }
 
     // ---------------------------------------------------------------

@@ -502,6 +502,230 @@ impl GitHistoryIndexer {
     }
 }
 
+/// Analyze open PR branches: checkout each, diff against base, index changed
+/// functions, and create PRChange nodes with risk signals.
+pub struct PRAnalyzer {
+    graph: GraphClient,
+    repo_name: String,
+}
+
+impl PRAnalyzer {
+    pub fn new(graph: GraphClient, repo_name: &str) -> Self {
+        Self { graph, repo_name: repo_name.to_string() }
+    }
+
+    /// Analyze all open PRs in the graph by checking out their branches.
+    pub fn analyze_open_prs(&self, repo_path: &str) -> usize {
+        use std::process::Command;
+
+        // Get open PRs from the graph
+        let prs = match self.graph.query(
+            &format!(
+                "MATCH (p:GitHubPR {{repo: '{}', state: 'OPEN'}}) RETURN p.number, p.branch, p.title",
+                esc(&self.repo_name)
+            ),
+            &[],
+        ) {
+            Ok(r) => r.rows,
+            Err(_) => return 0,
+        };
+
+        // Save current branch
+        let current = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        let mut analyzed = 0;
+
+        for pr_row in &prs {
+            let pr_number = pr_row[0].as_i64();
+            let branch = pr_row[1].as_str();
+            let title = pr_row[2].as_str();
+
+            if branch.is_empty() { continue; }
+
+            // Fetch the branch
+            let _ = Command::new("git")
+                .args(["fetch", "origin", &format!("{}:{}", branch, branch)])
+                .current_dir(repo_path)
+                .output();
+
+            // Get the diff: files changed between develop and this branch
+            let diff_output = match Command::new("git")
+                .args(["diff", "--name-status", &format!("origin/develop...{}", branch)])
+                .current_dir(repo_path)
+                .output()
+            {
+                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+                _ => continue,
+            };
+
+            let mut changed_files: Vec<(String, String)> = vec![];
+            for line in diff_output.lines() {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() >= 2 {
+                    changed_files.push((parts[0].to_string(), parts[1].to_string()));
+                }
+            }
+
+            if changed_files.is_empty() { continue; }
+
+            // Get the actual code diff for risk analysis
+            let code_diff = Command::new("git")
+                .args(["diff", &format!("origin/develop...{}", branch)])
+                .current_dir(repo_path)
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+
+            // Analyze risks
+            let mut risks: Vec<String> = vec![];
+            let mut deleted_null_guards = 0;
+            let mut added_without_null_guard = 0;
+            let mut schema_changes = false;
+            let mut deleted_files: Vec<String> = vec![];
+            let mut high_churn_files: Vec<String> = vec![];
+
+            for line in code_diff.lines() {
+                // Deleted null guards
+                if line.starts_with('-') && !line.starts_with("---") {
+                    if line.contains("??") || line.contains("?.") || line.contains("!= null") || line.contains("!== null") || line.contains("!== undefined") {
+                        deleted_null_guards += 1;
+                    }
+                }
+                // Added code calling methods without null guard
+                if line.starts_with('+') && !line.starts_with("+++") {
+                    if (line.contains(".split(") || line.contains(".map(") || line.contains(".filter(") || line.contains(".forEach("))
+                        && !line.contains("??") && !line.contains("?.") && !line.contains("|| []") && !line.contains("|| ''") {
+                        added_without_null_guard += 1;
+                    }
+                }
+            }
+
+            // Check for schema/migration changes
+            for (status, file) in &changed_files {
+                if file.contains("migration") || file.contains("schema.prisma") {
+                    schema_changes = true;
+                }
+                if status == "D" {
+                    deleted_files.push(file.clone());
+                }
+            }
+
+            if deleted_null_guards > 0 {
+                risks.push(format!("Removes {} null/undefined safety checks", deleted_null_guards));
+            }
+            if added_without_null_guard > 3 {
+                risks.push(format!("{} method calls without null guards (.split/.map/.filter)", added_without_null_guard));
+            }
+            if schema_changes {
+                risks.push("Database schema/migration changes".to_string());
+            }
+            if !deleted_files.is_empty() {
+                risks.push(format!("Deletes {} files (check imports)", deleted_files.len()));
+            }
+
+            // Calculate risk level
+            let risk_level = if deleted_null_guards > 3 || (!deleted_files.is_empty() && schema_changes) {
+                "HIGH"
+            } else if deleted_null_guards > 0 || schema_changes || added_without_null_guard > 3 {
+                "MEDIUM"
+            } else {
+                "LOW"
+            };
+
+            let risk_text = if risks.is_empty() {
+                "No significant risks detected".to_string()
+            } else {
+                risks.join("; ")
+            };
+
+            // Store in graph
+            let _ = self.graph.query(
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}}) \
+                     SET p.files_changed = {}, p.risk_level = '{}', \
+                     p.risk_details = '{}', p.analyzed = true",
+                    pr_number, esc(&self.repo_name),
+                    changed_files.len(), risk_level, esc(&risk_text),
+                ),
+                &[],
+            );
+
+            // Create PRChange nodes for each changed file, linked to CodeFunctions
+            for (status, file) in &changed_files {
+                let change_type = match status.as_str() {
+                    "A" => "added", "D" => "deleted", "M" => "modified", _ => "changed",
+                };
+                let _ = self.graph.query(
+                    &format!(
+                        "MATCH (p:GitHubPR {{number: {}, repo: '{}'}}) \
+                         MERGE (ch:PRChange {{pr: {}, file: '{}', repo: '{}'}}) \
+                         SET ch.change_type = '{}' \
+                         MERGE (p)-[:CHANGES]->(ch)",
+                        pr_number, esc(&self.repo_name),
+                        pr_number, esc(file), esc(&self.repo_name),
+                        change_type,
+                    ),
+                    &[],
+                );
+
+                // Link PRChange to CodeFunctions in that file
+                let _ = self.graph.query(
+                    &format!(
+                        "MATCH (ch:PRChange {{pr: {}, file: '{}', repo: '{}'}}) \
+                         MATCH (f:CodeFunction {{repo: '{}', file: '{}'}}) \
+                         MERGE (ch)-[:AFFECTS]->(f)",
+                        pr_number, esc(file), esc(&self.repo_name),
+                        esc(&self.repo_name), esc(file),
+                    ),
+                    &[],
+                );
+
+                // Check if any affected function has prod errors in Slack
+                let _ = self.graph.query(
+                    &format!(
+                        "MATCH (ch:PRChange {{pr: {}, file: '{}', repo: '{}'}})-[:AFFECTS]->(f:CodeFunction) \
+                         MATCH (m:SlackMessage) WHERE m.has_symptom = true AND toLower(m.text) CONTAINS toLower(f.name) \
+                         MERGE (ch)-[:HAS_KNOWN_ISSUE {{source: 'slack'}}]->(m)",
+                        pr_number, esc(file), esc(&self.repo_name),
+                    ),
+                    &[],
+                );
+            }
+
+            // Check high churn: functions this PR touches that have been modified many times
+            let _ = self.graph.query(
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                     MATCH (c:Commit)-[:MODIFIED]->(f) \
+                     WITH p, f, count(c) AS churn WHERE churn > 5 \
+                     SET p.has_high_churn = true",
+                    pr_number, esc(&self.repo_name),
+                ),
+                &[],
+            );
+
+            analyzed += 1;
+        }
+
+        // Restore original branch
+        if !current.is_empty() && current != "HEAD" {
+            let _ = Command::new("git")
+                .args(["checkout", &current])
+                .current_dir(repo_path)
+                .output();
+        }
+
+        analyzed
+    }
+}
+
 fn esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n").replace('\r', "")
 }
