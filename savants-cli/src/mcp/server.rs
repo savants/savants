@@ -2169,7 +2169,6 @@ impl McpServer {
     fn tool_pr_risk(&self, args: &Value) -> Result<String, String> {
         let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
 
-        // Query all analyzed PRs with risk info
         let rows = self.query_text(
             &self.client,
             &format!(
@@ -2196,11 +2195,7 @@ impl McpServer {
             let files = row.get(5).map(|v| v.as_i64()).unwrap_or(0);
             let branch = row.get(6).map(|v| v.as_str()).unwrap_or("?");
 
-            let emoji = match risk {
-                "HIGH" => "🔴",
-                "MEDIUM" => "🟡",
-                _ => "🟢",
-            };
+            let emoji = match risk { "HIGH" => "🔴", "MEDIUM" => "🟡", _ => "🟢" };
 
             output.push(format!("{} PR #{} — {} ({})", emoji, num, title, risk));
             output.push(format!("  Author: @{} | Branch: {} | Files: {}", author, branch, files));
@@ -2208,7 +2203,7 @@ impl McpServer {
                 output.push(format!("  Risk: {}", details));
             }
 
-            // Show affected functions with known issues
+            // --- CHECK 1: Functions affected ---
             if let Ok(affected) = self.query_text(
                 &self.client,
                 &format!(
@@ -2229,7 +2224,153 @@ impl McpServer {
                 }
             }
 
-            // Show known Slack issues for affected functions
+            // --- CHECK 2: "Last time this function changed, prod broke" ---
+            if let Ok(history) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                     MATCH (prev:Commit {{repo: '{}'}})-[:MODIFIED]->(f) \
+                     MATCH (m:SlackMessage) WHERE m.channel_name IN ['prod-errors', 'engineering-alerts-prod'] \
+                     AND m.has_symptom = true AND toLower(m.text) CONTAINS toLower(f.name) \
+                     RETURN DISTINCT f.name, prev.short_hash, prev.author, prev.date, prev.message, m.text LIMIT 5",
+                    num, repo, repo
+                ),
+                &[],
+            ) {
+                if !history.is_empty() {
+                    output.push("  🔥 HISTORY: Functions that caused prod errors before:".to_string());
+                    for h in &history {
+                        let fname = h.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let commit = h.get(1).map(|v| v.as_str()).unwrap_or("?");
+                        let cauthor = h.get(2).map(|v| v.as_str()).unwrap_or("?");
+                        let cdate = h.get(3).map(|v| v.as_str()).unwrap_or("?");
+                        let cmsg: String = h.get(4).map(|v| v.as_str()).unwrap_or("?").chars().take(50).collect();
+                        let err: String = h.get(5).map(|v| v.as_str()).unwrap_or("?").chars().take(60).collect();
+                        output.push(format!("    {} — last changed by @{} in {} ({})", fname, cauthor, commit, cmsg));
+                        output.push(format!("      Prod error: {}", err));
+                    }
+                }
+            }
+
+            // --- CHECK 3: Co-change partners missing from PR ---
+            if let Ok(cochange) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange) \
+                     WITH p, collect(ch.file) AS pr_files \
+                     MATCH (c1:Commit {{repo: '{}'}})-[:MODIFIED_FILE]->(f1:CodeFile) \
+                     WHERE f1.path IN pr_files \
+                     MATCH (c1)-[:MODIFIED_FILE]->(f2:CodeFile) \
+                     WHERE NOT f2.path IN pr_files \
+                     WITH f2.path AS missing_file, count(c1) AS co_changes \
+                     WHERE co_changes >= 3 \
+                     RETURN missing_file, co_changes ORDER BY co_changes DESC LIMIT 5",
+                    num, repo, repo
+                ),
+                &[],
+            ) {
+                if !cochange.is_empty() {
+                    output.push("  🔗 CO-CHANGE: Files that usually change together but are missing from this PR:".to_string());
+                    for c in &cochange {
+                        let file = c.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let count = c.get(1).map(|v| v.as_i64()).unwrap_or(0);
+                        output.push(format!("    {} (co-changed {} times in history)", file, count));
+                    }
+                }
+            }
+
+            // --- CHECK 4: Functions with many callers (blast radius) ---
+            if let Ok(callers) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                     MATCH (caller:CodeFunction)-[:CALLS]->(f) \
+                     WITH f, count(caller) AS caller_count WHERE caller_count >= 2 \
+                     RETURN f.name, f.file, caller_count ORDER BY caller_count DESC LIMIT 5",
+                    num, repo
+                ),
+                &[],
+            ) {
+                if !callers.is_empty() {
+                    output.push("  📡 BLAST RADIUS: Functions called by other code:".to_string());
+                    for c in &callers {
+                        let fname = c.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let ffile = c.get(1).map(|v| v.as_str()).unwrap_or("?");
+                        let count = c.get(2).map(|v| v.as_i64()).unwrap_or(0);
+                        output.push(format!("    {} ({}) — called by {} other functions", fname, ffile, count));
+                    }
+                }
+            }
+
+            // --- CHECK 5: Unanswered Slack questions about this area ---
+            if let Ok(unanswered) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                     MATCH (m:SlackMessage)-[:SENT_BY]->(u:SlackUser) \
+                     WHERE m.text CONTAINS '?' AND m.reply_count = 0 \
+                     AND (toLower(m.text) CONTAINS toLower(f.name) OR toLower(m.text) CONTAINS toLower(ch.file)) \
+                     RETURN u.name, m.channel_name, m.text LIMIT 3",
+                    num, repo
+                ),
+                &[],
+            ) {
+                if !unanswered.is_empty() {
+                    output.push("  ❓ UNANSWERED: Slack questions about code this PR touches:".to_string());
+                    for u in &unanswered {
+                        let who = u.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let ch = u.get(1).map(|v| v.as_str()).unwrap_or("?");
+                        let text: String = u.get(2).map(|v| v.as_str()).unwrap_or("?").chars().take(80).collect();
+                        output.push(format!("    @{} in #{}: {}", who, ch, text));
+                    }
+                }
+            }
+
+            // --- CHECK 6: High churn functions (fragile code) ---
+            if let Ok(churn) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                     MATCH (c:Commit {{repo: '{}'}})-[:MODIFIED]->(f) \
+                     WITH f, count(c) AS changes WHERE changes >= 5 \
+                     RETURN f.name, f.file, changes ORDER BY changes DESC LIMIT 5",
+                    num, repo, repo
+                ),
+                &[],
+            ) {
+                if !churn.is_empty() {
+                    output.push("  🔄 HIGH CHURN (fragile — changed often):".to_string());
+                    for c in &churn {
+                        let fname = c.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let ffile = c.get(1).map(|v| v.as_str()).unwrap_or("?");
+                        let count = c.get(2).map(|v| v.as_i64()).unwrap_or(0);
+                        output.push(format!("    {} ({}) — modified {} times", fname, ffile, count));
+                    }
+                }
+            }
+
+            // --- CHECK 7: Jira ticket status mismatch ---
+            if let Ok(tickets) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:RESOLVES]->(t:JiraTicket) \
+                     RETURN t.key, t.status, t.assignee",
+                    num, repo
+                ),
+                &[],
+            ) {
+                for t in &tickets {
+                    let tkey = t.get(0).map(|v| v.as_str()).unwrap_or("?");
+                    let tstatus = t.get(1).map(|v| v.as_str()).unwrap_or("?");
+                    let tassignee = t.get(2).map(|v| v.as_str()).unwrap_or("?");
+                    if tstatus == "To Do" || tstatus == "Done" {
+                        output.push(format!("  ⚠️ JIRA MISMATCH: {} is '{}' but PR is open (assigned to {})",
+                            tkey, tstatus, tassignee));
+                    }
+                }
+            }
+
+            // --- CHECK 8: Known prod errors in Slack ---
             if let Ok(issues) = self.query_text(
                 &self.client,
                 &format!(
@@ -2240,7 +2381,7 @@ impl McpServer {
                 &[],
             ) {
                 if !issues.is_empty() {
-                    output.push("  ⚠️ Known issues in Slack for functions this PR touches:".to_string());
+                    output.push("  🐛 KNOWN PROD ISSUES for functions this PR touches:".to_string());
                     for i in &issues {
                         let ch = i.get(0).map(|v| v.as_str()).unwrap_or("?");
                         let text: String = i.get(1).map(|v| v.as_str()).unwrap_or("?").chars().take(80).collect();
