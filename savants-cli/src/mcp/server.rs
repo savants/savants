@@ -2401,8 +2401,14 @@ impl McpServer {
     /// call chain to find the root cause. Checks validation gaps, missing null
     /// guards, and cross-references with Slack/Jira.
     fn tool_diagnose_error(&self, args: &Value) -> Result<String, String> {
-        let error_text = arg_str(args, "error")?;
+        let raw_error = arg_str(args, "error")?;
         let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+
+        // Normalize: decode HTML entities (Sentry sends &lt; &gt; &amp; via Slack)
+        let error_text = raw_error
+            .replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            .replace("&#39;", "'").replace("&quot;", "\"")
+            .replace("\\n", " ").replace("\\r", "");
         let error_lower = error_text.to_lowercase();
 
         let mut output = vec![];
@@ -2410,29 +2416,89 @@ impl McpServer {
         output.push(format!("Error: {}", &error_text.chars().take(100).collect::<String>()));
         output.push(String::new());
 
-        // Step 1: Extract function name from error
-        // Patterns: "[functionName]", "in functionName", "functionName is not", "at functionName"
+        // Step 1: Extract function names from error
         let mut candidate_functions: Vec<String> = vec![];
 
-        // Try [functionName] pattern
+        // Skip list: common words that aren't function names
+        let skip_names = [
+            "split", "map", "filter", "forEach", "find", "reduce", "push",
+            "null", "undefined", "true", "false", "this", "self", "none",
+            "Error", "TypeError", "ReferenceError", "SyntaxError",
+            "info", "warn", "error", "debug", "test", "data", "result",
+            "SUBSCRIBE", "UNSUBSCRIBE", "PING", "QUIT", "RESET",
+            "AUTO", "VOCATOR", "FRONTEND", "BACKEND",
+        ];
+
+        // Pattern 1: [functionName] — Sentry wraps function names in brackets
         let bracket_re = regex::Regex::new(r"\[(\w+)\]").unwrap();
         for cap in bracket_re.captures_iter(&error_text) {
-            let name = &cap[1];
-            if name.len() > 3 {
-                candidate_functions.push(name.to_string());
+            let name = cap[1].to_string();
+            if name.len() > 3 && !skip_names.contains(&name.as_str()) {
+                if !candidate_functions.contains(&name) {
+                    candidate_functions.push(name);
+                }
             }
         }
 
-        // Try common error patterns
-        let patterns = [
+        // Pattern 2: Standard JS error patterns
+        let js_patterns = [
             regex::Regex::new(r"(\w+)\s+is not a function").unwrap(),
             regex::Regex::new(r"Cannot read propert\w+ of (\w+)").unwrap(),
             regex::Regex::new(r"at\s+(\w+)\s+\(").unwrap(),
             regex::Regex::new(r"in\s+'(\w+)\s*\(").unwrap(),
+            regex::Regex::new(r"in\s+(\w+)\s+\(").unwrap(),
         ];
-        for re in &patterns {
-            if let Some(cap) = re.captures(&error_text) {
-                candidate_functions.push(cap[1].to_string());
+        for re in &js_patterns {
+            for cap in re.captures_iter(&error_text) {
+                let name = cap[1].to_string();
+                if name.len() > 3 && !skip_names.contains(&name.as_str()) && !candidate_functions.contains(&name) {
+                    candidate_functions.push(name);
+                }
+            }
+        }
+
+        // Pattern 3: Sentry auto-investigation format
+        // "The XxxYyy service is failing" / "The variable 'x' is undefined"
+        let sentry_service_re = regex::Regex::new(r"[Tt]he\s+(\w+(?:[A-Z]\w+)+)\s+(?:service|function|method|class|module|component)").unwrap();
+        for cap in sentry_service_re.captures_iter(&error_text) {
+            let name = cap[1].to_string();
+            if !skip_names.contains(&name.as_str()) && !candidate_functions.contains(&name) {
+                candidate_functions.push(name);
+            }
+        }
+
+        // Pattern 4: CamelCase words that match known functions in the graph
+        let camel_re = regex::Regex::new(r"\b([a-z]+(?:[A-Z][a-z]+)+)\b").unwrap();
+        for cap in camel_re.captures_iter(&error_text) {
+            let name = cap[1].to_string();
+            if name.len() > 6 && !skip_names.contains(&name.as_str()) && !candidate_functions.contains(&name) {
+                // Verify it's an actual function in the graph before adding
+                if let Ok(rows) = self.query_text(
+                    &self.client,
+                    &format!("MATCH (f:CodeFunction {{repo: '{}', name: '{}'}}) RETURN f.name LIMIT 1", repo, name),
+                    &[],
+                ) {
+                    if !rows.is_empty() {
+                        candidate_functions.push(name);
+                    }
+                }
+            }
+        }
+
+        // Pattern 5: PascalCase component/class names
+        let pascal_re = regex::Regex::new(r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b").unwrap();
+        for cap in pascal_re.captures_iter(&error_text) {
+            let name = cap[1].to_string();
+            if name.len() > 6 && !skip_names.contains(&name.as_str()) && !candidate_functions.contains(&name) {
+                if let Ok(rows) = self.query_text(
+                    &self.client,
+                    &format!("MATCH (f:CodeFunction {{repo: '{}', name: '{}'}}) RETURN f.name LIMIT 1", repo, name),
+                    &[],
+                ) {
+                    if !rows.is_empty() {
+                        candidate_functions.push(name);
+                    }
+                }
             }
         }
 
@@ -2440,7 +2506,8 @@ impl McpServer {
         let is_infra_error = error_lower.contains("redis")
             || (error_lower.contains("subscribe") && error_lower.contains("allowed"))
             || error_lower.contains("econnrefused")
-            || error_lower.contains("polling") && error_lower.contains("failed to fetch");
+            || (error_lower.contains("polling") && error_lower.contains("failed to fetch"))
+            || (error_lower.contains("polling") && error_lower.contains("failing"));
 
         if is_infra_error && candidate_functions.is_empty() {
             output.push("Step 1 — Infrastructure error detected".to_string());
