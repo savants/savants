@@ -16,13 +16,17 @@ pub struct CodeIndexer {
 
 #[derive(Debug)]
 struct CodeEntity {
-    kind: String,       // "function", "class", "method", "arrow_function"
+    kind: String,       // "function", "class", "method", "arrow_function", "import"
     name: String,
     file: String,
     line: usize,
     end_line: usize,
     body: String,       // first 500 chars of body for search
     params: Vec<String>,
+    /// For imports: the source module path (e.g., "../utils/llm-validation")
+    import_source: String,
+    /// For imports: the names imported (e.g., ["validateLLMOutput", "LLMParseError"])
+    import_names: Vec<String>,
 }
 
 impl CodeIndexer {
@@ -76,6 +80,9 @@ impl CodeIndexer {
 
             stats.files += 1;
         }
+
+        // Resolve cross-file CALLS edges using import data
+        self.resolve_cross_file_calls();
 
         // Index git history
         let git_indexer = GitHistoryIndexer::new(self.graph.clone(), &self.repo_name);
@@ -164,6 +171,8 @@ impl CodeIndexer {
                         end_line: node.end_position().row + 1,
                         body,
                         params,
+                        import_source: String::new(),
+                        import_names: vec![],
                     });
                 }
             }
@@ -188,6 +197,8 @@ impl CodeIndexer {
                                     end_line: value_node.end_position().row + 1,
                                     body,
                                     params,
+                                    import_source: String::new(),
+                                    import_names: vec![],
                                 });
                             }
                         }
@@ -208,6 +219,8 @@ impl CodeIndexer {
                         end_line: node.end_position().row + 1,
                         body: String::new(),
                         params: vec![],
+                        import_source: String::new(),
+                        import_names: vec![],
                     });
                 }
             }
@@ -215,6 +228,46 @@ impl CodeIndexer {
             // Export statements — extract the exported name
             "export_statement" => {
                 // Walk children to find the declaration inside
+            }
+
+            // Import statements — track what's imported from where
+            "import_statement" => {
+                let full_text = node.utf8_text(source).unwrap_or("").to_string();
+                // Extract source: import { foo } from './bar'
+                if let Some(source_node) = node.child_by_field_name("source") {
+                    let import_path = source_node.utf8_text(source).unwrap_or("")
+                        .trim_matches(|c| c == '\'' || c == '"')
+                        .to_string();
+                    // Extract imported names
+                    let mut names = vec![];
+                    let re = regex::Regex::new(r"(?:import\s+\{([^}]+)\}|import\s+(\w+))").unwrap();
+                    if let Some(caps) = re.captures(&full_text) {
+                        if let Some(named) = caps.get(1) {
+                            for n in named.as_str().split(',') {
+                                let n = n.trim().split(" as ").next().unwrap_or("").trim();
+                                if !n.is_empty() {
+                                    names.push(n.to_string());
+                                }
+                            }
+                        }
+                        if let Some(default) = caps.get(2) {
+                            names.push(default.as_str().to_string());
+                        }
+                    }
+                    if !names.is_empty() {
+                        entities.push(CodeEntity {
+                            kind: "import".to_string(),
+                            name: names.join(", "),
+                            file: file.to_string(),
+                            line: node.start_position().row + 1,
+                            end_line: node.end_position().row + 1,
+                            body: String::new(),
+                            params: vec![],
+                            import_source: import_path,
+                            import_names: names,
+                        });
+                    }
+                }
             }
 
             _ => {}
@@ -307,9 +360,92 @@ impl CodeIndexer {
                         &[],
                     );
                 }
+                "import" => {
+                    // Resolve import path to actual file
+                    // e.g., "../utils/llm-validation" → "server/utils/llm-validation.ts"
+                    let resolved = self.resolve_import_path(&e.file, &e.import_source);
+
+                    // Create IMPORTS edges: importing file → imported function
+                    for name in &e.import_names {
+                        let _ = self.graph.query(
+                            &format!(
+                                "MATCH (importer:CodeFile {{repo: '{}', path: '{}'}}) \
+                                 MATCH (fn:CodeFunction {{repo: '{}', name: '{}'}}) \
+                                 WHERE fn.file STARTS WITH '{}' \
+                                 MERGE (importer)-[:IMPORTS]->(fn)",
+                                esc(&self.repo_name), esc(&e.file),
+                                esc(&self.repo_name), esc(name),
+                                esc(&resolved),
+                            ),
+                            &[],
+                        );
+                    }
+                }
                 _ => {}
             }
         }
+    }
+
+    /// Resolve cross-file function calls using import graph.
+    /// If function A calls B, and A's file imports B from another file,
+    /// create a CALLS edge from A to the actual definition of B.
+    fn resolve_cross_file_calls(&self) {
+        // For each function, look at calls in its body.
+        // If the called name matches an imported function (via IMPORTS edge),
+        // create a CALLS edge to the imported function's definition.
+        let _ = self.graph.query(
+            &format!(
+                "MATCH (caller:CodeFunction {{repo: '{}'}}) \
+                 MATCH (fi:CodeFile {{repo: '{}'}})-[:IMPORTS]->(callee:CodeFunction {{repo: '{}'}}) \
+                 WHERE fi.path = caller.file AND toLower(caller.body) CONTAINS toLower(callee.name) \
+                 AND caller <> callee \
+                 MERGE (caller)-[:CALLS]->(callee)",
+                esc(&self.repo_name), esc(&self.repo_name), esc(&self.repo_name),
+            ),
+            &[],
+        );
+
+        // Also build WRAPS/USES_VALIDATION edges for functions that call
+        // known validation/error-handling functions (pattern recognition)
+        let validation_fns = ["validateLLMOutput", "retryAnthropicCall", "retryAnthropicCallWithValidation"];
+        for vfn in &validation_fns {
+            let _ = self.graph.query(
+                &format!(
+                    "MATCH (f:CodeFunction {{repo: '{}'}}) \
+                     WHERE toLower(f.body) CONTAINS '{}' \
+                     MATCH (v:CodeFunction {{repo: '{}', name: '{}'}}) \
+                     MERGE (f)-[:USES_VALIDATION]->(v)",
+                    esc(&self.repo_name), vfn.to_lowercase(),
+                    esc(&self.repo_name), esc(vfn),
+                ),
+                &[],
+            );
+        }
+    }
+
+    /// Resolve a relative import path to a repo-relative file path.
+    /// e.g., file="server/routes/resume.ts", import="../utils/llm-validation"
+    /// → "server/utils/llm-validation"
+    fn resolve_import_path(&self, from_file: &str, import_path: &str) -> String {
+        if !import_path.starts_with('.') {
+            // Node module import, not relative — return as-is
+            return import_path.to_string();
+        }
+
+        let from_dir = std::path::Path::new(from_file).parent().unwrap_or(std::path::Path::new(""));
+        let resolved = from_dir.join(import_path);
+
+        // Normalize: resolve ".." and "." components
+        let mut parts: Vec<&str> = vec![];
+        for component in resolved.components() {
+            match component {
+                std::path::Component::ParentDir => { parts.pop(); }
+                std::path::Component::CurDir => {}
+                std::path::Component::Normal(p) => { parts.push(p.to_str().unwrap_or("")); }
+                _ => {}
+            }
+        }
+        parts.join("/")
     }
 }
 
