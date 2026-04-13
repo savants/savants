@@ -3037,6 +3037,164 @@ impl McpServer {
             break; // Only diagnose the first matching function
         }
 
+        // ============================================================
+        // CONFIDENCE SCORE + DATA GAP DETECTION
+        // ============================================================
+        output.push(String::new());
+        output.push("─".repeat(50));
+
+        // Check what data sources are available
+        let mut sources_available: Vec<(&str, bool, i64)> = vec![];
+
+        // Code graph
+        let code_count = self.query_text(&self.client,
+            &format!("MATCH (f:CodeFunction {{repo: '{}'}}) RETURN count(f)", repo), &[])
+            .ok().and_then(|r| r.first().map(|row| row[0].as_i64())).unwrap_or(0);
+        sources_available.push(("Code graph (functions)", code_count > 0, code_count));
+
+        // Git history
+        let commit_count = self.query_text(&self.client,
+            &format!("MATCH (c:Commit {{repo: '{}'}}) RETURN count(c)", repo), &[])
+            .ok().and_then(|r| r.first().map(|row| row[0].as_i64())).unwrap_or(0);
+        sources_available.push(("Git history (commits)", commit_count > 0, commit_count));
+
+        // Import/call chain
+        let import_count = self.query_text(&self.client,
+            "MATCH ()-[r:IMPORTS]->() RETURN count(r)", &[])
+            .ok().and_then(|r| r.first().map(|row| row[0].as_i64())).unwrap_or(0);
+        sources_available.push(("Import/call chain", import_count > 0, import_count));
+
+        // Slack
+        let slack_count = self.query_text(&self.client,
+            "MATCH (m:SlackMessage) RETURN count(m)", &[])
+            .ok().and_then(|r| r.first().map(|row| row[0].as_i64())).unwrap_or(0);
+        sources_available.push(("Slack messages", slack_count > 0, slack_count));
+
+        // Jira
+        let jira_count = self.query_text(&self.client,
+            "MATCH (t:JiraTicket) RETURN count(t)", &[])
+            .ok().and_then(|r| r.first().map(|row| row[0].as_i64())).unwrap_or(0);
+        sources_available.push(("Jira tickets", jira_count > 0, jira_count));
+
+        // GitHub PRs
+        let pr_count = self.query_text(&self.client,
+            "MATCH (p:GitHubPR) RETURN count(p)", &[])
+            .ok().and_then(|r| r.first().map(|row| row[0].as_i64())).unwrap_or(0);
+        sources_available.push(("GitHub PRs", pr_count > 0, pr_count));
+
+        // K8s
+        let k8s_count = self.query_text(&self.client,
+            "MATCH (p:K8sPod) RETURN count(p)", &[])
+            .ok().and_then(|r| r.first().map(|row| row[0].as_i64())).unwrap_or(0);
+        sources_available.push(("K8s cluster data", k8s_count > 0, k8s_count));
+
+        // Host
+        let host_count = self.query_text(&self.client,
+            "MATCH (h:Host) RETURN count(h)", &[])
+            .ok().and_then(|r| r.first().map(|row| row[0].as_i64())).unwrap_or(0);
+        sources_available.push(("Host metrics", host_count > 0, host_count));
+
+        let available = sources_available.iter().filter(|s| s.1).count();
+        let total = sources_available.len();
+        let confidence = (available as f64 / total as f64 * 100.0) as i32;
+
+        let confidence_label = if confidence >= 80 { "HIGH" }
+            else if confidence >= 50 { "MEDIUM" }
+            else { "LOW" };
+
+        output.push(format!("CONFIDENCE: {}% ({})", confidence, confidence_label));
+        output.push(String::new());
+        output.push("Data sources:".to_string());
+        for (name, has_data, count) in &sources_available {
+            let icon = if *has_data { "✅" } else { "❌" };
+            let detail = if *has_data { format!("{}", count) } else { "not connected".to_string() };
+            output.push(format!("  {} {} ({})", icon, name, detail));
+        }
+
+        // ============================================================
+        // UNKNOWN UNKNOWN DETECTION
+        // Scan code imports + Slack messages for references to systems
+        // that aren't in the graph
+        // ============================================================
+        let mut missing_integrations: Vec<(&str, &str)> = vec![];
+
+        // Check code imports for known observability/infra tools
+        let tool_checks = [
+            ("datadog", "Datadog", "savants connect datadog"),
+            ("sentry", "Sentry", "Error tracking — check sentry.io dashboard"),
+            ("@prisma", "Database queries", "DB query tracing not in graph"),
+            ("prometheus", "Prometheus", "savants connect prometheus"),
+            ("grafana", "Grafana", "savants connect grafana"),
+            ("pagerduty", "PagerDuty", "savants connect pagerduty"),
+            ("cloudwatch", "AWS CloudWatch", "savants connect aws"),
+            ("newrelic", "New Relic", "savants connect newrelic"),
+        ];
+
+        for (import_keyword, tool_name, hint) in &tool_checks {
+            // Check if code imports this tool
+            if let Ok(rows) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE toLower(f.body) CONTAINS '{}' RETURN count(f)",
+                    repo, import_keyword
+                ),
+                &[],
+            ) {
+                let used_in_code = rows.first().map(|r| r[0].as_i64() > 0).unwrap_or(false);
+                if used_in_code {
+                    // Check if we have data from this tool in the graph
+                    // (we don't have dedicated nodes for most of these yet)
+                    let has_data = match *import_keyword {
+                        "sentry" => slack_count > 0, // Sentry errors come through Slack
+                        "@prisma" => false, // We don't track DB queries
+                        _ => false,
+                    };
+                    if !has_data {
+                        missing_integrations.push((tool_name, hint));
+                    }
+                }
+            }
+        }
+
+        // Check Slack for mentions of tools not in the graph
+        let slack_tool_checks = [
+            ("datadog", "Datadog"),
+            ("grafana", "Grafana"),
+            ("pagerduty", "PagerDuty"),
+            ("cloudwatch", "CloudWatch"),
+            ("new relic", "New Relic"),
+            ("kibana", "Kibana/ELK"),
+            ("splunk", "Splunk"),
+            ("opsgenie", "OpsGenie"),
+        ];
+
+        for (keyword, tool_name) in &slack_tool_checks {
+            if missing_integrations.iter().any(|(n, _)| n == tool_name) { continue; }
+            if let Ok(rows) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (m:SlackMessage) WHERE toLower(m.text) CONTAINS '{}' RETURN count(m)",
+                    keyword
+                ),
+                &[],
+            ) {
+                let mentioned = rows.first().map(|r| r[0].as_i64() > 0).unwrap_or(false);
+                if mentioned {
+                    missing_integrations.push((tool_name, "Mentioned in Slack but not connected to Savants"));
+                }
+            }
+        }
+
+        if !missing_integrations.is_empty() {
+            output.push(String::new());
+            output.push("BLIND SPOTS — tools your team uses that Savants can't see:".to_string());
+            for (tool, hint) in &missing_integrations {
+                output.push(format!("  ⚠️ {} — {}", tool, hint));
+            }
+            output.push(String::new());
+            output.push("Connecting these would improve diagnosis accuracy.".to_string());
+        }
+
         Ok(output.join("\n"))
     }
 
