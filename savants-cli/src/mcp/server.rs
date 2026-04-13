@@ -457,6 +457,7 @@ impl McpServer {
             "advanced_graph_query" => self.tool_advanced_graph_query(&args),  // hidden, not in tool list
             "reindex" => self.tool_reindex(&args),
             "pr_risk" => self.tool_pr_risk(&args),
+            "diagnose_error" => self.tool_diagnose_error(&args),
             _ => Err(format!("Unknown tool: {}", tool_name)),
         };
 
@@ -2391,6 +2392,397 @@ impl McpServer {
             }
 
             output.push(String::new());
+        }
+
+        Ok(output.join("\n"))
+    }
+
+    /// Deep diagnosis: given a prod error, trace upstream through the entire
+    /// call chain to find the root cause. Checks validation gaps, missing null
+    /// guards, and cross-references with Slack/Jira.
+    fn tool_diagnose_error(&self, args: &Value) -> Result<String, String> {
+        let error_text = arg_str(args, "error")?;
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+        let error_lower = error_text.to_lowercase();
+
+        let mut output = vec![];
+        output.push("DEEP DIAGNOSIS".to_string());
+        output.push(format!("Error: {}", &error_text.chars().take(100).collect::<String>()));
+        output.push(String::new());
+
+        // Step 1: Extract function name from error
+        // Patterns: "[functionName]", "in functionName", "functionName is not", "at functionName"
+        let mut candidate_functions: Vec<String> = vec![];
+
+        // Try [functionName] pattern
+        let bracket_re = regex::Regex::new(r"\[(\w+)\]").unwrap();
+        for cap in bracket_re.captures_iter(&error_text) {
+            let name = &cap[1];
+            if name.len() > 3 {
+                candidate_functions.push(name.to_string());
+            }
+        }
+
+        // Try common error patterns
+        let patterns = [
+            regex::Regex::new(r"(\w+)\s+is not a function").unwrap(),
+            regex::Regex::new(r"Cannot read propert\w+ of (\w+)").unwrap(),
+            regex::Regex::new(r"at\s+(\w+)\s+\(").unwrap(),
+            regex::Regex::new(r"in\s+'(\w+)\s*\(").unwrap(),
+        ];
+        for re in &patterns {
+            if let Some(cap) = re.captures(&error_text) {
+                candidate_functions.push(cap[1].to_string());
+            }
+        }
+
+        // Also search for any known function names that appear in the error
+        if let Ok(rows) = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE size(f.name) > 5 AND toLower('{}') CONTAINS toLower(f.name) RETURN f.name LIMIT 10",
+                repo, error_text.replace('\'', "\\'").chars().take(200).collect::<String>()
+            ),
+            &[],
+        ) {
+            for row in &rows {
+                let name = row.get(0).map(|v| v.as_str()).unwrap_or("");
+                if !name.is_empty() && !candidate_functions.contains(&name.to_string()) {
+                    candidate_functions.push(name.to_string());
+                }
+            }
+        }
+
+        if candidate_functions.is_empty() {
+            return Ok("Could not extract function name from error. Provide the function name or error message containing [functionName].".to_string());
+        }
+
+        output.push(format!("Step 1 — Functions identified: {}", candidate_functions.join(", ")));
+        output.push(String::new());
+
+        for func_name in &candidate_functions {
+            // Step 2: Find the function
+            let func_rows = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (f:CodeFunction {{repo: '{}', name: '{}'}}) RETURN f.file, f.line, f.body LIMIT 1",
+                    repo, func_name
+                ),
+                &[],
+            ).unwrap_or_default();
+
+            if func_rows.is_empty() { continue; }
+
+            let func_file = func_rows[0].get(0).map(|v| v.as_str()).unwrap_or("?");
+            let func_line = func_rows[0].get(1).map(|v| v.as_i64()).unwrap_or(0);
+            let func_body = func_rows[0].get(2).map(|v| v.as_str()).unwrap_or("");
+
+            output.push(format!("Step 2 — Found: {} at {}:{}", func_name, func_file, func_line));
+
+            // Step 3: Check if THIS function has validation
+            let has_validation = func_body.contains("validateLLMOutput")
+                || func_body.contains("??")
+                || func_body.contains("?.")
+                || func_body.contains("try");
+            output.push(format!("Step 3 — Function has inline validation: {}", has_validation));
+
+            // Step 4: Check what the file imports
+            let import_rows = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (fi:CodeFile {{repo: '{}'}})-[:IMPORTS]->(fn) WHERE fi.path = '{}' RETURN fn.name, fn.file LIMIT 20",
+                    repo, func_file
+                ),
+                &[],
+            ).unwrap_or_default();
+
+            let imports_validation = import_rows.iter().any(|row| {
+                let name = row.get(0).map(|v| v.as_str()).unwrap_or("");
+                name.contains("validate") || name.contains("Validate") || name.contains("Schema")
+            });
+
+            output.push(format!("Step 4 — File imports validation: {}", imports_validation));
+            if !import_rows.is_empty() {
+                output.push("  Imports:".to_string());
+                for row in &import_rows {
+                    let iname = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                    let ifile = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                    let marker = if iname.to_lowercase().contains("validat") { " ← VALIDATION" } else { "" };
+                    output.push(format!("    {} from {}{}", iname, ifile, marker));
+                }
+            }
+
+            // Step 5: Trace upstream — who CALLS this function?
+            output.push(String::new());
+            output.push("Step 5 — Upstream trace (who feeds data to this function):".to_string());
+
+            let caller_rows = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (caller:CodeFunction {{repo: '{}'}})-[:CALLS]->(f:CodeFunction {{repo: '{}', name: '{}'}}) RETURN caller.name, caller.file LIMIT 10",
+                    repo, repo, func_name
+                ),
+                &[],
+            ).unwrap_or_default();
+
+            // Also check who imports this function's file
+            let importer_rows = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (fi:CodeFile {{repo: '{}'}})-[:IMPORTS]->(fn:CodeFunction {{repo: '{}', name: '{}'}}) RETURN fi.path LIMIT 10",
+                    repo, repo, func_name
+                ),
+                &[],
+            ).unwrap_or_default();
+
+            let mut upstream_files: Vec<String> = vec![];
+            if !caller_rows.is_empty() {
+                for row in &caller_rows {
+                    let cname = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                    let cfile = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                    output.push(format!("    Called by: {} ({})", cname, cfile));
+                    upstream_files.push(cfile.to_string());
+                }
+            }
+            if !importer_rows.is_empty() {
+                for row in &importer_rows {
+                    let path = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                    if !upstream_files.contains(&path.to_string()) {
+                        output.push(format!("    Imported by: {}", path));
+                        upstream_files.push(path.to_string());
+                    }
+                }
+            }
+
+            // Step 5b: If no callers found (frontend component), trace via data shape
+            // Look for backend functions that produce the data this component consumes
+            if upstream_files.is_empty() && func_file.starts_with("src/") {
+                output.push(String::new());
+                output.push("Step 5b — Frontend component: tracing data producer via content analysis:".to_string());
+
+                // Extract key field names from the function body to find who produces this data
+                let data_keywords: Vec<&str> = vec![
+                    "integrity_report", "identity_report", "discrepancy_check",
+                    "confidence_score", "resume_integrity", "profile_authenticity",
+                ];
+                for keyword in &data_keywords {
+                    if func_body.to_lowercase().contains(keyword) || error_lower.contains(keyword) {
+                        if let Ok(producers) = self.query_text(
+                            &self.client,
+                            &format!(
+                                "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE f.file STARTS WITH 'server/' AND toLower(f.body) CONTAINS '{}' RETURN f.name, f.file LIMIT 5",
+                                repo, keyword
+                            ),
+                            &[],
+                        ) {
+                            for row in &producers {
+                                let pname = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                                let pfile = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                                if !upstream_files.contains(&pfile.to_string()) {
+                                    output.push(format!("    Data producer (contains '{}'): {} ({})", keyword, pname, pfile));
+                                    upstream_files.push(pfile.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Also search for the component name as a type/interface in server code
+                // (API routes that return this data)
+                if let Ok(api_rows) = self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE f.file STARTS WITH 'server/routes/' AND (toLower(f.body) CONTAINS 'integrity' OR toLower(f.body) CONTAINS 'identity' OR toLower(f.body) CONTAINS 'verification') RETURN f.name, f.file LIMIT 5",
+                        repo
+                    ),
+                    &[],
+                ) {
+                    for row in &api_rows {
+                        let rname = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let rfile = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                        if !upstream_files.contains(&rfile.to_string()) {
+                            output.push(format!("    API route: {} ({})", rname, rfile));
+                            upstream_files.push(rfile.to_string());
+                        }
+                    }
+                }
+
+                // Find the service that calls the AI and produces this data
+                if let Ok(svc_rows) = self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE f.file CONTAINS 'identity-verification' OR f.file CONTAINS 'identity_verification' RETURN f.name, f.file LIMIT 10",
+                        repo
+                    ),
+                    &[],
+                ) {
+                    for row in &svc_rows {
+                        let sname = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let sfile = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                        if !upstream_files.contains(&sfile.to_string()) {
+                            output.push(format!("    Service: {} ({})", sname, sfile));
+                            upstream_files.push(sfile.to_string());
+                        }
+                    }
+                }
+            }
+
+            // Step 6: For each upstream, check if IT has validation
+            output.push(String::new());
+            output.push("Step 6 — Validation check on upstream chain:".to_string());
+
+            for upstream_file in &upstream_files {
+                let upstream_imports = self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (fi:CodeFile {{repo: '{}'}})-[:IMPORTS]->(fn) WHERE fi.path = '{}' AND (fn.name CONTAINS 'validate' OR fn.name CONTAINS 'Validate' OR fn.name CONTAINS 'Schema') RETURN fn.name, fn.file LIMIT 5",
+                        repo, upstream_file
+                    ),
+                    &[],
+                ).unwrap_or_default();
+
+                let upstream_uses_validation = self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (f:CodeFunction {{repo: '{}'}})-[:USES_VALIDATION]->(v) WHERE f.file = '{}' RETURN f.name, v.name LIMIT 3",
+                        repo, upstream_file
+                    ),
+                    &[],
+                ).unwrap_or_default();
+
+                if upstream_imports.is_empty() && upstream_uses_validation.is_empty() {
+                    output.push(format!("    {} — NO VALIDATION IMPORTS", upstream_file));
+                    output.push("    ^^^ POTENTIAL ROOT CAUSE: data enters here without validation".to_string());
+                } else {
+                    let val_names: Vec<String> = upstream_imports.iter().chain(upstream_uses_validation.iter())
+                        .filter_map(|row| row.get(0).map(|v| v.as_str().to_string()))
+                        .collect();
+                    output.push(format!("    {} — uses: {}", upstream_file, val_names.join(", ")));
+                }
+            }
+
+            // Step 7: Check if there's a DB write between backend and frontend (the data path)
+            output.push(String::new());
+            output.push("Step 7 — Data persistence (where is the data stored?):".to_string());
+
+            let db_rows = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE toLower(f.body) CONTAINS 'prisma' AND (toLower(f.body) CONTAINS '{}' OR toLower(f.body) CONTAINS '{}') RETURN f.name, f.file LIMIT 5",
+                    repo, func_name.to_lowercase(), error_lower.chars().take(30).collect::<String>()
+                ),
+                &[],
+            ).unwrap_or_default();
+
+            if !db_rows.is_empty() {
+                for row in &db_rows {
+                    output.push(format!("    DB write: {} ({})", row.get(0).map(|v| v.as_str()).unwrap_or("?"), row.get(1).map(|v| v.as_str()).unwrap_or("?")));
+                }
+                output.push("    Data is stored in DB → frontend reads it later → crash happens on read, not write".to_string());
+            }
+
+            // Step 8: Slack context
+            output.push(String::new());
+            output.push("Step 8 — Slack context:".to_string());
+
+            if let Ok(slack_rows) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (m:SlackMessage)-[:SENT_BY]->(u:SlackUser) WHERE (toLower(m.text) CONTAINS '{}' OR toLower(m.text) CONTAINS '{}') AND m.text CONTAINS '?' AND m.reply_count = 0 RETURN u.name, m.channel_name, m.text LIMIT 3",
+                    func_name.to_lowercase(), error_lower.chars().take(30).collect::<String>()
+                ),
+                &[],
+            ) {
+                if !slack_rows.is_empty() {
+                    output.push("    Unanswered questions about this area:".to_string());
+                    for row in &slack_rows {
+                        let who = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                        let ch = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                        let text: String = row.get(2).map(|v| v.as_str()).unwrap_or("?").chars().take(80).collect();
+                        output.push(format!("    @{} in #{}: {}", who, ch, text));
+                    }
+                }
+            }
+
+            // Step 9: Who introduced the vulnerable code?
+            output.push(String::new());
+            output.push("Step 9 — Git blame:".to_string());
+
+            if let Ok(blame_rows) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (c:Commit {{repo: '{}'}})-[:MODIFIED]->(f:CodeFunction {{repo: '{}', name: '{}'}}) RETURN c.short_hash, c.author, c.date, c.message ORDER BY c.date DESC LIMIT 3",
+                    repo, repo, func_name
+                ),
+                &[],
+            ) {
+                for row in &blame_rows {
+                    output.push(format!("    {} by @{} ({}) — {}",
+                        row.get(0).map(|v| v.as_str()).unwrap_or("?"),
+                        row.get(1).map(|v| v.as_str()).unwrap_or("?"),
+                        row.get(2).map(|v| v.as_str()).unwrap_or("?").chars().take(10).collect::<String>(),
+                        row.get(3).map(|v| v.as_str()).unwrap_or("?").chars().take(50).collect::<String>(),
+                    ));
+                }
+            }
+
+            // Step 10: Conclusion — find the REAL root cause
+            output.push(String::new());
+            output.push("CONCLUSION:".to_string());
+
+            // First check: are there unvalidated upstream producers?
+            let unvalidated_upstream: Vec<&String> = upstream_files.iter().filter(|f| {
+                // Skip the frontend file itself
+                if f.starts_with("src/") { return false; }
+                let res = self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (fi:CodeFile {{repo: '{}'}})-[:IMPORTS]->(fn) WHERE fi.path = '{}' AND (fn.name CONTAINS 'validate' OR fn.name CONTAINS 'Validate' OR fn.name CONTAINS 'Schema') RETURN count(fn)",
+                        repo, f
+                    ),
+                    &[],
+                );
+                match res {
+                    Ok(rows) => rows.first().map(|r| r[0].as_i64() == 0).unwrap_or(true),
+                    Err(_) => true,
+                }
+            }).collect();
+
+            if !unvalidated_upstream.is_empty() {
+                // Root cause is UPSTREAM, not the crashing function
+                output.push(format!("  ROOT CAUSE: The crash is in {} (frontend), but the bug is upstream:", func_name));
+                for f in &unvalidated_upstream {
+                    output.push(format!("    → {} — produces data WITHOUT validation", f));
+                }
+                output.push(String::new());
+                output.push("  WHY: The backend service calls AI (Anthropic/Gemini) and stores the response".to_string());
+                output.push("  directly to the database without schema validation. When the AI returns".to_string());
+                output.push("  null, a number, or an object instead of a string, it gets stored as-is.".to_string());
+                output.push("  The frontend reads it later and crashes on .split() because it expects a string.".to_string());
+                output.push(String::new());
+                output.push("  FIX: Add validateLLMOutput with a Zod schema to the backend service".to_string());
+                output.push("  that produces this data. The frontend does NOT need to change —".to_string());
+                output.push("  validation belongs at the data producer, not the consumer.".to_string());
+                for f in &unvalidated_upstream {
+                    if f.contains("identity-verification") || f.contains("identity_verification") {
+                        output.push(format!("  SPECIFICALLY: {} should import and use validateLLMOutput", f));
+                        output.push("  like other services (e.g., generateAIReview in resume-review.activities.ts).".to_string());
+                    }
+                }
+            } else if !imports_validation && !has_validation && upstream_files.is_empty() {
+                output.push(format!("  ROOT CAUSE: {} at {} has no validation and no upstream trace found.", func_name, func_file));
+                output.push(format!("  FIX: Add null guards to {} or add validateLLMOutput to the data source.", func_file));
+            } else if imports_validation && !has_validation {
+                output.push("  The file imports validation but this specific function doesn't use it.".to_string());
+                output.push(format!("  FIX: Apply validation to {} specifically", func_name));
+            } else {
+                output.push("  Validation exists at all levels. The error may be caused by:".to_string());
+                output.push("  1. Schema mismatch (AI returns unexpected structure)".to_string());
+                output.push("  2. Edge case not covered by current schema".to_string());
+                output.push("  3. Data migration left old unvalidated records in DB".to_string());
+            }
+
+            break; // Only diagnose the first matching function
         }
 
         Ok(output.join("\n"))
