@@ -311,8 +311,9 @@ pub async fn run() {
                 let stats = slack.ingest(&graph, since_ts);
                 println!("[slack] Initial ingest: {}", stats.summary());
 
-                // Resolve user names
+                // Resolve user names and detect activity staleness
                 slack.resolve_users(&graph);
+                crate::slack::SlackIngestor::update_activity_status(&graph);
             }
 
             // Save cursor

@@ -418,6 +418,56 @@ impl SlackIngestor {
             }
         }
     }
+
+    /// Detect activity staleness on all users and authors.
+    /// Sets last_active_ts and active status so the graph knows who has current context
+    /// vs who is historical. Never surfaces "inactive" as a performance metric,
+    /// only used to recommend the right person to help fix a problem.
+    pub fn update_activity_status(graph: &GraphClient) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let stale_threshold = now - (45.0 * 86400.0); // 45 days
+
+        // Update SlackUser: find their most recent message timestamp
+        let _ = graph.query(
+            &format!(
+                "MATCH (u:SlackUser)<-[:SENT_BY]-(m:SlackMessage) \
+                 WITH u, max(m.timestamp) AS last_msg \
+                 SET u.last_active_ts = last_msg, \
+                 u.has_recent_activity = last_msg >= {}",
+                stale_threshold
+            ),
+            &[],
+        );
+
+        // Update Author: find their most recent commit date
+        let _ = graph.query(
+            "MATCH (a:Author)-[:AUTHORED]->(c:Commit) \
+             WITH a, max(c.date) AS last_commit \
+             SET a.last_commit_date = last_commit",
+            &[],
+        );
+
+        // For users with no recent activity, find who has context on their code
+        // so the graph can suggest alternatives
+        let _ = graph.query(
+            &format!(
+                "MATCH (u:SlackUser) WHERE u.has_recent_activity = false \
+                 MATCH (m:SlackMessage)-[:SENT_BY]->(u) \
+                 MATCH (m)-[:MENTIONS_SERVICE]->(svc) \
+                 MATCH (m2:SlackMessage)-[:MENTIONS_SERVICE]->(svc) \
+                 MATCH (m2)-[:SENT_BY]->(active:SlackUser) \
+                 WHERE active <> u AND active.has_recent_activity = true \
+                 WITH u, active, count(m2) AS shared_context \
+                 ORDER BY shared_context DESC \
+                 WITH u, collect(active.name)[0] AS suggested_replacement \
+                 SET u.suggested_contact = suggested_replacement"
+            ),
+            &[],
+        );
+    }
 }
 
 #[derive(Default)]

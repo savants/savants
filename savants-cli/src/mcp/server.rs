@@ -3045,9 +3045,9 @@ impl McpServer {
                 }
             }
 
-            // Step 9: Who introduced the vulnerable code?
+            // Step 9: Who has context on this code?
             output.push(String::new());
-            output.push("Step 9 — Git blame:".to_string());
+            output.push("Step 9 — Who has context:".to_string());
 
             if let Ok(blame_rows) = self.query_text(
                 &self.client,
@@ -3058,11 +3058,40 @@ impl McpServer {
                 &[],
             ) {
                 for row in &blame_rows {
-                    output.push(format!("    {} by @{} ({}) — {}",
+                    let author = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                    let date = row.get(2).map(|v| v.as_str()).unwrap_or("?").chars().take(10).collect::<String>();
+
+                    // Check if this author is still active
+                    let activity_note = if let Ok(active_rows) = self.query_text(
+                        &self.client,
+                        &format!(
+                            "MATCH (u:SlackUser) WHERE toLower(u.name) CONTAINS toLower('{}') RETURN u.has_recent_activity, u.suggested_contact",
+                            author.split_whitespace().next().unwrap_or(author)
+                        ),
+                        &[],
+                    ) {
+                        if let Some(row) = active_rows.first() {
+                            let is_active = row.get(0).map(|v| v.as_str()).unwrap_or("true");
+                            let replacement = row.get(1).map(|v| v.as_str()).unwrap_or("");
+                            if is_active == "false" || is_active == "0" {
+                                if !replacement.is_empty() {
+                                    format!(" (no recent activity, try @{} instead)", replacement)
+                                } else {
+                                    " (no recent activity)".to_string()
+                                }
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                    output.push(format!("    {} by @{} ({}){}",
                         row.get(0).map(|v| v.as_str()).unwrap_or("?"),
-                        row.get(1).map(|v| v.as_str()).unwrap_or("?"),
-                        row.get(2).map(|v| v.as_str()).unwrap_or("?").chars().take(10).collect::<String>(),
-                        row.get(3).map(|v| v.as_str()).unwrap_or("?").chars().take(50).collect::<String>(),
+                        author, date, activity_note,
                     ));
                 }
             }
