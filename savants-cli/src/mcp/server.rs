@@ -437,6 +437,18 @@ impl McpServer {
                     },
                     "required": ["error"]
                 }
+            },
+            {
+                "name": "radar",
+                "description": "Personal radar - shows what YOU need to know across all channels without reading everything. Finds direct mentions you haven't replied to, questions waiting for your answer, discussions about your code, errors in your services, and conversations you should be involved in but weren't tagged. Never evaluates performance - only finds what needs your attention.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "user": {"type": "string", "description": "Your name, email, or Slack username to identify you in the graph"},
+                        "hours": {"type": "number", "description": "Look back this many hours (default: 24)"}
+                    },
+                    "required": ["user"]
+                }
             }
         ])
     }
@@ -480,6 +492,7 @@ impl McpServer {
             "reindex" => self.tool_reindex(&args),
             "pr_risk" => self.tool_pr_risk(&args),
             "diagnose_error" => self.tool_diagnose_error(&args),
+            "radar" => self.tool_radar(&args),
             _ => Err(format!("Unknown tool: {}", tool_name)),
         };
 
@@ -3314,6 +3327,19 @@ impl McpServer {
         }
 
         Ok(output.join("\n"))
+    }
+
+    fn tool_radar(&self, args: &Value) -> Result<String, String> {
+        let user = arg_str(args, "user")?;
+        let hours = args.get("hours").and_then(|v| v.as_f64()).unwrap_or(24.0);
+
+        let radar = match crate::radar::PersonalRadar::from_graph(&self.client, &user) {
+            Some(r) => r,
+            None => return Err(format!("Could not find user '{}' in the graph. Try your Slack username, git author name, or email.", user)),
+        };
+
+        let items = radar.scan(&self.client, hours);
+        Ok(radar.format_digest(&items))
     }
 
     // ---------------------------------------------------------------

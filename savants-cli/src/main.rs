@@ -20,6 +20,7 @@ mod code_index;
 mod github;
 mod jira;
 mod mcp;
+mod radar;
 mod sentry;
 mod slack;
 mod utils;
