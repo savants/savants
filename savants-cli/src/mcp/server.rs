@@ -2847,10 +2847,10 @@ impl McpServer {
             output.push(format!("Step 2 — Found: {} at {}:{}", func_name, func_file, func_line));
 
             // Step 3: Check if THIS function has validation
-            let has_validation = func_body.contains("validateLLMOutput")
-                || func_body.contains("??")
-                || func_body.contains("?.")
-                || func_body.contains("try");
+            // Context-aware: detect any validation pattern, not just specific function names
+            let validation_patterns = ["validate", "Validate", "schema", "Schema", "guard", "check",
+                "??", "?.", "try", "catch", "assert", "ensure", "verify", "sanitize", "parse"];
+            let has_validation = validation_patterns.iter().any(|p| func_body.contains(p));
             output.push(format!("Step 3 — Function has inline validation: {}", has_validation));
 
             // Step 4: Check what the file imports
@@ -3146,36 +3146,52 @@ impl McpServer {
 
             if !unvalidated_upstream.is_empty() {
                 // Root cause is UPSTREAM, not the crashing function
-                output.push(format!("  ROOT CAUSE: The crash is in {} (frontend), but the bug is upstream:", func_name));
+                // Generate context-aware conclusion based on what the graph actually shows
+                output.push(format!("  ROOT CAUSE: The crash is in {}, but the bug is upstream:", func_name));
                 for f in &unvalidated_upstream {
-                    output.push(format!("    → {} — produces data WITHOUT validation", f));
+                    output.push(format!("    -> {} - produces data WITHOUT validation or null guards", f));
                 }
                 output.push(String::new());
-                output.push("  WHY: The backend service calls AI (Anthropic/Gemini) and stores the response".to_string());
-                output.push("  directly to the database without schema validation. When the AI returns".to_string());
-                output.push("  null, a number, or an object instead of a string, it gets stored as-is.".to_string());
-                output.push("  The frontend reads it later and crashes on .split() because it expects a string.".to_string());
+
+                // Build WHY from the actual graph context
+                output.push(format!("  WHY: {} receives data from upstream without validation.", func_name));
+                output.push("  The upstream producer does not check for null, undefined, or unexpected".to_string());
+                output.push("  data types before passing data downstream. When invalid data flows through,".to_string());
+                output.push(format!("  {} crashes because it assumes the data is well-formed.", func_name));
                 output.push(String::new());
-                output.push("  FIX: Add validateLLMOutput with a Zod schema to the backend service".to_string());
-                output.push("  that produces this data. The frontend does NOT need to change —".to_string());
-                output.push("  validation belongs at the data producer, not the consumer.".to_string());
+
+                // Build FIX from the actual files involved
+                output.push("  FIX: Add input validation or null guards to the upstream producer:".to_string());
                 for f in &unvalidated_upstream {
-                    if f.contains("identity-verification") || f.contains("identity_verification") {
-                        output.push(format!("  SPECIFICALLY: {} should import and use validateLLMOutput", f));
-                        output.push("  like other services (e.g., generateAIReview in resume-review.activities.ts).".to_string());
+                    // Check what validation patterns exist in the repo
+                    let validation_exists_in_repo = self.query_text(
+                        &self.client,
+                        &format!(
+                            "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE toLower(f.name) CONTAINS 'validate' OR toLower(f.name) CONTAINS 'schema' RETURN f.name LIMIT 1",
+                            repo
+                        ),
+                        &[],
+                    ).ok().map(|r| !r.is_empty()).unwrap_or(false);
+
+                    if validation_exists_in_repo {
+                        output.push(format!("    -> {} should use the existing validation utilities in this codebase", f));
+                    } else {
+                        output.push(format!("    -> {} needs null checks before accessing properties on input data", f));
                     }
                 }
+                output.push("  The consuming function does NOT need to change -".to_string());
+                output.push("  validation belongs at the data producer, not the consumer.".to_string());
             } else if !imports_validation && !has_validation && upstream_files.is_empty() {
                 output.push(format!("  ROOT CAUSE: {} at {} has no validation and no upstream trace found.", func_name, func_file));
-                output.push(format!("  FIX: Add null guards to {} or add validateLLMOutput to the data source.", func_file));
+                output.push(format!("  FIX: Add null guards or input validation to {}", func_file));
             } else if imports_validation && !has_validation {
                 output.push("  The file imports validation but this specific function doesn't use it.".to_string());
-                output.push(format!("  FIX: Apply validation to {} specifically", func_name));
+                output.push(format!("  FIX: Apply the existing validation to {} specifically", func_name));
             } else {
                 output.push("  Validation exists at all levels. The error may be caused by:".to_string());
-                output.push("  1. Schema mismatch (AI returns unexpected structure)".to_string());
-                output.push("  2. Edge case not covered by current schema".to_string());
-                output.push("  3. Data migration left old unvalidated records in DB".to_string());
+                output.push("  1. Unexpected data shape from an external service or API".to_string());
+                output.push("  2. Edge case not covered by current validation logic".to_string());
+                output.push("  3. Stale or corrupted data in the data store".to_string());
             }
 
             break; // Only diagnose the first matching function
