@@ -3,7 +3,7 @@ interface Props {
   title: string;
   description?: string;
 }
-const { title, description = "Your infrastructure savant. Know what's wrong in 60 seconds." } = Astro.props;
+const { title, description = "Stop investigating. Start knowing. Savants builds a knowledge graph from your code, clusters, Slack, Jira, Sentry, and 7+ data sources. Production error to root cause in 60 seconds." } = Astro.props;
 ---
 <!DOCTYPE html>
 <html lang="en">
@@ -11,32 +11,80 @@ const { title, description = "Your infrastructure savant. Know what's wrong in 6
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content={description} />
+  <meta name="keywords" content="infrastructure monitoring, MTTR reduction, knowledge graph, Kubernetes debugging, incident response, MCP tools, production error diagnosis, root cause analysis, PR review automation" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://savants.dev/" />
+
+  <!-- Open Graph -->
   <meta property="og:title" content={title} />
   <meta property="og:description" content={description} />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://savants.dev" />
+  <meta property="og:image" content="https://savants.dev/og-image.png" />
+  <meta property="og:image:width" content="1792" />
+  <meta property="og:image:height" content="1024" />
+
+  <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content={title} />
   <meta name="twitter:description" content={description} />
+  <meta name="twitter:image" content="https://savants.dev/og-image.png" />
+
   <title>{title}</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- GSAP + ScrollTrigger -->
+  <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12/dist/gsap.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/gsap@3.12/dist/ScrollTrigger.min.js"></script>
+
+  <!-- JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Savants",
+    "description": "Infrastructure intelligence tool that builds a knowledge graph from code, clusters, logs, and 7+ data sources. Diagnoses production errors in 60 seconds.",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD",
+      "description": "Free local tier with unlimited queries"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Savants"
+    }
+  }
+  </script>
+
   <style is:global>
     :root {
       --bg: #0a0a0a; --fg: #e5e5e5; --muted: #737373;
       --accent: #22d3ee; --accent-dim: #164e63;
-      --surface: #171717; --border: #262626;
+      --surface: #141414; --border: #262626;
       --green: #4ade80; --red: #f87171; --yellow: #facc15;
     }
     * { margin:0; padding:0; box-sizing:border-box; }
+    html { scroll-behavior: smooth; }
     body {
       font-family: 'Inter', -apple-system, sans-serif;
       background: var(--bg); color: var(--fg);
       line-height: 1.6; -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
     }
     code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
-    .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+    .container { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+
+    /* Utility classes for GSAP */
+    .gs-hidden { opacity: 0; }
+    .gs-up { opacity: 0; transform: translateY(40px); }
+    .gs-left { opacity: 0; transform: translateX(-40px); }
+    .gs-right { opacity: 0; transform: translateX(40px); }
+    .gs-scale { opacity: 0; transform: scale(0.95); }
   </style>
 </head>
 <body><slot /></body>

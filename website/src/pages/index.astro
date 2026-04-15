@@ -1,28 +1,38 @@
 ---
 import Base from '../layouts/Base.astro';
 ---
-<Base title="Savants — Your Infrastructure Savant">
+<Base title="Savants - Your Infrastructure Savant">
 <style>
   /* Nav */
-  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; backdrop-filter: blur(12px); background: rgba(10,10,10,0.8); border-bottom: 1px solid var(--border); }
+  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; backdrop-filter: blur(12px); background: rgba(10,10,10,0.85); border-bottom: 1px solid var(--border); }
   nav .brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
   nav .brand span { color: var(--accent); }
-  nav .links { display: flex; gap: 24px; }
+  nav .links { display: flex; gap: 24px; align-items: center; }
   nav .links a { color: var(--muted); text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
   nav .links a:hover { color: var(--fg); }
   nav .nav-btn { padding: 6px 16px; background: var(--accent); color: var(--bg); font-weight: 600; border-radius: 6px; text-decoration: none; font-size: 0.85rem; }
+  nav .hamburger { display: none; background: none; border: none; cursor: pointer; padding: 4px; }
+  nav .hamburger svg { width: 24px; height: 24px; stroke: var(--fg); }
+  @media (max-width: 640px) {
+    nav .links { display: none; position: absolute; top: 100%; left: 0; right: 0; flex-direction: column; background: rgba(10,10,10,0.95); backdrop-filter: blur(12px); padding: 16px 24px; gap: 16px; border-bottom: 1px solid var(--border); }
+    nav .links.open { display: flex; }
+    nav .hamburger { display: block; }
+  }
 
   /* Hero */
-  .hero { padding: 160px 0 80px; text-align: center; position: relative; }
-  .hero::before { content: ''; position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 800px; height: 600px; background: radial-gradient(ellipse at center, rgba(34,211,238,0.08) 0%, transparent 70%); pointer-events: none; }
+  .hero { padding: 160px 0 80px; text-align: center; position: relative; overflow: hidden; }
+  .hero-bg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
+  .hero-bg video { width: 100%; height: 100%; object-fit: cover; opacity: 0.15; }
+  .hero-bg img.fallback { width: 100%; height: 100%; object-fit: cover; opacity: 0.08; display: none; }
   .hero h1 { font-size: clamp(2.5rem, 5vw, 4rem); font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 24px; position: relative; }
+  .hero h1 .char { display: inline-block; opacity: 0; }
   .hero .accent { color: var(--accent); }
-  .hero .subtitle { font-size: 1.2rem; color: var(--muted); max-width: 580px; margin: 0 auto 48px; line-height: 1.7; }
-  .install-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 28px; display: inline-flex; align-items: center; gap: 12px; margin-bottom: 16px; transition: border-color 0.2s; }
+  .hero .subtitle { font-size: 1.2rem; color: var(--muted); max-width: 600px; margin: 0 auto 48px; line-height: 1.7; position: relative; }
+  .install-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 28px; display: inline-flex; align-items: center; gap: 12px; margin-bottom: 16px; transition: border-color 0.2s; cursor: pointer; position: relative; }
   .install-box:hover { border-color: var(--accent); }
   .install-box code { font-size: 1rem; color: var(--accent); }
   .install-box .copy-hint { color: var(--muted); font-size: 0.75rem; }
-  .install-note { color: var(--muted); font-size: 0.85rem; display: block; margin-top: 8px; }
+  .trust-line { color: var(--muted); font-size: 0.85rem; display: block; margin-top: 8px; position: relative; }
 
   /* Terminal */
   .terminal-wrap { margin: 64px auto; max-width: 740px; }
@@ -33,14 +43,14 @@ import Base from '../layouts/Base.astro';
   .terminal-bar .dot-g { background: #4ade80; }
   .terminal-bar .title { color: var(--muted); font-size: 0.75rem; margin-left: 12px; }
   .terminal { background: #0d0d0d; border: 1px solid var(--border); border-top: none; border-radius: 0 0 12px 12px; padding: 24px 28px; text-align: left; overflow-x: auto; font-size: 0.85rem; line-height: 1.8; }
-  .terminal .line { opacity: 0; animation: fadeIn 0.3s ease forwards; }
+  .terminal .line { opacity: 0; transform: translateY(4px); }
   .terminal .prompt { color: var(--green); }
   .terminal .output { color: var(--muted); }
   .terminal .hl { color: var(--accent); }
   .terminal .warn { color: var(--yellow); }
   .terminal .err { color: var(--red); }
   .terminal .spacer { height: 12px; }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  @media (max-width: 640px) { .terminal { font-size: 0.72rem; padding: 16px; } }
 
   /* Comparison */
   .comparison { padding: 80px 0; }
@@ -63,6 +73,51 @@ import Base from '../layouts/Base.astro';
   .compare-card.before ul li::before { background: var(--red); }
   .compare-card.after ul li::before { background: var(--accent); }
 
+  /* Use Cases */
+  .use-cases { padding: 80px 0; }
+  .use-cases h2 { font-size: 2rem; font-weight: 700; text-align: center; margin-bottom: 12px; }
+  .use-cases .sub { text-align: center; color: var(--muted); margin-bottom: 48px; font-size: 1rem; }
+  .uc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; max-width: 960px; margin: 0 auto; }
+  @media (max-width: 640px) { .uc-grid { grid-template-columns: 1fr; } }
+  .uc-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 32px; transition: border-color 0.2s, transform 0.2s; }
+  .uc-card:hover { border-color: #404040; transform: translateY(-2px); }
+  .uc-card .uc-icon { font-size: 1.5rem; margin-bottom: 12px; display: block; }
+  .uc-card .uc-cmd { font-size: 0.75rem; color: var(--accent); background: var(--accent-dim); display: inline-block; padding: 2px 8px; border-radius: 4px; margin-bottom: 12px; }
+  .uc-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+  .uc-card .uc-stat { font-size: 1.4rem; font-weight: 800; color: var(--accent); margin-bottom: 8px; }
+  .uc-card p { color: var(--muted); font-size: 0.85rem; line-height: 1.6; }
+
+  /* Data Sources Convergence */
+  .convergence { padding: 100px 0; text-align: center; position: relative; overflow: hidden; }
+  .convergence-bg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: url('/graph-viz.png') center/cover no-repeat; opacity: 0.06; pointer-events: none; }
+  .convergence h2 { font-size: 2rem; font-weight: 700; margin-bottom: 16px; position: relative; }
+  .convergence .sub { color: var(--muted); font-size: 1rem; margin-bottom: 64px; position: relative; }
+  .convergence-visual { position: relative; width: 100%; max-width: 600px; height: 400px; margin: 0 auto 48px; }
+  .source-node { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 6px; z-index: 2; }
+  .source-node .node-circle { width: 48px; height: 48px; border-radius: 50%; background: var(--surface); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
+  .source-node .node-label { font-size: 0.7rem; color: var(--muted); font-weight: 500; }
+  .center-node { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; }
+  .center-node .node-circle { width: 72px; height: 72px; border-radius: 50%; background: var(--accent-dim); border: 2px solid var(--accent); display: flex; align-items: center; justify-content: center; font-weight: 700; color: var(--accent); font-size: 0.9rem; }
+  .convergence-tagline { font-size: 1.3rem; font-weight: 700; position: relative; }
+  .convergence-tagline .accent { color: var(--accent); }
+  .conv-lines { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+  .conv-lines line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 4; }
+  @media (max-width: 640px) {
+    .convergence-visual { height: 320px; }
+    .source-node .node-circle { width: 36px; height: 36px; font-size: 0.9rem; }
+    .source-node .node-label { font-size: 0.6rem; }
+    .center-node .node-circle { width: 56px; height: 56px; font-size: 0.75rem; }
+  }
+
+  /* How */
+  .how { padding: 80px 0; text-align: center; }
+  .how h2 { font-size: 2rem; font-weight: 700; margin-bottom: 48px; }
+  .steps { display: flex; gap: 48px; justify-content: center; flex-wrap: wrap; }
+  .step { flex: 1; min-width: 200px; max-width: 260px; }
+  .step .num { display: inline-flex; width: 44px; height: 44px; border-radius: 50%; background: var(--accent-dim); color: var(--accent); font-weight: 700; font-size: 1.1rem; align-items: center; justify-content: center; margin-bottom: 16px; }
+  .step h3 { font-size: 1rem; margin-bottom: 8px; }
+  .step p { color: var(--muted); font-size: 0.85rem; }
+
   /* Features */
   .features { padding: 80px 0; }
   .features h2 { font-size: 2rem; font-weight: 700; text-align: center; margin-bottom: 12px; }
@@ -77,15 +132,6 @@ import Base from '../layouts/Base.astro';
   .tag-code { background: #1e1b4b; color: #818cf8; }
   .tag-ai { background: #365314; color: var(--green); }
 
-  /* How */
-  .how { padding: 80px 0; text-align: center; }
-  .how h2 { font-size: 2rem; font-weight: 700; margin-bottom: 48px; }
-  .steps { display: flex; gap: 48px; justify-content: center; flex-wrap: wrap; }
-  .step { flex: 1; min-width: 200px; max-width: 260px; }
-  .step .num { display: inline-flex; width: 44px; height: 44px; border-radius: 50%; background: var(--accent-dim); color: var(--accent); font-weight: 700; font-size: 1.1rem; align-items: center; justify-content: center; margin-bottom: 16px; }
-  .step h3 { font-size: 1rem; margin-bottom: 8px; }
-  .step p { color: var(--muted); font-size: 0.85rem; }
-
   /* Trust bar */
   .trust { padding: 48px 0; text-align: center; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
   .trust p { color: var(--muted); font-size: 0.85rem; margin-bottom: 16px; }
@@ -93,27 +139,61 @@ import Base from '../layouts/Base.astro';
   .trust .badge { color: #525252; font-size: 0.8rem; font-weight: 500; display: flex; align-items: center; gap: 8px; }
   .trust .badge .icon { font-size: 1.2rem; }
 
+  /* Pricing */
+  .pricing { padding: 80px 0; }
+  .pricing h2 { font-size: 2rem; font-weight: 700; text-align: center; margin-bottom: 12px; }
+  .pricing .sub { text-align: center; color: var(--muted); margin-bottom: 48px; font-size: 1rem; }
+  .pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; max-width: 960px; margin: 0 auto; }
+  @media (max-width: 640px) { .pricing-grid { grid-template-columns: 1fr; } }
+  .price-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 32px; display: flex; flex-direction: column; }
+  .price-card.featured { border-color: var(--accent); border-width: 2px; }
+  .price-card .tier { font-size: 0.75rem; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 8px; }
+  .price-card.featured .tier { color: var(--accent); }
+  .price-card .price { font-size: 2.5rem; font-weight: 800; margin-bottom: 4px; }
+  .price-card.featured .price { color: var(--accent); }
+  .price-card .price-sub { color: var(--muted); font-size: 0.8rem; margin-bottom: 24px; }
+  .price-card ul { list-style: none; padding: 0; margin: 0 0 24px; flex: 1; }
+  .price-card ul li { padding: 6px 0; color: var(--muted); font-size: 0.85rem; display: flex; align-items: flex-start; gap: 8px; }
+  .price-card ul li::before { content: '\2713'; color: var(--green); font-weight: 700; flex-shrink: 0; }
+  .price-card .price-btn { display: block; text-align: center; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 0.9rem; transition: opacity 0.2s; }
+  .price-card .price-btn.primary { background: var(--accent); color: var(--bg); }
+  .price-card .price-btn.secondary { border: 1px solid var(--border); color: var(--fg); }
+  .price-card .price-btn:hover { opacity: 0.85; }
+
   /* CTA */
   .cta { padding: 100px 0 120px; text-align: center; position: relative; }
   .cta::before { content: ''; position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: 600px; height: 400px; background: radial-gradient(ellipse at center, rgba(34,211,238,0.06) 0%, transparent 70%); pointer-events: none; }
-  .cta h2 { font-size: 2.5rem; font-weight: 800; margin-bottom: 16px; letter-spacing: -0.02em; }
+  .cta h2 { font-size: clamp(2rem, 4vw, 2.5rem); font-weight: 800; margin-bottom: 16px; letter-spacing: -0.02em; }
+  .cta h2 .char { display: inline-block; opacity: 0; }
   .cta p { color: var(--muted); margin-bottom: 32px; font-size: 1.1rem; }
   .btn { display: inline-block; padding: 14px 36px; background: var(--accent); color: var(--bg); font-weight: 600; border-radius: 8px; text-decoration: none; font-size: 1rem; transition: opacity 0.2s, transform 0.2s; }
   .btn:hover { opacity: 0.9; transform: translateY(-1px); }
   .btn-ghost { display: inline-block; padding: 14px 36px; border: 1px solid var(--border); color: var(--fg); font-weight: 500; border-radius: 8px; text-decoration: none; font-size: 1rem; margin-left: 12px; transition: border-color 0.2s; }
   .btn-ghost:hover { border-color: var(--muted); }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(34,211,238,0.3); } 50% { box-shadow: 0 0 0 8px rgba(34,211,238,0); } }
+  .btn-pulse { animation: pulse 2.5s ease-in-out infinite; }
 
   /* Footer */
   footer { border-top: 1px solid var(--border); padding: 32px 0; text-align: center; color: var(--muted); font-size: 0.85rem; }
   footer a { color: var(--accent); text-decoration: none; }
+  footer .patent { display: block; margin-top: 8px; font-size: 0.75rem; color: #525252; }
 </style>
 
 <!-- Nav -->
 <nav>
   <a href="/" class="brand">savants<span>.dev</span></a>
-  <div class="links">
+  <button class="hamburger" id="hamburger" aria-label="Toggle menu">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round">
+      <line x1="3" y1="6" x2="21" y2="6"/>
+      <line x1="3" y1="12" x2="21" y2="12"/>
+      <line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  </button>
+  <div class="links" id="nav-links">
     <a href="#features">Features</a>
-    <a href="#how">How it works</a>
+    <a href="#use-cases">Use Cases</a>
+    <a href="#pricing">Pricing</a>
+    <a href="https://docs.savants.dev">Docs</a>
     <a href="https://savants.sh" class="nav-btn">Install</a>
   </div>
 </nav>
@@ -121,53 +201,58 @@ import Base from '../layouts/Base.astro';
 <div class="container">
   <!-- Hero -->
   <section class="hero">
-    <h1>Your infrastructure<br/><span class="accent">savant</span></h1>
-    <p class="subtitle">One command. Every layer of your stack. Know what's wrong in 60 seconds — code, clusters, logs, and hosts in one graph.</p>
-    <div class="install-box">
-      <code class="mono">curl -fsSL savants.sh | sh</code>
-      <span class="copy-hint">click to copy</span>
+    <div class="hero-bg">
+      <video autoplay muted loop playsinline poster="/hero-bg.png">
+        <source src="/hero-video.mp4" type="video/mp4" />
+      </video>
     </div>
-    <span class="install-note">Then run <code class="mono">savants up</code> — that's it. No account. No cloud. No data leaves your machine.</span>
+    <h1 id="hero-headline">Stop investigating. Start knowing.</h1>
+    <p class="subtitle gs-up">7 data sources. One graph. Production error to root cause in 60 seconds.</p>
+    <div class="install-box gs-up" id="install-box">
+      <code class="mono">curl -fsSL savants.sh | sh</code>
+      <span class="copy-hint" id="copy-hint">click to copy</span>
+    </div>
+    <span class="trust-line gs-up">No account. No cloud. No data leaves your machine.</span>
   </section>
 
-  <!-- Terminal with typing animation -->
-  <div class="terminal-wrap">
+  <!-- Terminal -->
+  <div class="terminal-wrap gs-up" id="terminal-section">
     <div class="terminal-bar">
       <div class="dot dot-r"></div>
       <div class="dot dot-y"></div>
       <div class="dot dot-g"></div>
-      <span class="title mono">savants — astra</span>
+      <span class="title mono">savants - astra</span>
     </div>
     <div class="terminal mono" id="term">
-      <div class="line" style="animation-delay:0.2s"><span class="prompt">$</span> savants up</div>
-      <div class="spacer line" style="animation-delay:0.5s"></div>
-      <div class="line output" style="animation-delay:0.7s">Starting Savants...</div>
-      <div class="spacer line" style="animation-delay:1.0s"></div>
-      <div class="line output" style="animation-delay:1.2s">Detecting infrastructure...</div>
-      <div class="line output" style="animation-delay:1.5s">&nbsp; Found K8s cluster: <span class="hl">production</span> (94 pods)</div>
-      <div class="line output" style="animation-delay:1.8s">&nbsp; Found Docker, systemd, git repo</div>
-      <div class="spacer line" style="animation-delay:2.2s"></div>
-      <div class="line output" style="animation-delay:2.5s">[host] 534 systemd units (<span class="err">4 failed</span>), 42 journal events</div>
-      <div class="line output" style="animation-delay:2.8s">[k8s]&nbsp; <span class="hl">61 Running</span>, 33 Succeeded</div>
-      <div class="line output" style="animation-delay:3.1s">[k8s]&nbsp; Log intelligence: <span class="err">48 error templates</span> from 16 pods</div>
-      <div class="line output" style="animation-delay:3.4s">[code] 500 functions, 159 classes, 1903 edges</div>
-      <div class="spacer line" style="animation-delay:3.8s"></div>
-      <div class="line output" style="animation-delay:4.2s">Found <span class="err">3 issues</span>:</div>
-      <div class="line output" style="animation-delay:4.5s">&nbsp; 1. <span class="err">15 pods in CrashLoopBackOff</span> — all caused by DNS failure</div>
-      <div class="line output" style="animation-delay:4.8s">&nbsp; 2. Root cause: <span class="warn">coredns forwarding to unreachable upstream</span></div>
-      <div class="line output" style="animation-delay:5.1s">&nbsp; 3. Fix: <span class="hl">edit coredns ConfigMap → forward . 1.1.1.1 8.8.8.8</span></div>
-      <div class="spacer line" style="animation-delay:5.5s"></div>
-      <div class="line output" style="animation-delay:5.8s">7.5M log lines → 1 root cause → <span class="hl">45 seconds</span></div>
+      <div class="line"><span class="prompt">$</span> savants up</div>
+      <div class="spacer line"></div>
+      <div class="line output">Starting Savants...</div>
+      <div class="spacer line"></div>
+      <div class="line output">Detecting infrastructure...</div>
+      <div class="line output">&nbsp; Found K8s cluster: <span class="hl">production</span> (94 pods)</div>
+      <div class="line output">&nbsp; Found Docker, systemd, git repo</div>
+      <div class="spacer line"></div>
+      <div class="line output">[host] 534 systemd units (<span class="err">4 failed</span>), 42 journal events</div>
+      <div class="line output">[k8s]&nbsp; <span class="hl">61 Running</span>, 33 Succeeded</div>
+      <div class="line output">[k8s]&nbsp; Log intelligence: <span class="err">48 error templates</span> from 16 pods</div>
+      <div class="line output">[code] 500 functions, 159 classes, 1903 edges</div>
+      <div class="spacer line"></div>
+      <div class="line output">Found <span class="err">3 issues</span>:</div>
+      <div class="line output">&nbsp; 1. <span class="err">15 pods in CrashLoopBackOff</span> - all caused by DNS failure</div>
+      <div class="line output">&nbsp; 2. Root cause: <span class="warn">coredns forwarding to unreachable upstream</span></div>
+      <div class="line output">&nbsp; 3. Fix: <span class="hl">edit coredns ConfigMap, forward . 1.1.1.1 8.8.8.8</span></div>
+      <div class="spacer line"></div>
+      <div class="line output">7.5M log lines, 1 root cause, <span class="hl">45 seconds</span></div>
     </div>
   </div>
 
-  <!-- Before/After -->
-  <section class="comparison">
-    <h2>The incident that proves it</h2>
+  <!-- MTTR Comparison -->
+  <section class="comparison" id="comparison">
+    <h2 class="gs-up">The incident that proves it</h2>
     <div class="compare-grid">
-      <div class="compare-card before">
+      <div class="compare-card before gs-left">
         <div class="label">Without Savants</div>
-        <div class="big">47 min</div>
+        <div class="big" id="counter-before">47 min</div>
         <p>Mean time to root cause</p>
         <ul>
           <li>15 separate "pod down" alerts</li>
@@ -177,9 +262,9 @@ import Base from '../layouts/Base.astro';
           <li>Finally find the DNS misconfiguration</li>
         </ul>
       </div>
-      <div class="compare-card after">
+      <div class="compare-card after gs-right">
         <div class="label">With Savants</div>
-        <div class="big">45 sec</div>
+        <div class="big" id="counter-after">45 sec</div>
         <p>Mean time to root cause</p>
         <ul>
           <li>One command: savants up</li>
@@ -192,60 +277,210 @@ import Base from '../layouts/Base.astro';
     </div>
   </section>
 
-  <!-- Features -->
-  <section class="features" id="features">
-    <h2>Six layers. One graph.</h2>
-    <p class="sub">Every layer of your infrastructure, connected by typed edges, queryable in milliseconds.</p>
-    <div class="grid">
-      <div class="card"><span class="tag tag-code">Code</span><h3>Code Property Graph</h3><p>AST-level call graphs, class hierarchies, decorator maps, config keys, string-literal references. Structural understanding, not text search.</p></div>
-      <div class="card"><span class="tag tag-live">Live</span><h3>K8s Cluster State</h3><p>Real-time watch streams with 1.3s propagation. Diff-based ingest skips unchanged resources. Every pod, deployment, service, configmap — live in the graph.</p></div>
-      <div class="card"><span class="tag tag-live">Live</span><h3>Log Intelligence</h3><p>3-tier pipeline: severity classifier, template extraction, graph nodes. 7.5M lines compressed to 78 actionable patterns. No Loki required.</p></div>
-      <div class="card"><span class="tag tag-live">Live</span><h3>Host Monitoring</h3><p>CPU, memory, disk, network, systemd, Docker, kernel events, journal errors. Full host story in 0.9 seconds. Zero agents to install.</p></div>
-      <div class="card"><span class="tag tag-ai">AI-Native</span><h3>26 MCP Tools</h3><p>Works inside Claude Code, Cursor, Windsurf. Ask "what's wrong with my cluster?" and get a graph-grounded answer, not a hallucination.</p></div>
-      <div class="card"><span class="tag tag-ai">AI-Native</span><h3>Cross-Layer Queries</h3><p>"This pod crashed because this configmap was edited, which is read by this code path, changed in this commit by this person." One query.</p></div>
+  <!-- Use Cases -->
+  <section class="use-cases" id="use-cases">
+    <h2 class="gs-up">What you can do today</h2>
+    <p class="sub gs-up">Three commands that change how you work.</p>
+    <div class="uc-grid">
+      <div class="uc-card gs-up">
+        <span class="uc-cmd mono">savants diagnose_error</span>
+        <h3>Trace prod errors to root cause</h3>
+        <div class="uc-stat">86% accuracy</div>
+        <p>Connects stack traces to code paths, recent deploys, config changes, and cluster state. One command replaces an hour of tab-switching.</p>
+      </div>
+      <div class="uc-card gs-up">
+        <span class="uc-cmd mono">savants pr_risk</span>
+        <h3>8-check analysis before human review</h3>
+        <div class="uc-stat">8 checks</div>
+        <p>Coupling violations, blast radius, test coverage gaps, secret exposure, dependency drift, API breakage, config impact, rollback risk.</p>
+      </div>
+      <div class="uc-card gs-up">
+        <span class="uc-cmd mono">savants radar</span>
+        <h3>Your personal what-did-I-miss</h3>
+        <div class="uc-stat">All channels</div>
+        <p>Aggregates Slack threads, Jira updates, Sentry alerts, and deploy events into a single catch-up digest. Never miss context again.</p>
+      </div>
     </div>
+  </section>
+
+  <!-- Data Sources Convergence -->
+  <section class="convergence" id="convergence">
+    <div class="convergence-bg"></div>
+    <h2 class="gs-up">Seven sources. One graph.</h2>
+    <p class="sub gs-up">Every signal your team generates, connected and queryable.</p>
+    <div class="convergence-visual" id="conv-visual">
+      <svg class="conv-lines" id="conv-lines" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid meet">
+        <line id="line-0" x1="300" y1="30" x2="300" y2="200"/>
+        <line id="line-1" x1="520" y1="90" x2="300" y2="200"/>
+        <line id="line-2" x1="540" y1="240" x2="300" y2="200"/>
+        <line id="line-3" x1="440" y1="370" x2="300" y2="200"/>
+        <line id="line-4" x1="160" y1="370" x2="300" y2="200"/>
+        <line id="line-5" x1="60" y1="240" x2="300" y2="200"/>
+        <line id="line-6" x1="80" y1="90" x2="300" y2="200"/>
+      </svg>
+      <div class="source-node" id="src-0" style="left:50%;top:0;transform:translateX(-50%)">
+        <div class="node-circle">&#128187;</div>
+        <span class="node-label">Code</span>
+      </div>
+      <div class="source-node" id="src-1" style="right:5%;top:12%">
+        <div class="node-circle">&#128268;</div>
+        <span class="node-label">Git</span>
+      </div>
+      <div class="source-node" id="src-2" style="right:2%;top:50%;transform:translateY(-50%)">
+        <div class="node-circle">&#128172;</div>
+        <span class="node-label">Slack</span>
+      </div>
+      <div class="source-node" id="src-3" style="right:18%;bottom:0">
+        <div class="node-circle">&#128203;</div>
+        <span class="node-label">Jira</span>
+      </div>
+      <div class="source-node" id="src-4" style="left:18%;bottom:0">
+        <div class="node-circle">&#128680;</div>
+        <span class="node-label">Sentry</span>
+      </div>
+      <div class="source-node" id="src-5" style="left:2%;top:50%;transform:translateY(-50%)">
+        <div class="node-circle">&#9096;</div>
+        <span class="node-label">K8s</span>
+      </div>
+      <div class="source-node" id="src-6" style="left:5%;top:12%">
+        <div class="node-circle">&#9729;</div>
+        <span class="node-label">Cloud</span>
+      </div>
+      <div class="center-node">
+        <div class="node-circle">Graph</div>
+      </div>
+    </div>
+    <p class="convergence-tagline gs-up">One graph. Every layer. <span class="accent">Connected.</span></p>
   </section>
 
   <!-- How it works -->
   <section class="how" id="how">
-    <h2>Three steps. Sixty seconds.</h2>
+    <h2 class="gs-up">Three steps. Sixty seconds.</h2>
     <div class="steps">
-      <div class="step"><div class="num">1</div><h3>Install</h3><p><code class="mono">curl savants.sh | sh</code><br/>Single binary. Zero deps. Works on any Linux box.</p></div>
-      <div class="step"><div class="num">2</div><h3>Auto-detect</h3><p><code class="mono">savants up</code><br/>Finds K8s clusters, Docker, systemd, git repos. No config files.</p></div>
-      <div class="step"><div class="num">3</div><h3>Know</h3><p>Ingests everything, runs log intelligence, tells you what's broken and why. Start to finish: 60 seconds.</p></div>
+      <div class="step gs-up">
+        <div class="num" id="step-1">1</div>
+        <h3>Install</h3>
+        <p><code class="mono">curl savants.sh | sh</code><br/>Single binary. Zero deps. Works on any Linux box.</p>
+      </div>
+      <div class="step gs-up">
+        <div class="num" id="step-2">2</div>
+        <h3>Auto-detect</h3>
+        <p><code class="mono">savants up</code><br/>Finds K8s clusters, Docker, systemd, git repos. No config files.</p>
+      </div>
+      <div class="step gs-up">
+        <div class="num" id="step-3">3</div>
+        <h3>Know</h3>
+        <p>Ingests everything, runs log intelligence, tells you what's broken and why. Start to finish: 60 seconds.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="features" id="features">
+    <h2 class="gs-up">Six layers. One graph.</h2>
+    <p class="sub gs-up">Every layer of your infrastructure, connected by typed edges, queryable in milliseconds.</p>
+    <div class="grid" id="features-grid">
+      <div class="card gs-up"><span class="tag tag-code">Code</span><h3>Code Property Graph</h3><p>AST-level call graphs, class hierarchies, decorator maps, config keys, string-literal references. Structural understanding, not text search.</p></div>
+      <div class="card gs-up"><span class="tag tag-live">Live</span><h3>K8s Cluster State</h3><p>Real-time watch streams with 1.3s propagation. Diff-based ingest skips unchanged resources. Every pod, deployment, service, configmap - live in the graph.</p></div>
+      <div class="card gs-up"><span class="tag tag-live">Live</span><h3>Log Intelligence</h3><p>3-tier pipeline: severity classifier, template extraction, graph nodes. 7.5M lines compressed to 78 actionable patterns. No Loki required.</p></div>
+      <div class="card gs-up"><span class="tag tag-live">Live</span><h3>Host Monitoring</h3><p>CPU, memory, disk, network, systemd, Docker, kernel events, journal errors. Full host story in 0.9 seconds. Zero agents to install.</p></div>
+      <div class="card gs-up"><span class="tag tag-ai">AI-Native</span><h3>30 MCP Tools</h3><p>Works inside Claude Code, Cursor, Windsurf. Ask "what's wrong with my cluster?" and get a graph-grounded answer, not a hallucination.</p></div>
+      <div class="card gs-up"><span class="tag tag-ai">AI-Native</span><h3>Cross-Layer Queries</h3><p>"This pod crashed because this configmap was edited, which is read by this code path, changed in this commit by this person." One query.</p></div>
     </div>
   </section>
 
   <!-- Trust -->
-  <section class="trust">
+  <section class="trust gs-up" id="trust">
     <p>Built for teams that care about reliability</p>
     <div class="badges">
       <div class="badge"><span class="icon">&#128274;</span> No source code ever leaves your machine</div>
       <div class="badge"><span class="icon">&#9889;</span> Sub-second graph queries</div>
       <div class="badge"><span class="icon">&#128640;</span> Free forever for local use</div>
       <div class="badge"><span class="icon">&#128064;</span> Verifiable with a packet capture</div>
+      <div class="badge"><span class="icon">&#128220;</span> Patent Pending</div>
     </div>
   </section>
 
-  <!-- CTA -->
-  <section class="cta">
-    <h2>Stop grepping.<br/>Start knowing.</h2>
+  <!-- Pricing -->
+  <section class="pricing" id="pricing">
+    <h2 class="gs-up">Simple pricing. No per-seat tax.</h2>
+    <p class="sub gs-up">Per cluster, not per developer. Local is free forever.</p>
+    <div class="pricing-grid">
+      <div class="price-card featured gs-up">
+        <div class="tier">Local</div>
+        <div class="price">Free</div>
+        <div class="price-sub">forever, no limits</div>
+        <ul>
+          <li>Unlimited queries</li>
+          <li>30 MCP tools</li>
+          <li>All 7 data sources</li>
+          <li>Single cluster</li>
+          <li>Full graph, no restrictions</li>
+          <li>No account required</li>
+        </ul>
+        <a href="https://savants.sh" class="price-btn primary">Install now</a>
+      </div>
+      <div class="price-card gs-up">
+        <div class="tier">Team</div>
+        <div class="price">$49<span style="font-size:1rem;font-weight:400;color:var(--muted)">/cluster/mo</span></div>
+        <div class="price-sub">billed monthly</div>
+        <ul>
+          <li>Everything in Local</li>
+          <li>Slack alerts and digests</li>
+          <li>CI integration</li>
+          <li>Multi-cluster support</li>
+          <li>30-day retention</li>
+        </ul>
+        <a href="https://savants.cloud" class="price-btn secondary">Coming soon</a>
+      </div>
+      <div class="price-card gs-up">
+        <div class="tier">Business</div>
+        <div class="price">$199<span style="font-size:1rem;font-weight:400;color:var(--muted)">/cluster/mo</span></div>
+        <div class="price-sub">billed monthly</div>
+        <ul>
+          <li>Everything in Team</li>
+          <li>Web dashboard</li>
+          <li>Datadog integration</li>
+          <li>Multi-cluster federation</li>
+          <li>Compliance and audit log</li>
+        </ul>
+        <a href="https://savants.cloud" class="price-btn secondary">Coming soon</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="cta" id="cta">
+    <h2 id="cta-headline">Stop grepping. Start knowing.</h2>
     <p>Free forever for local use. No account required.<br/>Your infrastructure deserves a savant.</p>
-    <a href="https://savants.sh" class="btn">Install Savants</a>
+    <a href="https://savants.sh" class="btn btn-pulse">Install Savants</a>
     <a href="#features" class="btn-ghost">Learn more</a>
   </section>
 
   <footer>
-    <p><a href="https://savants.dev">savants.dev</a> · <a href="https://savants.sh">savants.sh</a> · <a href="https://savants.cloud">savants.cloud</a></p>
+    <p><a href="https://savants.dev">savants.dev</a> &middot; <a href="https://savants.sh">savants.sh</a> &middot; <a href="https://savants.cloud">savants.cloud</a></p>
+    <span class="patent">Patent Pending &middot; &copy; 2026 Savants</span>
   </footer>
 </div>
 
 <script>
+  // Mobile hamburger toggle
+  const hamburger = document.getElementById('hamburger');
+  const navLinks = document.getElementById('nav-links');
+  if (hamburger && navLinks) {
+    hamburger.addEventListener('click', () => {
+      navLinks.classList.toggle('open');
+    });
+    // Close on link click
+    navLinks.querySelectorAll('a').forEach(a => {
+      a.addEventListener('click', () => navLinks.classList.remove('open'));
+    });
+  }
+
   // Copy install command on click
-  const box = document.querySelector('.install-box');
-  const hint = document.querySelector('.copy-hint');
+  const box = document.getElementById('install-box');
+  const hint = document.getElementById('copy-hint');
   if (box && hint) {
-    box.style.cursor = 'pointer';
     box.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText('curl -fsSL savants.sh | sh');
@@ -253,25 +488,6 @@ import Base from '../layouts/Base.astro';
         setTimeout(() => { hint.textContent = 'click to copy'; }, 2000);
       } catch {}
     });
-  }
-
-  // Replay terminal animation when it scrolls into view
-  const term = document.getElementById('term');
-  if (term) {
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) {
-          term.querySelectorAll('.line').forEach(el => {
-            const e = el as HTMLElement;
-            e.style.animation = 'none';
-            e.offsetHeight; // trigger reflow
-            e.style.animation = '';
-          });
-          observer.unobserve(entry.target);
-        }
-      });
-    }, { threshold: 0.3 });
-    observer.observe(term);
   }
 
   // Smooth scroll for anchor links
@@ -282,5 +498,283 @@ import Base from '../layouts/Base.astro';
       if (target) target.scrollIntoView({ behavior: 'smooth' });
     });
   });
+
+  // Wait for GSAP to load (deferred scripts)
+  function initGSAP() {
+    if (typeof gsap === 'undefined' || typeof ScrollTrigger === 'undefined') {
+      setTimeout(initGSAP, 50);
+      return;
+    }
+
+    gsap.registerPlugin(ScrollTrigger);
+
+    // Character splitter utility
+    function splitChars(el: HTMLElement) {
+      el.innerHTML = el.textContent!.split('').map(c =>
+        c === ' ' ? ' ' : '<span class="char">' + c + '</span>'
+      ).join('');
+      return el.querySelectorAll('.char');
+    }
+
+    // Hero headline character reveal
+    const heroH1 = document.getElementById('hero-headline');
+    if (heroH1) {
+      const chars = splitChars(heroH1);
+      gsap.from(chars, {
+        opacity: 0,
+        y: 20,
+        duration: 0.04,
+        stagger: 0.03,
+        ease: 'power2.out',
+        delay: 0.3
+      });
+    }
+
+    // Hero subtitle and install box fade up
+    gsap.utils.toArray('.hero .gs-up').forEach((el: any) => {
+      gsap.to(el, {
+        opacity: 1,
+        y: 0,
+        duration: 0.8,
+        ease: 'power2.out',
+        delay: 1.2
+      });
+    });
+
+    // Terminal animation with ScrollTrigger
+    const termSection = document.getElementById('terminal-section');
+    if (termSection) {
+      gsap.to(termSection, {
+        opacity: 1,
+        y: 0,
+        duration: 0.6,
+        ease: 'power2.out',
+        scrollTrigger: {
+          trigger: termSection,
+          start: 'top 80%',
+          once: true
+        }
+      });
+
+      const lines = document.querySelectorAll('#term .line');
+      lines.forEach((line, i) => {
+        gsap.to(line, {
+          opacity: 1,
+          y: 0,
+          duration: 0.3,
+          delay: i * 0.25,
+          ease: 'power2.out',
+          scrollTrigger: {
+            trigger: termSection,
+            start: 'top 70%',
+            once: true
+          }
+        });
+      });
+    }
+
+    // MTTR comparison cards slide in from sides
+    const beforeCard = document.querySelector('.compare-card.before');
+    const afterCard = document.querySelector('.compare-card.after');
+    if (beforeCard) {
+      gsap.to(beforeCard, {
+        opacity: 1,
+        x: 0,
+        duration: 0.8,
+        ease: 'power2.out',
+        scrollTrigger: { trigger: '.comparison', start: 'top 70%', once: true }
+      });
+    }
+    if (afterCard) {
+      gsap.to(afterCard, {
+        opacity: 1,
+        x: 0,
+        duration: 0.8,
+        ease: 'power2.out',
+        scrollTrigger: { trigger: '.comparison', start: 'top 70%', once: true }
+      });
+    }
+
+    // Counter animations for MTTR numbers
+    const counterBefore = document.getElementById('counter-before');
+    const counterAfter = document.getElementById('counter-after');
+    if (counterBefore) {
+      const proxy = { val: 0 };
+      gsap.to(proxy, {
+        val: 47,
+        duration: 1.5,
+        ease: 'power2.out',
+        snap: { val: 1 },
+        scrollTrigger: { trigger: '.comparison', start: 'top 70%', once: true },
+        onUpdate: () => { counterBefore.textContent = Math.round(proxy.val) + ' min'; }
+      });
+    }
+    if (counterAfter) {
+      const proxy = { val: 0 };
+      gsap.to(proxy, {
+        val: 45,
+        duration: 1.5,
+        ease: 'power2.out',
+        snap: { val: 1 },
+        scrollTrigger: { trigger: '.comparison', start: 'top 70%', once: true },
+        onUpdate: () => { counterAfter.textContent = Math.round(proxy.val) + ' sec'; }
+      });
+    }
+
+    // Comparison heading
+    gsap.utils.toArray('.comparison .gs-up').forEach((el: any) => {
+      gsap.to(el, {
+        opacity: 1, y: 0, duration: 0.6, ease: 'power2.out',
+        scrollTrigger: { trigger: '.comparison', start: 'top 75%', once: true }
+      });
+    });
+
+    // Use Cases cards stagger
+    gsap.utils.toArray('.use-cases .gs-up').forEach((el: any, i: number) => {
+      gsap.to(el, {
+        opacity: 1, y: 0, duration: 0.6, delay: i * 0.15, ease: 'power2.out',
+        scrollTrigger: { trigger: '.use-cases', start: 'top 75%', once: true }
+      });
+    });
+
+    // Convergence section - scrub animation
+    const convVisual = document.getElementById('conv-visual');
+    if (convVisual) {
+      // Animate source nodes converging toward center
+      for (let i = 0; i < 7; i++) {
+        const node = document.getElementById('src-' + i);
+        if (node) {
+          gsap.from(node, {
+            scale: 0.5,
+            opacity: 0,
+            duration: 1,
+            ease: 'power2.out',
+            scrollTrigger: {
+              trigger: '.convergence',
+              start: 'top 80%',
+              end: 'center center',
+              scrub: true,
+              once: true
+            }
+          });
+        }
+      }
+      // Animate SVG lines drawing in
+      for (let i = 0; i < 7; i++) {
+        const line = document.getElementById('line-' + i) as SVGLineElement | null;
+        if (line) {
+          const length = Math.sqrt(
+            Math.pow(parseFloat(line.getAttribute('x2')!) - parseFloat(line.getAttribute('x1')!), 2) +
+            Math.pow(parseFloat(line.getAttribute('y2')!) - parseFloat(line.getAttribute('y1')!), 2)
+          );
+          line.style.strokeDasharray = length + '';
+          line.style.strokeDashoffset = length + '';
+          gsap.to(line, {
+            strokeDashoffset: 0,
+            duration: 1,
+            ease: 'none',
+            scrollTrigger: {
+              trigger: '.convergence',
+              start: 'top 80%',
+              end: 'center center',
+              scrub: true,
+              once: true
+            }
+          });
+        }
+      }
+      // Center node pulse
+      gsap.from('.center-node', {
+        scale: 0,
+        opacity: 0,
+        duration: 0.6,
+        ease: 'back.out(2)',
+        scrollTrigger: {
+          trigger: '.convergence',
+          start: 'center 60%',
+          once: true
+        }
+      });
+    }
+
+    // Convergence text
+    gsap.utils.toArray('.convergence .gs-up').forEach((el: any, i: number) => {
+      gsap.to(el, {
+        opacity: 1, y: 0, duration: 0.6, delay: i * 0.1, ease: 'power2.out',
+        scrollTrigger: { trigger: '.convergence', start: 'top 80%', once: true }
+      });
+    });
+
+    // How it works - step circles bounce
+    ['step-1', 'step-2', 'step-3'].forEach((id, i) => {
+      const el = document.getElementById(id);
+      if (el) {
+        gsap.from(el, {
+          scale: 0,
+          duration: 0.6,
+          delay: i * 0.2,
+          ease: 'bounce.out',
+          scrollTrigger: { trigger: '.how', start: 'top 75%', once: true }
+        });
+      }
+    });
+
+    // How it works text
+    gsap.utils.toArray('.how .gs-up').forEach((el: any, i: number) => {
+      gsap.to(el, {
+        opacity: 1, y: 0, duration: 0.6, delay: i * 0.15, ease: 'power2.out',
+        scrollTrigger: { trigger: '.how', start: 'top 75%', once: true }
+      });
+    });
+
+    // Features grid stagger
+    gsap.utils.toArray('#features-grid .gs-up').forEach((el: any, i: number) => {
+      gsap.to(el, {
+        opacity: 1, y: 0, duration: 0.5, delay: i * 0.1, ease: 'power2.out',
+        scrollTrigger: { trigger: '.features', start: 'top 75%', once: true }
+      });
+    });
+
+    // Features heading
+    gsap.utils.toArray('.features > .gs-up').forEach((el: any) => {
+      gsap.to(el, {
+        opacity: 1, y: 0, duration: 0.6, ease: 'power2.out',
+        scrollTrigger: { trigger: '.features', start: 'top 80%', once: true }
+      });
+    });
+
+    // Trust bar fade in
+    const trustSection = document.getElementById('trust');
+    if (trustSection) {
+      gsap.to(trustSection, {
+        opacity: 1, y: 0, duration: 0.8, ease: 'power2.out',
+        scrollTrigger: { trigger: trustSection, start: 'top 85%', once: true }
+      });
+    }
+
+    // Pricing cards stagger
+    gsap.utils.toArray('.pricing .gs-up').forEach((el: any, i: number) => {
+      gsap.to(el, {
+        opacity: 1, y: 0, duration: 0.6, delay: i * 0.12, ease: 'power2.out',
+        scrollTrigger: { trigger: '.pricing', start: 'top 75%', once: true }
+      });
+    });
+
+    // CTA headline character reveal
+    const ctaH2 = document.getElementById('cta-headline');
+    if (ctaH2) {
+      const chars = splitChars(ctaH2);
+      gsap.from(chars, {
+        opacity: 0,
+        y: 20,
+        duration: 0.04,
+        stagger: 0.03,
+        ease: 'power2.out',
+        scrollTrigger: { trigger: '.cta', start: 'top 75%', once: true }
+      });
+    }
+  }
+
+  initGSAP();
 </script>
 </Base>
