@@ -1,0 +1,30 @@
+{
+  "id": "prod-003",
+  "source": "production",
+  "title": "RipplingPolling service failing to fetch applications",
+  "category": "infrastructure",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "vocator-backend RipplingPolling Failed to fetch applications from the Rippling API endpoint",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/jobs/rippling-polling.ts",
+    "root_cause_function": null,
+    "root_cause_description": "External API polling job failing - auth, network, or rate limit issue with Rippling API",
+    "root_cause_category": "infrastructure",
+    "fix_description": "Check API credentials and rate limits for Rippling integration",
+    "verified_by": "confirmed_by_code_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["rippling", "polling", "infrastructure"],
+    "must_not_mention": ["frontend", "splitClaimedItems"],
+    "must_identify_category": "infrastructure"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-BACKEND-34",
+    "added_date": "2026-04-13",
+    "confidence": "high"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "id": "prod-004",
+  "source": "production",
+  "title": "LLMValidationError - generateAIReview schema validation failure",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "vocator-backend LLMValidationError: generateAIReview LLM output failed schema validation",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/temporal/activities/resume-review.activities.ts",
+    "root_cause_function": "generateAIReview",
+    "root_cause_description": "Validation IS present (validateLLMOutput imported and used). Error is schema mismatch from non-deterministic AI output, not missing validation.",
+    "root_cause_category": "application",
+    "fix_description": "Relax Zod schema or add fallback defaults for optional fields",
+    "verified_by": "confirmed_by_import_chain_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["generateAIReview", "validation", "schema"],
+    "must_not_mention": ["NO VALIDATION", "upstream"],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-BACKEND-21",
+    "added_date": "2026-04-13",
+    "confidence": "high"
+  }
+}

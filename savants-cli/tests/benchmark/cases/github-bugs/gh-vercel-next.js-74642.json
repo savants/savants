@@ -1,0 +1,40 @@
+{
+  "id": "gh-vercel-next.js-74642",
+  "source": "github-bug",
+  "title": "vercel/next.js#74642: CatchAll route next-intl: no default component was found",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "CatchAll route next-intl: no default component was found",
+    "source": "github_issue",
+    "issue_url": "https://github.com/vercel/next.js/issues/74642"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/next/src/client/components/http-access-fallback/error-boundary.tsx",
+    "root_cause_function": null,
+    "root_cause_description": "Fixed in PR #74677 by @ztanner",
+    "root_cause_category": "application",
+    "fix_pr": "#74677",
+    "fix_branch": "01-08-fix_unnecessary_missing_slots_warnings",
+    "files_changed": 5,
+    "additions": 6,
+    "deletions": 7
+  },
+  "expected_signals": {
+    "must_mention": [
+      "packages",
+      "next",
+      "client",
+      "components"
+    ],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "vercel/next.js",
+    "issue_number": 74642,
+    "pr_number": 74677,
+    "harvested_date": "2026-04-15",
+    "confidence": "medium"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "id": "prod-001",
+  "source": "production",
+  "title": "TypeError t.split - ResumeIntegrityDialog frontend crash",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "Auto-investigation VOCATOR-FRONTEND-3X: The variable t is undefined when the split method is called in ResumeIntegrityDialog splitClaimedItems",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/services/identity-verification.ts",
+    "root_cause_function": "performIdentityVerification",
+    "root_cause_description": "Backend stores unvalidated AI response to database. identity-verification.ts does not import validateLLMOutput.",
+    "root_cause_category": "application",
+    "fix_description": "Add validateLLMOutput to identity-verification.ts",
+    "verified_by": "confirmed_by_code_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["identity-verification", "validation", "upstream", "backend"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-FRONTEND-3X",
+    "added_date": "2026-04-13",
+    "confidence": "high"
+  }
+}

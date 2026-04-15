@@ -1,0 +1,30 @@
+{
+  "id": "prod-005",
+  "source": "production",
+  "title": "LLMParseError - generateInteractiveResume invalid JSON",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "vocator-backend LLMParseError: generateInteractiveResume Invalid JSON in LLM response",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/temporal/activities/screening-completion.activities.ts",
+    "root_cause_function": "generateInteractiveResume",
+    "root_cause_description": "Validation exists. AI model returns non-JSON output intermittently. Schema mismatch, not code bug.",
+    "root_cause_category": "application",
+    "fix_description": "Schema mismatch from AI non-determinism. Retry or add JSON repair.",
+    "verified_by": "confirmed_by_import_chain_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["generateInteractiveResume", "schema"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-BACKEND-2X",
+    "added_date": "2026-04-13",
+    "confidence": "high"
+  }
+}
