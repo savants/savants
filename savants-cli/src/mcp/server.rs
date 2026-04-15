@@ -18,6 +18,19 @@ pub struct McpServer {
 impl McpServer {
     pub fn new(graph_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = GraphClient::new(graph_name)?;
+
+        // Auto-index the current working directory if it's a git repo
+        if let Ok(cwd) = std::env::current_dir() {
+            if cwd.join(".git").exists() {
+                let repo_name = cwd.file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let indexer = crate::code_index::CodeIndexer::new(client.clone(), &repo_name);
+                let stats = indexer.index_repo(&cwd.to_string_lossy());
+                eprintln!("Auto-indexed {}: {}", repo_name, stats.summary());
+            }
+        }
+
         Ok(Self { client })
     }
 
