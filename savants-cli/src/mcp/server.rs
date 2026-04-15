@@ -3071,6 +3071,38 @@ impl McpServer {
                 }
             }
 
+            // Step 8b: Test coverage check
+            let test_patterns = [".test.", ".spec.", "__test__", "__tests__"];
+            let has_tests = if let Ok(test_rows) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (f:CodeFile {{repo: '{}'}}) WHERE {} RETURN f.path LIMIT 1",
+                    repo,
+                    test_patterns.iter()
+                        .map(|p| format!("f.path CONTAINS '{}'", p))
+                        .collect::<Vec<_>>()
+                        .join(" OR ")
+                ),
+                &[],
+            ) {
+                // Check if there's a test file matching the affected source file
+                let source_stem = func_file.replace(".ts", "").replace(".tsx", "").replace(".js", "").replace(".py", "");
+                let source_name = source_stem.split('/').last().unwrap_or("");
+                let matching_test = test_rows.iter().any(|row| {
+                    let test_path = row.get(0).map(|v| v.as_str()).unwrap_or("");
+                    test_path.contains(source_name)
+                });
+                if !matching_test && !source_name.is_empty() {
+                    output.push(String::new());
+                    output.push(format!("  WARNING: No test file found matching {}", func_file));
+                    output.push("  This function lacks test coverage, which may have allowed the bug to ship.".to_string());
+                    output.push(format!("  Recommended: add tests for the null/undefined input case in {}.test.ts", source_name));
+                }
+                matching_test
+            } else {
+                false
+            };
+
             // Step 9: Who has context on this code?
             output.push(String::new());
             output.push("Step 9 — Who has context:".to_string());

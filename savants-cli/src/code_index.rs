@@ -160,7 +160,7 @@ impl CodeIndexer {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = name_node.utf8_text(source).unwrap_or("").to_string();
                     let body_text = node.utf8_text(source).unwrap_or("");
-                    let body: String = body_text.chars().take(500).collect();
+                    let body: String = body_text.chars().take(2000).collect();
                     let params = self.extract_params(&node, source);
 
                     entities.push(CodeEntity {
@@ -186,7 +186,7 @@ impl CodeIndexer {
                             if value_node.kind() == "arrow_function" {
                                 let name = name_node.utf8_text(source).unwrap_or("").to_string();
                                 let body_text = value_node.utf8_text(source).unwrap_or("");
-                                let body: String = body_text.chars().take(500).collect();
+                                let body: String = body_text.chars().take(2000).collect();
                                 let params = self.extract_params(&value_node, source);
 
                                 entities.push(CodeEntity {
@@ -218,6 +218,27 @@ impl CodeIndexer {
                         line: node.start_position().row + 1,
                         end_line: node.end_position().row + 1,
                         body: String::new(),
+                        params: vec![],
+                        import_source: String::new(),
+                        import_names: vec![],
+                    });
+                }
+            }
+
+            // TypeScript interfaces and type aliases
+            "interface_declaration" | "type_alias_declaration" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source).unwrap_or("").to_string();
+                    let body_text = node.utf8_text(source).unwrap_or("");
+                    let body: String = body_text.chars().take(2000).collect();
+
+                    entities.push(CodeEntity {
+                        kind: "interface".to_string(),
+                        name,
+                        file: file.to_string(),
+                        line: node.start_position().row + 1,
+                        end_line: node.end_position().row + 1,
+                        body,
                         params: vec![],
                         import_source: String::new(),
                         import_names: vec![],
@@ -356,6 +377,30 @@ impl CodeIndexer {
                              SET c.line = {}, c.end_line = {}",
                             esc(&self.repo_name), esc(&e.file), esc(&e.name),
                             e.line, e.end_line,
+                        ),
+                        &[],
+                    );
+                }
+                "interface" => {
+                    stats.classes += 1; // count interfaces with classes
+                    let _ = self.graph.query(
+                        &format!(
+                            "MERGE (i:CodeInterface {{repo: '{}', file: '{}', name: '{}'}}) \
+                             SET i.line = {}, i.end_line = {}, i.body = '{}'",
+                            esc(&self.repo_name), esc(&e.file), esc(&e.name),
+                            e.line, e.end_line, esc(&e.body),
+                        ),
+                        &[],
+                    );
+
+                    // File contains interface edge
+                    let _ = self.graph.query(
+                        &format!(
+                            "MERGE (fi:CodeFile {{repo: '{}', path: '{}'}}) \
+                             MERGE (i:CodeInterface {{repo: '{}', file: '{}', name: '{}'}}) \
+                             MERGE (fi)-[:CONTAINS]->(i)",
+                            esc(&self.repo_name), esc(&e.file),
+                            esc(&self.repo_name), esc(&e.file), esc(&e.name),
                         ),
                         &[],
                     );
