@@ -522,49 +522,50 @@ import Base from '../layouts/Base.astro';
 
 <!-- Pricing - Full width -->
 <section class="pricing" id="pricing">
-  <h2 class="gs-up">Simple pricing. No per-seat tax.</h2>
-  <p class="sub gs-up">Pay per resources under management, not per developer. Local is free forever.</p>
+  <h2 class="gs-up">One product. Grows with your team.</h2>
+  <p class="sub gs-up">Everyone starts free on the cloud. No separate tiers, no migrations. When your team grows, the bill starts.</p>
   <div class="pricing-grid">
-    <div class="price-card featured gs-up" id="price-local">
-      <div class="tier">Local</div>
-      <div class="price" id="price-local-num">Free</div>
-      <div class="price-sub">Unlimited. Forever.</div>
+    <div class="price-card featured gs-up" id="price-free">
+      <div class="tier">Free</div>
+      <div class="price" id="price-free-num">$0</div>
+      <div class="price-sub">up to 10K resources. No card required.</div>
       <ul>
         <li>All 30 MCP tools</li>
-        <li>Full code + K8s + logs + host analysis</li>
-        <li>Single cluster with 24h retention</li>
-        <li>No signup required</li>
-        <li>No data leaves your machine</li>
+        <li>Full code + K8s + logs + host + Slack + Sentry analysis</li>
+        <li>Cloud sync and team sharing included</li>
+        <li>7-day retention</li>
+        <li>20 diagnoses/day, 10 radar scans/day</li>
+        <li>2 concurrent MCP connections</li>
       </ul>
       <a href="https://savants.sh" class="price-btn primary">Install now</a>
     </div>
-    <div class="price-card gs-up" id="price-cloud">
-      <div class="tier">Cloud</div>
-      <div class="price" id="price-cloud-num">$50<span style="font-size:1rem;font-weight:400;color:var(--muted)">/mo</span></div>
-      <div class="price-sub">per 1,000 resources/mo</div>
+    <div class="price-card gs-up" id="price-team">
+      <div class="tier">Team</div>
+      <div class="price" id="price-team-num">$50<span style="font-size:1rem;font-weight:400;color:var(--muted)">/mo</span></div>
+      <div class="price-sub">per 1,000 resources under management</div>
       <ul>
-        <li>Everything in Local</li>
-        <li>Cross-cluster unified view</li>
-        <li>Team shared graphs</li>
+        <li>Everything in Free</li>
+        <li>Unlimited diagnoses and radar scans</li>
+        <li>Unlimited concurrent MCP connections</li>
+        <li>Real-time sync for CI pipelines</li>
         <li>30-day retention</li>
-        <li>Unlimited queries and users</li>
-        <li>10K resources free forever</li>
+        <li>Unlimited users, unlimited queries</li>
       </ul>
       <a href="https://savants.cloud" class="price-btn secondary">Coming soon</a>
     </div>
     <div class="price-card gs-up" id="price-enterprise">
       <div class="tier">Enterprise</div>
       <div class="price" id="price-ent-num">Custom</div>
-      <div class="price-sub">for large teams</div>
+      <div class="price-sub">for organizations with compliance needs</div>
       <ul>
-        <li>Everything in Cloud</li>
+        <li>Everything in Team</li>
         <li>SSO + RBAC + audit logs</li>
         <li>Compliance reporting (SOC2/HIPAA)</li>
         <li>Priority SLA (15-min response)</li>
-        <li>Extended 1-year retention</li>
+        <li>1-year retention</li>
         <li>Dedicated support engineer</li>
       </ul>
-      <a href="mailto:sales@savants.dev" class="price-btn secondary">Contact us</a>
+      <a href="mailto:hello@savants.dev" class="price-btn secondary">Contact us</a>
     </div>
   </div>
 </section>
