@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-credentials
+  namespace: chaos-test
+stringData:
+  password: "test123"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: missing-env
+  namespace: chaos-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: missing-env
+  template:
+    metadata:
+      labels:
+        app: missing-env
+    spec:
+      containers:
+        - name: app
+          image: node:20-slim
+          command: ["node", "-e", "if (!process.env.DATABASE_URL) { console.error('FATAL: DATABASE_URL is required'); process.exit(1); }"]
+          resources:
+            limits:
+              memory: "64Mi"
+              cpu: "100m"

@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: chaos-test
+data:
+  config.yaml: |
+    database:
+      host: localhost
+      port: 5432
+      name: myapp
+    cache:
+      enabled: true
+      ttl: [invalid yaml here
+      redis_url: redis://localhost
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bad-config
+  namespace: chaos-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bad-config
+  template:
+    metadata:
+      labels:
+        app: bad-config
+    spec:
+      containers:
+        - name: app
+          image: python:3.11-slim
+          command: ["python3", "-c", "import yaml; config = yaml.safe_load(open('/etc/config/config.yaml')); print('Config loaded:', config)"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/config
+          resources:
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+      volumes:
+        - name: config
+          configMap:
+            name: app-config

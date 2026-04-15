@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-throttle
+  namespace: chaos-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cpu-throttle
+  template:
+    metadata:
+      labels:
+        app: cpu-throttle
+    spec:
+      containers:
+        - name: cpu-burner
+          image: python:3.11-slim
+          command: ["python3", "-c", "import hashlib; [hashlib.sha256(str(i).encode()).hexdigest() for i in range(10**8)]"]
+          resources:
+            requests:
+              cpu: "10m"
+            limits:
+              cpu: "10m"
+              memory: "64Mi"
