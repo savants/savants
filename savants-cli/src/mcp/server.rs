@@ -417,7 +417,7 @@ impl McpServer {
                 }
             },
             {
-                "name": "pr_risk",
+                "name": "pr-risk",
                 "description": "Analyze open PRs for risk: removed null guards, schema changes, deleted files, co-change gaps, blast radius, high-churn functions, unanswered Slack questions, Jira mismatches, and known prod errors.",
                 "inputSchema": {
                     "type": "object",
@@ -427,7 +427,7 @@ impl McpServer {
                 }
             },
             {
-                "name": "diagnose_error",
+                "name": "diagnose-error",
                 "description": "Deep diagnosis of a production error. Traces upstream through the call chain to find the root cause. Cross-references with Slack discussions, Jira tickets, git history, and Sentry. Returns confidence score and blind spots.",
                 "inputSchema": {
                     "type": "object",
@@ -490,8 +490,8 @@ impl McpServer {
             "query" => self.tool_saql_query(&args),
             "advanced_graph_query" => self.tool_advanced_graph_query(&args),  // hidden, not in tool list
             "reindex" => self.tool_reindex(&args),
-            "pr_risk" => self.tool_pr_risk(&args),
-            "diagnose_error" => self.tool_diagnose_error(&args),
+            "pr-risk" | "pr_risk" => self.tool_pr_risk(&args),
+            "diagnose-error" | "diagnose_error" => self.tool_diagnose_error(&args),
             "radar" => self.tool_radar(&args),
             _ => Err(format!("Unknown tool: {}", tool_name)),
         };
