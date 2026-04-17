@@ -46,7 +46,7 @@ pub async fn run_query(
         g.clone()
     } else {
         sqlx::query_scalar::<_, String>(
-            "SELECT falkordb_graph FROM graph_scopes WHERE org_id = $1 ORDER BY created_at LIMIT 1"
+            "SELECT falkordb_graph_name FROM graph_scopes WHERE org_id = $1 ORDER BY created_at LIMIT 1"
         )
         .bind(auth.org_id)
         .fetch_optional(&state.db)

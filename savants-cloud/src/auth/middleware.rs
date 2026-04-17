@@ -82,8 +82,8 @@ impl AuthUser {
         // Look up by prefix (first 12 chars) then verify hash
         let prefix = &token[..std::cmp::min(12, token.len())];
 
-        let row = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String)>(
-            "SELECT id, org_id, user_id, key_hash FROM api_keys WHERE prefix = $1"
+        let row = sqlx::query_as::<_, (Uuid, Uuid, String)>(
+            "SELECT id, org_id, key_hash FROM api_keys WHERE key_prefix = $1"
         )
         .bind(prefix)
         .fetch_optional(&state.db)
@@ -91,7 +91,7 @@ impl AuthUser {
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-        let (_key_id, org_id, user_id, key_hash) = row;
+        let (_key_id, org_id, key_hash) = row;
 
         // Verify the full key against the stored hash
         bcrypt::verify(token, &key_hash)
@@ -100,12 +100,13 @@ impl AuthUser {
             .ok_or(StatusCode::UNAUTHORIZED)?;
 
         // Update last_used_at
-        let _ = sqlx::query("UPDATE api_keys SET last_used_at = now() WHERE prefix = $1")
+        let _ = sqlx::query("UPDATE api_keys SET last_used_at = now() WHERE key_prefix = $1")
             .bind(prefix)
             .execute(&state.db)
             .await;
 
-        Ok(AuthUser { user_id, org_id, auth_method: AuthMethod::ApiKey })
+        // API keys don't have a user_id column, use nil UUID
+        Ok(AuthUser { user_id: Uuid::nil(), org_id, auth_method: AuthMethod::ApiKey })
     }
 
     async fn auth_agent_key(
