@@ -298,13 +298,22 @@ async fn main() {
             DaemonAction::Run => commands::daemon::run().await,
         },
         Commands::Serve => {
-            let state = config::State::load();
-            let graph_name = state.graph_name();
-            match mcp::McpServer::new(&graph_name) {
-                Ok(server) => server.run(),
-                Err(e) => {
-                    eprintln!("{}: failed to start MCP server: {}", "Error".red(), e);
-                    std::process::exit(1);
+            // Cloud proxy mode: if SAVANTS_CLOUD_URL is set, proxy all tool
+            // calls to the cloud API instead of needing local FalkorDB.
+            if let Ok(cloud_url) = std::env::var("SAVANTS_CLOUD_URL") {
+                let api_key = std::env::var("SAVANTS_API_KEY").unwrap_or_default();
+                let proxy = mcp::CloudProxyServer::new(&cloud_url, &api_key);
+                proxy.run();
+            } else {
+                // Local mode: connect directly to FalkorDB
+                let state = config::State::load();
+                let graph_name = state.graph_name();
+                match mcp::McpServer::new(&graph_name) {
+                    Ok(server) => server.run(),
+                    Err(e) => {
+                        eprintln!("{}: failed to start MCP server: {}", "Error".red(), e);
+                        std::process::exit(1);
+                    }
                 }
             }
         }
