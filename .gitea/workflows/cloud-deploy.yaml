@@ -2,7 +2,7 @@ name: Deploy savants-cloud
 
 on:
   push:
-    branches: [master, main]
+    branches: [main]
     paths:
       - 'savants-cloud/**'
   workflow_dispatch:
