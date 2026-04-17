@@ -65,6 +65,9 @@ async fn main() {
         .route("/auth/device/token", post(auth::device::poll_token))
         .route("/auth/callback/google", get(auth::oauth::google_callback))
         .route("/auth/callback/github", get(auth::oauth::github_callback))
+        // Tools (the core API - metered PAYG endpoints)
+        .route("/api/v1/tools", get(api::v1::tools::list_tools))
+        .route("/api/v1/tools/call", post(api::v1::tools::call_tool))
         // Ingest
         .route("/api/v1/ingest/delta", post(api::v1::ingest::push_delta))
         // Query
@@ -77,7 +80,10 @@ async fn main() {
         // Billing
         .route("/api/v1/billing", get(billing::get_billing))
         .route("/api/v1/billing/checkout", post(billing::create_checkout))
+        // Webhooks
         .route("/webhooks/stripe", post(billing::stripe_webhook))
+        .route("/webhooks/slack", post(api::v1::webhooks::slack::handle_event))
+        .route("/webhooks/github", post(api::v1::webhooks::github::handle_event))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

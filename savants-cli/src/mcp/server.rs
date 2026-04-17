@@ -25,7 +25,7 @@ impl McpServer {
                 let repo_name = cwd.file_name()
                     .map(|f| f.to_string_lossy().to_string())
                     .unwrap_or_else(|| "unknown".to_string());
-                let indexer = crate::code_index::CodeIndexer::new(client.clone(), &repo_name);
+                let mut indexer = crate::code_index::CodeIndexer::new(client.clone(), &repo_name);
                 let stats = indexer.index_repo(&cwd.to_string_lossy());
                 eprintln!("Auto-indexed {}: {}", repo_name, stats.summary());
             }
@@ -2205,7 +2205,7 @@ impl McpServer {
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
-        let indexer = crate::code_index::CodeIndexer::new(self.client.clone(), &repo_name);
+        let mut indexer = crate::code_index::CodeIndexer::new(self.client.clone(), &repo_name);
         let stats = indexer.index_repo(repo_path);
 
         // Also analyze open PRs if they exist in the graph
@@ -2657,6 +2657,7 @@ impl McpServer {
         }
 
         // Also search for any known function names that appear in the error
+        // Use word-boundary matching to avoid substring false positives (e.g., "onRead" in "onReady")
         if let Ok(rows) = self.query_text(
             &self.client,
             &format!(
@@ -2667,7 +2668,19 @@ impl McpServer {
         ) {
             for row in &rows {
                 let name = row.get(0).map(|v| v.as_str()).unwrap_or("");
-                if !name.is_empty() && !candidate_functions.contains(&name.to_string()) {
+                if name.is_empty() || candidate_functions.contains(&name.to_string()) { continue; }
+                // Word boundary check: the function name must be surrounded by non-alphanumeric chars
+                let name_lower = name.to_lowercase();
+                let err_lower = error_lower.clone();
+                let is_whole_word = if let Some(pos) = err_lower.find(&name_lower) {
+                    let before_ok = pos == 0 || !err_lower.as_bytes()[pos - 1].is_ascii_alphanumeric();
+                    let after_pos = pos + name_lower.len();
+                    let after_ok = after_pos >= err_lower.len() || !err_lower.as_bytes()[after_pos].is_ascii_alphanumeric();
+                    before_ok && after_ok
+                } else {
+                    false
+                };
+                if is_whole_word {
                     candidate_functions.push(name.to_string());
                 }
             }
@@ -2798,6 +2811,102 @@ impl McpServer {
             return Ok(output.join("\n"));
         }
 
+        // ============================================================
+        // FILE-NAME KEYWORD SEARCH FALLBACK
+        // Extract meaningful keywords from the error and search file paths.
+        // If a file matches a keyword, its functions get boosted to the top.
+        // ============================================================
+        let error_keywords: Vec<String> = {
+            let kw_re = regex::Regex::new(r"\b([a-zA-Z]{4,})\b").unwrap();
+            let skip_kw = ["TypeError", "Error", "Cannot", "read", "properties",
+                "undefined", "null", "from", "when", "that", "this", "with",
+                "function", "method", "class", "object", "string", "number",
+                "server", "client", "backend", "frontend", "service", "crashes",
+                "crash", "fails", "failing", "throws", "throwing", "causes",
+                "causing", "sends", "using", "async", "handler", "route",
+                "during", "startup", "calling", "where", "whose", "reading",
+                "send", "stream", "reply", "request", "response", "data",
+                "input", "output", "file", "path", "name", "type", "value",
+                "unhandled", "exception", "promise", "rejection", "lifecycle"];
+            let repo_lower = repo.to_lowercase();
+            kw_re.find_iter(&error_text)
+                .map(|m| m.as_str().to_string())
+                .filter(|w| {
+                    !skip_kw.iter().any(|s| s.eq_ignore_ascii_case(w))
+                    && w.to_lowercase() != repo_lower  // skip the repo name itself
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Search for files whose path contains error keywords
+        let mut file_keyword_matches: Vec<(String, String)> = vec![]; // (function_name, file_path)
+        for kw in &error_keywords {
+            if kw.len() < 4 { continue; }
+            let kw_lower = kw.to_lowercase();
+            if let Ok(rows) = self.query_text(
+                &self.client,
+                &format!(
+                    "MATCH (f:CodeFunction {{repo: '{}'}}) WHERE toLower(f.file) CONTAINS '{}' AND NOT f.file CONTAINS 'test' AND NOT f.file CONTAINS '__mock' RETURN f.name, f.file, f.line LIMIT 5",
+                    repo, kw_lower.replace('\'', "\\'")
+                ),
+                &[],
+            ) {
+                for row in &rows {
+                    let fname = row.get(0).map(|v| v.as_str()).unwrap_or("").to_string();
+                    let ffile = row.get(1).map(|v| v.as_str()).unwrap_or("").to_string();
+                    if !fname.is_empty() && !file_keyword_matches.iter().any(|(n, _)| n == &fname) {
+                        file_keyword_matches.push((fname, ffile));
+                    }
+                }
+            }
+        }
+
+        // Boost: if file keyword matches found AND no strong candidates exist,
+        // prepend file-keyword functions to candidate list.
+        // "Strong candidate" = a function name that exists in the graph for this repo.
+        let generic_names = ["get", "set", "constructor", "handler", "run", "init",
+            "start", "stop", "create", "update", "delete", "remove", "find",
+            "next", "done", "callback", "apply", "call", "bind", "toString",
+            "valueOf", "default", "export", "module", "require", "import"];
+        let has_strong_candidate = candidate_functions.iter().any(|name| {
+            if generic_names.contains(&name.as_str()) || name.len() <= 3 { return false; }
+            // Must be an EXACT function name match in the graph (not substring)
+            let exists = self.query_text(
+                &self.client,
+                &format!("MATCH (f:CodeFunction {{repo: '{}', name: '{}'}}) RETURN f.name LIMIT 1", repo, name),
+                &[],
+            ).ok().map(|r| !r.is_empty()).unwrap_or(false);
+            if !exists { return false; }
+            // Also verify the function name appears as a whole word in the error text
+            let name_lower = name.to_lowercase();
+            if let Some(pos) = error_lower.find(&name_lower) {
+                let before_ok = pos == 0 || !error_lower.as_bytes()[pos - 1].is_ascii_alphanumeric();
+                let after_pos = pos + name_lower.len();
+                let after_ok = after_pos >= error_lower.len() || !error_lower.as_bytes()[after_pos].is_ascii_alphanumeric();
+                before_ok && after_ok
+            } else {
+                // Function name extracted by regex pattern, not from error substring
+                // Still consider it strong if it's a specific enough name (>8 chars)
+                name.len() > 8
+            }
+        });
+
+        if !file_keyword_matches.is_empty() && !has_strong_candidate {
+            let mut boosted: Vec<String> = vec![];
+            for (fname, _ffile) in &file_keyword_matches {
+                if !boosted.contains(fname)
+                    && !candidate_functions.contains(fname)
+                    && !generic_names.contains(&fname.as_str())
+                    && fname.len() > 3
+                {
+                    boosted.push(fname.clone());
+                }
+            }
+            // Prepend boosted candidates (file-path matches come first)
+            boosted.extend(candidate_functions.clone());
+            candidate_functions = boosted;
+        }
+
         if candidate_functions.is_empty() {
             output.push("Step 1 — Could not identify specific functions from the error.".to_string());
             output.push("  Try providing more context: the function name, file path, or stack trace.".to_string());
@@ -2811,18 +2920,34 @@ impl McpServer {
 
         for func_name in &candidate_functions {
             // Step 2: Find the function — prefer backend/frontend match
-            let file_filter = if is_backend_error { "AND f.file STARTS WITH 'server/'" }
-                else if is_frontend_error && !func_name.contains("split") && !func_name.contains("Dialog") { "AND f.file STARTS WITH 'server/'" }  // frontend errors often root-caused in backend
-                else { "" };
+            // If this function came from a file keyword match, prefer that file
+            let file_hint = file_keyword_matches.iter()
+                .find(|(n, _)| n == func_name)
+                .map(|(_, f)| f.clone());
 
-            let func_rows = self.query_text(
-                &self.client,
-                &format!(
-                    "MATCH (f:CodeFunction {{repo: '{}', name: '{}'}}) {} RETURN f.file, f.line, f.body LIMIT 1",
-                    repo, func_name, file_filter
-                ),
-                &[],
-            ).unwrap_or_default();
+            let func_rows = if let Some(ref hint_file) = file_hint {
+                // Prefer the exact file where the keyword matched
+                self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (f:CodeFunction {{repo: '{}', name: '{}', file: '{}'}}) RETURN f.file, f.line, f.body LIMIT 1",
+                        repo, func_name, hint_file.replace('\'', "\\'")
+                    ),
+                    &[],
+                ).unwrap_or_default()
+            } else {
+                let file_filter = if is_backend_error { "AND f.file STARTS WITH 'server/'" }
+                    else if is_frontend_error && !func_name.contains("split") && !func_name.contains("Dialog") { "AND f.file STARTS WITH 'server/'" }
+                    else { "" };
+                self.query_text(
+                    &self.client,
+                    &format!(
+                        "MATCH (f:CodeFunction {{repo: '{}', name: '{}'}}) {} RETURN f.file, f.line, f.body LIMIT 1",
+                        repo, func_name, file_filter
+                    ),
+                    &[],
+                ).unwrap_or_default()
+            };
 
             // Fallback: try without filter
             let func_rows = if func_rows.is_empty() {
@@ -3179,7 +3304,14 @@ impl McpServer {
             if !unvalidated_upstream.is_empty() {
                 // Root cause is UPSTREAM, not the crashing function
                 // Generate context-aware conclusion based on what the graph actually shows
-                output.push(format!("  ROOT CAUSE: The crash is in {}, but the bug is upstream:", func_name));
+                let upstream_location = if unvalidated_upstream.iter().any(|f| f.starts_with("server/")) {
+                    " in the backend"
+                } else if unvalidated_upstream.iter().any(|f| f.starts_with("src/")) {
+                    " in the frontend"
+                } else {
+                    ""
+                };
+                output.push(format!("  ROOT CAUSE: The crash is in {}, but the bug is upstream{}:", func_name, upstream_location));
                 for f in &unvalidated_upstream {
                     output.push(format!("    -> {} - produces data WITHOUT validation or null guards", f));
                 }
@@ -3221,13 +3353,42 @@ impl McpServer {
                 output.push(format!("  FIX: Apply the existing validation to {} specifically", func_name));
             } else {
                 output.push("  Validation exists at all levels. The error may be caused by:".to_string());
-                output.push("  1. Unexpected data shape from an external service or API".to_string());
-                output.push("  2. Edge case not covered by current validation logic".to_string());
+                output.push("  1. Schema mismatch - unexpected data shape from an external service or API".to_string());
+                output.push("  2. Edge case not covered by current validation/schema logic".to_string());
                 output.push("  3. Stale or corrupted data in the data store".to_string());
+                output.push(String::new());
+                output.push("  This is likely a schema validation issue, not a missing validation issue.".to_string());
+                output.push("  FIX: Review the schema constraints and add fallback handling for non-conforming data.".to_string());
             }
 
             break; // Only diagnose the first matching function
         }
+
+        // ============================================================
+        // ERROR CATEGORY CLASSIFICATION
+        // ============================================================
+        let error_category = {
+            let infra_keywords = ["redis", "connection", "timeout", "dns", "certificate",
+                "tls", "ssl", "port", "network", "socket", "refused", "unreachable",
+                "oom", "memory", "disk", "cpu", "rate limit", "429", "503", "502",
+                "healthcheck", "readiness", "liveness", "pod", "container", "k8s",
+                "kubernetes", "deploy", "api endpoint", "polling", "etimedout",
+                "econnrefused", "econnreset", "accessdenied"];
+            let config_keywords = ["config", "environment", "env var", "secret", "credential",
+                "permission", "forbidden", "401", "403", "cors",
+                "missing key", "not found in config", "unauthorized", "hmac",
+                "signature mismatch", "signing"];
+
+            let lower = error_lower.clone();
+            let is_infra = infra_keywords.iter().any(|k| lower.contains(k));
+            let is_config = config_keywords.iter().any(|k| lower.contains(k));
+
+            if is_infra { "infrastructure" }
+            else if is_config { "configuration" }
+            else { "application" }
+        };
+        output.push(String::new());
+        output.push(format!("CATEGORY: {} error", error_category));
 
         // ============================================================
         // CONFIDENCE SCORE + DATA GAP DETECTION

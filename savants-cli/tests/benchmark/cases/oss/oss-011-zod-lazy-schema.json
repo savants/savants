@@ -1,0 +1,31 @@
+{
+  "id": "oss-011",
+  "source": "github-bug",
+  "title": "Zod #5371: TypeError when creating self-referencing lazy schemas",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "zod TypeError: Cannot read properties of undefined in $ZodLazy innerType when creating a self-referencing lazy schema with z.lazy",
+    "source": "github_issue",
+    "issue_url": "https://github.com/colinhacks/zod/pull/5371"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/zod/src/v4/core/schemas.ts",
+    "root_cause_function": null,
+    "root_cause_description": "Missing optional chaining for innerType in $ZodLazy. When a lazy schema self-references, innerType is undefined during initial construction.",
+    "root_cause_category": "application",
+    "fix_pr": "#5371",
+    "fix_description": "Add optional chaining for innerType access in $ZodLazy"
+  },
+  "expected_signals": {
+    "must_mention": ["schemas", "lazy"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "zod",
+    "pr_number": 5371,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

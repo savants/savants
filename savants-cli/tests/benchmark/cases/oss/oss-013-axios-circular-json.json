@@ -1,0 +1,30 @@
+{
+  "id": "oss-013",
+  "source": "github-bug",
+  "title": "Axios #7421: RangeError Maximum call stack when JSON.stringify on AxiosError with circular ref",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "axios RangeError: Maximum call stack size exceeded when calling JSON.stringify on AxiosError toJSON with circular reference from cancelToken",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "lib/core/AxiosError.js",
+    "root_cause_function": "toJSON",
+    "root_cause_description": "AxiosError.toJSON includes config which references back to the error via cancelToken.reason, creating a circular reference that crashes JSON.stringify.",
+    "root_cause_category": "application",
+    "fix_pr": "#7421",
+    "fix_description": "Break circular reference in toJSON by excluding self-referencing properties"
+  },
+  "expected_signals": {
+    "must_mention": ["AxiosError", "toJSON"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "axios",
+    "pr_number": 7421,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

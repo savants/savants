@@ -1,0 +1,32 @@
+{
+  "id": "oss-007",
+  "source": "github-bug",
+  "title": "Express #6462: logError loses Error.cause and async stack traces",
+  "category": "application",
+  "difficulty": "easy",
+  "error_signal": {
+    "message": "express Error: logerror in application.js loses Error.cause, async stack traces, and custom properties when logging with err.stack or err.toString()",
+    "source": "github_issue",
+    "issue_url": "https://github.com/expressjs/express/issues/6462"
+  },
+  "ground_truth": {
+    "root_cause_file": "lib/application.js",
+    "root_cause_function": "logerror",
+    "root_cause_description": "logerror uses console.error(err.stack || err.toString()) which strips Error.cause, async stack traces, and custom error properties like Sequelize's parent/original.",
+    "root_cause_category": "application",
+    "fix_pr": "#7129",
+    "fix_description": "Change to console.error(err) to preserve all error details"
+  },
+  "expected_signals": {
+    "must_mention": ["logerror", "application"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "express",
+    "issue_number": 6462,
+    "pr_number": 7129,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

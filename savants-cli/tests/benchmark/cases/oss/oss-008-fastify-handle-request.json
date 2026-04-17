@@ -1,0 +1,28 @@
+{
+  "id": "oss-008",
+  "source": "github-bug",
+  "title": "Fastify: preValidationCallback fails when validation hook modifies request before handler",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "fastify TypeError: Cannot read properties of undefined (reading 'method') in handleRequest preValidationCallback when request is modified by preValidation hook",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "lib/handle-request.js",
+    "root_cause_function": "preValidationCallback",
+    "root_cause_description": "preValidationCallback in handle-request.js does not guard against mutations to the request object made by preValidation hooks before the handler runs.",
+    "root_cause_category": "application",
+    "fix_description": "Add null guard in preValidationCallback before accessing request properties"
+  },
+  "expected_signals": {
+    "must_mention": ["handle-request", "preValidation"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "fastify",
+    "added_date": "2026-04-15",
+    "confidence": "medium"
+  }
+}

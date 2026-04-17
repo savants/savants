@@ -35,7 +35,7 @@ if [ "$TEST_SET" = "holdout" ]; then
 elif [ "$TEST_SET" = "chaos" ]; then
   CASE_DIRS="$SCRIPT_DIR/cases/chaos"
 else
-  CASE_DIRS="$SCRIPT_DIR/cases/github-bugs $SCRIPT_DIR/cases/postmortems $SCRIPT_DIR/cases/production $SCRIPT_DIR/cases/regression"
+  CASE_DIRS="$SCRIPT_DIR/cases/github-bugs $SCRIPT_DIR/cases/postmortems $SCRIPT_DIR/cases/production $SCRIPT_DIR/cases/regression $SCRIPT_DIR/cases/oss"
 fi
 
 # Colors

@@ -1,0 +1,30 @@
+{
+  "id": "prod-010",
+  "source": "production",
+  "title": "ATS webhook signature validation failing - 401 Unauthorized",
+  "category": "configuration",
+  "difficulty": "easy",
+  "error_signal": {
+    "message": "vocator-backend 401 Unauthorized: validateWebhookSignature HMAC signature mismatch on ATS webhook endpoint",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/routes/ats-webhooks.ts",
+    "root_cause_function": "validateWebhookSignature",
+    "root_cause_description": "Webhook signing secret was rotated on the ATS provider side but not updated in environment variables. Configuration mismatch.",
+    "root_cause_category": "configuration",
+    "fix_description": "Update the ATS webhook signing secret in environment variables to match the provider's new secret",
+    "verified_by": "confirmed_by_code_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["validateWebhookSignature", "webhook", "ats"],
+    "must_not_mention": [],
+    "must_identify_category": "configuration"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-BACKEND-45",
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

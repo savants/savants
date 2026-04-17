@@ -1,0 +1,48 @@
+name: Deploy savants-cloud
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'savants-cloud/**'
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy savants-cloud
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        working-directory: savants-cloud
+        run: |
+          docker build -t savants/savants-cloud:latest -t savants/savants-cloud:${{ github.sha }} .
+
+      - name: Export image for k3s
+        run: |
+          docker save savants/savants-cloud:latest | gzip > /tmp/savants-cloud.tar.gz
+          echo "Image size: $(du -h /tmp/savants-cloud.tar.gz | cut -f1)"
+
+      - name: Import image to k3s
+        run: |
+          # The act-runner has access to the host's k3s via mounted socket
+          sudo k3s ctr images import /tmp/savants-cloud.tar.gz
+          echo "Image imported to k3s"
+
+      - name: Deploy via Helm
+        run: |
+          helm upgrade --install savants-cloud savants-cloud/deploy/ \
+            --namespace savants-cloud \
+            --set api.image=savants/savants-cloud:latest \
+            --wait --timeout 3m
+          echo "Deployed savants-cloud"
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/savants-cloud-api -n savants-cloud --timeout=60s
+          echo "--- Health check ---"
+          kubectl exec -n savants-cloud deploy/savants-cloud-api -- wget -qO- http://localhost:3000/health || echo "Health check via exec"
+          echo ""
+          echo "--- Pod status ---"
+          kubectl get pods -n savants-cloud

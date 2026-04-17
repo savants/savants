@@ -12,6 +12,8 @@ use walkdir::WalkDir;
 pub struct CodeIndexer {
     graph: GraphClient,
     repo_name: String,
+    /// Maps workspace package names (e.g., "@prisma/sdk") to their repo-relative directory paths
+    workspace_map: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -31,11 +33,13 @@ struct CodeEntity {
 
 impl CodeIndexer {
     pub fn new(graph: GraphClient, repo_name: &str) -> Self {
-        Self { graph, repo_name: repo_name.to_string() }
+        Self { graph, repo_name: repo_name.to_string(), workspace_map: HashMap::new() }
     }
 
     /// Index an entire repository.
-    pub fn index_repo(&self, repo_path: &str) -> IndexStats {
+    pub fn index_repo(&mut self, repo_path: &str) -> IndexStats {
+        // Build workspace map from package.json files before indexing
+        self.workspace_map = Self::build_workspace_map(repo_path);
         let mut stats = IndexStats::default();
 
         let skip_dirs = [
@@ -450,47 +454,209 @@ impl CodeIndexer {
             &[],
         );
 
-        // Also build WRAPS/USES_VALIDATION edges for functions that call
-        // known validation/error-handling functions (pattern recognition)
-        let validation_fns = ["validateLLMOutput", "retryAnthropicCall", "retryAnthropicCallWithValidation"];
-        for vfn in &validation_fns {
+        // Dynamically detect validation/error-handling functions by name pattern
+        // and build USES_VALIDATION edges for functions that call them
+        let validation_patterns = ["validate", "retry", "guard", "assert", "check", "sanitize", "verify"];
+        for pattern in &validation_patterns {
             let _ = self.graph.query(
                 &format!(
-                    "MATCH (f:CodeFunction {{repo: '{}'}}) \
-                     WHERE toLower(f.body) CONTAINS '{}' \
-                     MATCH (v:CodeFunction {{repo: '{}', name: '{}'}}) \
+                    "MATCH (v:CodeFunction {{repo: '{}'}}) \
+                     WHERE toLower(v.name) CONTAINS '{}' \
+                     MATCH (f:CodeFunction {{repo: '{}'}}) \
+                     WHERE f <> v AND toLower(f.body) CONTAINS toLower(v.name) \
                      MERGE (f)-[:USES_VALIDATION]->(v)",
-                    esc(&self.repo_name), vfn.to_lowercase(),
-                    esc(&self.repo_name), esc(vfn),
+                    esc(&self.repo_name), pattern,
+                    esc(&self.repo_name),
                 ),
                 &[],
             );
         }
     }
 
-    /// Resolve a relative import path to a repo-relative file path.
-    /// e.g., file="server/routes/resume.ts", import="../utils/llm-validation"
-    /// → "server/utils/llm-validation"
-    fn resolve_import_path(&self, from_file: &str, import_path: &str) -> String {
-        if !import_path.starts_with('.') {
-            // Node module import, not relative — return as-is
-            return import_path.to_string();
+    /// Build a map of workspace package names to their repo-relative directory paths.
+    /// Reads the root package.json "workspaces" field, then each workspace's package.json "name".
+    /// Supports: ["packages/*"], ["packages/sdk", "packages/migrate"], pnpm-workspace.yaml
+    fn build_workspace_map(repo_path: &str) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+
+        // Try root package.json first
+        let root_pkg = std::path::Path::new(repo_path).join("package.json");
+        let workspace_globs = if let Ok(contents) = std::fs::read_to_string(&root_pkg) {
+            Self::extract_workspace_globs(&contents)
+        } else {
+            vec![]
+        };
+
+        // Also try pnpm-workspace.yaml
+        let workspace_globs = if workspace_globs.is_empty() {
+            let pnpm_ws = std::path::Path::new(repo_path).join("pnpm-workspace.yaml");
+            if let Ok(contents) = std::fs::read_to_string(&pnpm_ws) {
+                Self::extract_pnpm_workspace_globs(&contents)
+            } else {
+                vec![]
+            }
+        } else {
+            workspace_globs
+        };
+
+        if workspace_globs.is_empty() {
+            return map;
         }
 
-        let from_dir = std::path::Path::new(from_file).parent().unwrap_or(std::path::Path::new(""));
-        let resolved = from_dir.join(import_path);
-
-        // Normalize: resolve ".." and "." components
-        let mut parts: Vec<&str> = vec![];
-        for component in resolved.components() {
-            match component {
-                std::path::Component::ParentDir => { parts.pop(); }
-                std::path::Component::CurDir => {}
-                std::path::Component::Normal(p) => { parts.push(p.to_str().unwrap_or("")); }
-                _ => {}
+        // Expand globs and find package.json in each workspace directory
+        for glob_pattern in &workspace_globs {
+            let full_pattern = format!("{}/{}/package.json", repo_path, glob_pattern);
+            if let Ok(entries) = glob::glob(&full_pattern) {
+                for entry in entries.flatten() {
+                    if let Ok(pkg_contents) = std::fs::read_to_string(&entry) {
+                        if let Some(name) = Self::extract_package_name(&pkg_contents) {
+                            // Get the directory relative to repo root
+                            if let Some(pkg_dir) = entry.parent() {
+                                if let Ok(rel) = pkg_dir.strip_prefix(repo_path) {
+                                    map.insert(name, rel.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-        parts.join("/")
+
+        map
+    }
+
+    /// Extract workspace glob patterns from package.json content.
+    /// Handles: "workspaces": ["packages/*"] and "workspaces": {"packages": ["packages/*"]}
+    fn extract_workspace_globs(json_str: &str) -> Vec<String> {
+        // Simple JSON extraction - avoid pulling in serde_json just for this
+        let mut globs = vec![];
+        // Look for "workspaces" key
+        if let Some(ws_start) = json_str.find("\"workspaces\"") {
+            let rest = &json_str[ws_start..];
+            // Find the value after the colon
+            if let Some(colon) = rest.find(':') {
+                let value_part = rest[colon + 1..].trim_start();
+                if value_part.starts_with('[') {
+                    // Direct array: "workspaces": ["packages/*", ...]
+                    Self::extract_string_array(value_part, &mut globs);
+                } else if value_part.starts_with('{') {
+                    // Object form: "workspaces": {"packages": ["packages/*"]}
+                    if let Some(pkg_key) = value_part.find("\"packages\"") {
+                        let inner = &value_part[pkg_key..];
+                        if let Some(c) = inner.find(':') {
+                            let arr_part = inner[c + 1..].trim_start();
+                            Self::extract_string_array(arr_part, &mut globs);
+                        }
+                    }
+                }
+            }
+        }
+        globs
+    }
+
+    fn extract_string_array(text: &str, out: &mut Vec<String>) {
+        if !text.starts_with('[') { return; }
+        let end = text.find(']').unwrap_or(text.len());
+        let inner = &text[1..end];
+        for item in inner.split(',') {
+            let trimmed = item.trim().trim_matches(|c| c == '"' || c == '\'');
+            if !trimmed.is_empty() {
+                out.push(trimmed.to_string());
+            }
+        }
+    }
+
+    /// Extract workspace patterns from pnpm-workspace.yaml
+    fn extract_pnpm_workspace_globs(yaml_str: &str) -> Vec<String> {
+        let mut globs = vec![];
+        let mut in_packages = false;
+        for line in yaml_str.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("packages:") {
+                in_packages = true;
+                continue;
+            }
+            if in_packages {
+                if trimmed.starts_with("- ") {
+                    let pattern = trimmed[2..].trim().trim_matches(|c| c == '"' || c == '\'');
+                    if !pattern.is_empty() {
+                        globs.push(pattern.to_string());
+                    }
+                } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    break; // end of packages list
+                }
+            }
+        }
+        globs
+    }
+
+    fn extract_package_name(json_str: &str) -> Option<String> {
+        // Find "name": "value" in package.json
+        let name_key = json_str.find("\"name\"")?;
+        let rest = &json_str[name_key..];
+        let colon = rest.find(':')?;
+        let value_part = rest[colon + 1..].trim_start();
+        let quote_start = value_part.find('"')?;
+        let inner = &value_part[quote_start + 1..];
+        let quote_end = inner.find('"')?;
+        Some(inner[..quote_end].to_string())
+    }
+
+    /// Resolve a relative import path to a repo-relative file path.
+    /// e.g., file="server/routes/resume.ts", import="../utils/llm-validation"
+    /// -> "server/utils/llm-validation"
+    /// Also resolves workspace imports: "@prisma/sdk" -> "packages/sdk/src"
+    fn resolve_import_path(&self, from_file: &str, import_path: &str) -> String {
+        if import_path.starts_with('.') {
+            // Relative import - resolve against from_file directory
+            let from_dir = std::path::Path::new(from_file).parent().unwrap_or(std::path::Path::new(""));
+            let resolved = from_dir.join(import_path);
+
+            // Normalize: resolve ".." and "." components
+            let mut parts: Vec<&str> = vec![];
+            for component in resolved.components() {
+                match component {
+                    std::path::Component::ParentDir => { parts.pop(); }
+                    std::path::Component::CurDir => {}
+                    std::path::Component::Normal(p) => { parts.push(p.to_str().unwrap_or("")); }
+                    _ => {}
+                }
+            }
+            return parts.join("/");
+        }
+
+        // Check workspace map for scoped packages (@org/pkg) and bare packages
+        // Try exact match first: "@prisma/sdk" -> "packages/sdk"
+        if let Some(dir) = self.workspace_map.get(import_path) {
+            return dir.clone();
+        }
+
+        // Try with subpath: "@prisma/sdk/utils" -> "packages/sdk" + "/utils"
+        // Split on first / after the scope (if scoped) or first / (if bare)
+        let pkg_name = if import_path.starts_with('@') {
+            // Scoped: @org/pkg/subpath -> package is @org/pkg
+            let parts: Vec<&str> = import_path.splitn(3, '/').collect();
+            if parts.len() >= 2 {
+                format!("{}/{}", parts[0], parts[1])
+            } else {
+                import_path.to_string()
+            }
+        } else {
+            // Bare: pkg/subpath -> package is pkg
+            import_path.split('/').next().unwrap_or(import_path).to_string()
+        };
+
+        if let Some(dir) = self.workspace_map.get(&pkg_name) {
+            // Return workspace dir + any subpath
+            let subpath = import_path.strip_prefix(&pkg_name).unwrap_or("").trim_start_matches('/');
+            if subpath.is_empty() {
+                return dir.clone();
+            }
+            return format!("{}/{}", dir, subpath);
+        }
+
+        // Not a workspace package - return as-is (node_modules)
+        import_path.to_string()
     }
 }
 

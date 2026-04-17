@@ -1,0 +1,28 @@
+{
+  "id": "oss-010",
+  "source": "github-bug",
+  "title": "tRPC OpenAPI: buildOpenAPIDocument fails with undefined procedure meta",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "trpc TypeError: Cannot read properties of undefined (reading 'method') in buildProcedureOperation when procedure has no openapi meta defined",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/openapi/src/generate.ts",
+    "root_cause_function": "buildProcedureOperation",
+    "root_cause_description": "buildProcedureOperation accesses procedure.meta.method without checking if meta exists. When a procedure doesn't have openapi meta defined, it crashes.",
+    "root_cause_category": "application",
+    "fix_description": "Add null check for procedure.meta before accessing method property in buildProcedureOperation"
+  },
+  "expected_signals": {
+    "must_mention": ["buildProcedureOperation", "openapi"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "trpc",
+    "added_date": "2026-04-15",
+    "confidence": "medium"
+  }
+}

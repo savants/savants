@@ -1,0 +1,30 @@
+{
+  "id": "prod-006",
+  "source": "production",
+  "title": "Stripe webhook handlePaymentFailed - subscription not found",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "vocator-backend Error: handlePaymentFailed Cannot read properties of null (reading 'companyId') in stripe webhook handler",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/services/stripe.ts",
+    "root_cause_function": "handlePaymentFailed",
+    "root_cause_description": "Stripe webhook receives payment_intent.payment_failed event for a subscription that was already deleted. handlePaymentFailed assumes the billing record exists.",
+    "root_cause_category": "application",
+    "fix_description": "Add null check for billing record lookup before accessing companyId",
+    "verified_by": "confirmed_by_code_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["handlePaymentFailed", "stripe", "webhook"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-BACKEND-41",
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

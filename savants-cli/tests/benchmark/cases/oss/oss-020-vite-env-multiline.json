@@ -1,0 +1,30 @@
+{
+  "id": "oss-020",
+  "source": "github-bug",
+  "title": "Vite #10826: Multiline values in .env files cause parse errors",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "vite Error: env file parsing fails on multiline values - SyntaxError when .env file contains values with newlines or quotes spanning multiple lines",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/vite/src/node/env.ts",
+    "root_cause_function": null,
+    "root_cause_description": "Env file parser does not handle multiline values. Lines with continuation characters or quoted strings spanning multiple lines are parsed incorrectly.",
+    "root_cause_category": "application",
+    "fix_pr": "#10826",
+    "fix_description": "Update env parser to support multiline values"
+  },
+  "expected_signals": {
+    "must_mention": ["env"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "vite",
+    "pr_number": 10826,
+    "added_date": "2026-04-15",
+    "confidence": "medium"
+  }
+}

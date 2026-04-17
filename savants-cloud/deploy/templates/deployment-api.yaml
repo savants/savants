@@ -24,15 +24,31 @@ spec:
             - containerPort: {{ .Values.api.port }}
           env:
             - name: DATABASE_URL
-              value: "postgres://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@savants-cloud-postgres:5432/{{ .Values.postgres.database }}"
+              valueFrom:
+                secretKeyRef:
+                  name: savants-cloud-secrets
+                  key: database-url
             - name: REDIS_URL
               value: "redis://{{ .Values.falkordb.host }}:{{ .Values.falkordb.port }}"
             - name: LISTEN_ADDR
               value: "0.0.0.0:{{ .Values.api.port }}"
-            {{- range $key, $value := .Values.api.env }}
-            - name: {{ $key }}
-              value: {{ $value | quote }}
-            {{- end }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: savants-cloud-secrets
+                  key: jwt-secret
+            - name: STRIPE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: savants-cloud-secrets
+                  key: stripe-secret-key
+                  optional: true
+            - name: STRIPE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: savants-cloud-secrets
+                  key: stripe-webhook-secret
+                  optional: true
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           readinessProbe:

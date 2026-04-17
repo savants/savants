@@ -1,0 +1,31 @@
+{
+  "id": "oss-003",
+  "source": "github-bug",
+  "title": "Fastify #4579: crash when onReady hook throws",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "fastify Error: server crashes with unhandled exception when onReady lifecycle hook throws an error during startup",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "lib/hooks.js",
+    "root_cause_function": null,
+    "root_cause_description": "onReady hook errors are not caught properly, causing the server to crash instead of emitting the error through the proper error handling chain.",
+    "root_cause_category": "application",
+    "fix_pr": "#4579",
+    "fix_description": "Add try-catch around onReady hook execution in hooks.js"
+  },
+  "expected_signals": {
+    "must_mention": ["hooks"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "fastify",
+    "issue_number": 4579,
+    "pr_number": 4579,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

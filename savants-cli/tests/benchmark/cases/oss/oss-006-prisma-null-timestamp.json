@@ -1,0 +1,32 @@
+{
+  "id": "oss-006",
+  "source": "github-bug",
+  "title": "Prisma #29190: TypeError Cannot read properties of null in timestamp parser for nullable columns",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "prisma TypeError: Cannot read properties of null (reading 'replace') in normalize_timestamp when querying nullable DateTime columns with null values",
+    "source": "github_issue",
+    "issue_url": "https://github.com/prisma/prisma/issues/29190"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/adapter-ppg/src/conversion.ts",
+    "root_cause_function": "normalize_timestamp",
+    "root_cause_description": "PPG adapter passes null values through to type parsers for nullable columns. normalize_timestamp calls .replace() on the value without checking for null first.",
+    "root_cause_category": "application",
+    "fix_pr": "#29192",
+    "fix_description": "Add null guards to normalize_timestamp, normalize_timestamptz, normalize_timez, and normalize_money parser functions"
+  },
+  "expected_signals": {
+    "must_mention": ["conversion", "normalize"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "prisma",
+    "issue_number": 29190,
+    "pr_number": 29192,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

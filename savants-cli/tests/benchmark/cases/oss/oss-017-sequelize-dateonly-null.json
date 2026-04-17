@@ -1,0 +1,30 @@
+{
+  "id": "oss-017",
+  "source": "github-bug",
+  "title": "Sequelize #8384: DATEONLY fields sanitized wrong when NULL",
+  "category": "application",
+  "difficulty": "easy",
+  "error_signal": {
+    "message": "sequelize TypeError: Cannot read properties of null when sanitizing DATEONLY field with NULL value in data-types",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "lib/data-types.js",
+    "root_cause_function": null,
+    "root_cause_description": "DATEONLY type parser does not check for null before calling string methods. When a DATEONLY column has NULL value, the sanitizer crashes.",
+    "root_cause_category": "application",
+    "fix_pr": "#8384",
+    "fix_description": "Add null check in DATEONLY sanitization"
+  },
+  "expected_signals": {
+    "must_mention": ["data-types"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "sequelize",
+    "pr_number": 8384,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

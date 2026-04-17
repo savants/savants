@@ -1,0 +1,32 @@
+{
+  "id": "oss-001",
+  "source": "github-bug",
+  "title": "Fastify #5841: req.hostname throws if Host header is missing",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "fastify TypeError: Cannot read properties of undefined (reading 'indexOf') when accessing request.hostname with missing Host header",
+    "source": "github_issue",
+    "issue_url": "https://github.com/fastify/fastify/issues/5841"
+  },
+  "ground_truth": {
+    "root_cause_file": "lib/request.js",
+    "root_cause_function": "Request",
+    "root_cause_description": "request.hostname getter accesses host header without null check. When Host header is missing, indexOf is called on undefined.",
+    "root_cause_category": "application",
+    "fix_pr": "#5892",
+    "fix_description": "Add fallback to empty string when host header is missing"
+  },
+  "expected_signals": {
+    "must_mention": ["request", "hostname"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "fastify",
+    "issue_number": 5841,
+    "pr_number": 5892,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

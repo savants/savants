@@ -1,0 +1,28 @@
+{
+  "id": "oss-009",
+  "source": "github-bug",
+  "title": "Prisma Neon adapter: onError handler crashes on connection pool exhaustion",
+  "category": "infrastructure",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "prisma Error: connection pool timeout in neon adapter onError - unable to acquire connection from pool within timeout",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/adapter-neon/src/neon.ts",
+    "root_cause_function": "onError",
+    "root_cause_description": "Neon adapter connection pool exhaustion. The onError handler in neon.ts receives pool timeout errors but the pool configuration or connection lifecycle is the actual issue.",
+    "root_cause_category": "infrastructure",
+    "fix_description": "Increase pool size or add connection timeout configuration in the Neon adapter"
+  },
+  "expected_signals": {
+    "must_mention": ["neon", "connection"],
+    "must_not_mention": [],
+    "must_identify_category": "infrastructure"
+  },
+  "metadata": {
+    "repo": "prisma",
+    "added_date": "2026-04-15",
+    "confidence": "medium"
+  }
+}

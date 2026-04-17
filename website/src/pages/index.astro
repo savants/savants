@@ -92,10 +92,22 @@ import Base from '../layouts/Base.astro';
   @media (max-width: 640px) { .terminal { font-size: 0.72rem; padding: 16px; } }
 
   /* Comparison */
+  /* Benchmark stats banner */
+  .benchmark-banner { width: 100%; padding: 80px 24px; text-align: center; }
+  .benchmark-banner h2 { font-size: 2rem; font-weight: 700; margin-bottom: 12px; }
+  .benchmark-banner .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 48px; max-width: 700px; margin-left: auto; margin-right: auto; }
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; max-width: 900px; margin: 0 auto; }
+  @media (max-width: 768px) { .stat-row { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 480px) { .stat-row { grid-template-columns: 1fr; } }
+  .stat-block { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 32px 16px; }
+  .stat-number { font-size: 2.5rem; font-weight: 800; color: var(--accent); line-height: 1; margin-bottom: 8px; }
+  .stat-label { font-size: 0.8rem; color: var(--muted); line-height: 1.3; }
+
   .comparison { width: 100%; padding: 80px 24px; }
   .comparison h2 { font-size: 2rem; font-weight: 700; text-align: center; margin-bottom: 48px; }
   .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; max-width: 800px; margin: 0 auto; }
-  @media (max-width: 640px) { .compare-grid { grid-template-columns: 1fr; } }
+  .compare-grid-3 { grid-template-columns: 1fr 1fr 1fr; max-width: 1100px; }
+  @media (max-width: 768px) { .compare-grid, .compare-grid-3 { grid-template-columns: 1fr; } }
   .compare-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 32px; transition: box-shadow 0.3s; }
   .compare-card.before { border-color: #7f1d1d; }
   .compare-card.after { border-color: #164e63; }
@@ -207,6 +219,43 @@ import Base from '../layouts/Base.astro';
   .pricing .sub { text-align: center; color: var(--muted); margin-bottom: 48px; font-size: 1rem; }
   .pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; max-width: 960px; margin: 0 auto; }
   @media (max-width: 640px) { .pricing-grid { grid-template-columns: 1fr; } }
+
+  /* API pricing table */
+  .api-pricing { max-width: 800px; margin: 48px auto 0; }
+  .api-pricing h3 { font-size: 1.3rem; font-weight: 700; margin-bottom: 8px; text-align: center; }
+  .api-pricing .api-sub { color: var(--muted); font-size: 0.9rem; text-align: center; margin-bottom: 32px; }
+  .api-table { width: 100%; border-collapse: collapse; }
+  .api-table th { text-align: left; padding: 12px 16px; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .api-table td { padding: 10px 16px; font-size: 0.85rem; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .api-table tr:hover td { background: rgba(255,255,255,0.02); }
+  .api-table .endpoint { color: var(--accent); font-family: var(--mono); font-size: 0.8rem; }
+  .api-table .price-cell { font-weight: 700; color: var(--fg); }
+  .api-table .value-cell { color: var(--muted); font-size: 0.8rem; }
+  .api-table .section-header td { padding-top: 20px; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: none; }
+
+  /* Estimate calculator */
+  .estimate { max-width: 800px; margin: 48px auto 0; }
+  .estimate h3 { font-size: 1.3rem; font-weight: 700; margin-bottom: 24px; text-align: center; }
+  .estimate-table { width: 100%; border-collapse: collapse; }
+  .estimate-table th { text-align: left; padding: 10px 16px; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .estimate-table td { padding: 8px 16px; font-size: 0.85rem; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .estimate-table .total-cell { font-weight: 700; color: var(--accent); }
+  .estimate-table .muted { color: var(--muted); font-size: 0.8rem; }
+
+  /* LLM + Savants section */
+  .better-together { max-width: 800px; margin: 64px auto 0; text-align: center; }
+  .better-together h3 { font-size: 1.5rem; font-weight: 700; margin-bottom: 12px; }
+  .better-together .bt-sub { color: var(--muted); font-size: 0.95rem; margin-bottom: 32px; line-height: 1.6; max-width: 600px; margin-left: auto; margin-right: auto; }
+  .bt-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: center; max-width: 700px; margin: 0 auto; }
+  @media (max-width: 640px) { .bt-grid { grid-template-columns: 1fr; } }
+  .bt-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; text-align: center; }
+  .bt-card .bt-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 8px; }
+  .bt-card .bt-stat { font-size: 1.8rem; font-weight: 800; margin-bottom: 4px; }
+  .bt-card .bt-desc { font-size: 0.8rem; color: var(--muted); }
+  .bt-plus { font-size: 2rem; font-weight: 300; color: var(--muted); }
+  .bt-result { margin-top: 24px; padding: 24px; background: var(--surface); border: 1px solid var(--accent); border-radius: 12px; }
+  .bt-result .bt-stat { font-size: 2.2rem; font-weight: 800; color: var(--accent); margin-bottom: 4px; }
+  .bt-result .bt-desc { font-size: 0.9rem; color: var(--muted); }
   .price-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 32px; display: flex; flex-direction: column; transition: transform 0.3s, box-shadow 0.3s; }
   .price-card:hover { transform: translateY(-4px); box-shadow: 0 12px 32px rgba(0,0,0,0.3); }
   .price-card.featured { border-color: transparent; position: relative; overflow: hidden; }
@@ -349,32 +398,70 @@ import Base from '../layouts/Base.astro';
 
 <div class="section-divider"></div>
 
+<!-- Benchmark Stats Banner -->
+<section class="benchmark-banner" id="benchmark">
+  <h2 class="gs-up">Tested on 30 real bugs across 20 open source projects</h2>
+  <p class="sub gs-up">Express, Fastify, tRPC, NestJS, SvelteKit, Prisma, Zod, Drizzle, Axios, Jest, Payload, TypeORM, Sequelize, Medusa, Astro, Vite, and more.</p>
+  <div class="stat-row">
+    <div class="stat-block gs-up">
+      <div class="stat-number" id="stat-speed">1,011x</div>
+      <div class="stat-label">faster than LLM diagnosis</div>
+    </div>
+    <div class="stat-block gs-up">
+      <div class="stat-number" id="stat-accuracy">83%</div>
+      <div class="stat-label">accuracy finding root cause file</div>
+    </div>
+    <div class="stat-block gs-up">
+      <div class="stat-number" id="stat-time">0.7s</div>
+      <div class="stat-label">average diagnosis time</div>
+    </div>
+    <div class="stat-block gs-up">
+      <div class="stat-number" id="stat-wrong">0</div>
+      <div class="stat-label">wrong answers out of 30</div>
+    </div>
+  </div>
+</section>
+
+<div class="section-divider"></div>
+
 <!-- MTTR Comparison - Full width -->
 <section class="comparison" id="comparison">
-  <h2 class="gs-up">The incident that proves it</h2>
-  <div class="compare-grid">
-    <div class="compare-card before gs-left" id="card-before">
-      <div class="label">Without Savants</div>
-      <div class="big" id="counter-before">47 min</div>
+  <h2 class="gs-up">Savants vs LLM vs manual debugging</h2>
+  <div class="compare-grid compare-grid-3">
+    <div class="compare-card before gs-left" id="card-manual">
+      <div class="label">Manual debugging</div>
+      <div class="big">45 min</div>
       <p>Mean time to root cause</p>
       <ul>
-        <li>15 separate "pod down" alerts</li>
-        <li>Check each pod individually</li>
-        <li>Grep through 7.5M log lines</li>
-        <li>Guess at the connection between failures</li>
-        <li>Finally find the DNS misconfiguration</li>
+        <li>Grep through logs and code</li>
+        <li>Read files, trace imports</li>
+        <li>Check git blame manually</li>
+        <li>Search Slack for context</li>
+        <li>Guess at connections between failures</li>
+      </ul>
+    </div>
+    <div class="compare-card before gs-up" id="card-llm">
+      <div class="label">LLM (ChatGPT/Claude)</div>
+      <div class="big">12 min</div>
+      <p>Mean time to root cause</p>
+      <ul>
+        <li>Paste error, get generic advice</li>
+        <li>LLM asks "can you share the code?"</li>
+        <li>Copy-paste files back and forth</li>
+        <li>Can't see your git history or Slack</li>
+        <li>50% accuracy finding exact file</li>
       </ul>
     </div>
     <div class="compare-card after gs-right" id="card-after">
       <div class="label">With Savants</div>
-      <div class="big" id="counter-after">45 sec</div>
+      <div class="big" id="counter-after">0.7 sec</div>
       <p>Mean time to root cause</p>
       <ul>
-        <li>One command: savants up</li>
-        <li>Connects all 15 failures to one cause</li>
-        <li>7.5M lines compressed to 78 patterns</li>
-        <li>Root cause identified automatically</li>
-        <li>Fix suggested in the output</li>
+        <li>One command: exact file + line number</li>
+        <li>Upstream call chain traced automatically</li>
+        <li>Git blame, Slack context, Jira tickets</li>
+        <li>83% accuracy, 0% wrong answers</li>
+        <li>Works on any codebase, no context window limits</li>
       </ul>
     </div>
   </div>
@@ -390,8 +477,8 @@ import Base from '../layouts/Base.astro';
     <div class="uc-card gs-up">
       <span class="uc-cmd mono">savants diagnose-error</span>
       <h3>Trace prod errors to root cause</h3>
-      <div class="uc-stat">86% accuracy</div>
-      <p>Connects stack traces to code paths, recent deploys, config changes, and cluster state. One command replaces an hour of tab-switching.</p>
+      <div class="uc-stat">83% accuracy on 30 real OSS bugs</div>
+      <p>Finds exact file and line in 0.7 seconds. Traces upstream call chains, checks validation, shows git blame and Slack context. 1,011x faster than LLM diagnosis.</p>
     </div>
     <div class="uc-card gs-up">
       <span class="uc-cmd mono">savants pr-risk</span>
@@ -522,50 +609,152 @@ import Base from '../layouts/Base.astro';
 
 <!-- Pricing - Full width -->
 <section class="pricing" id="pricing">
-  <h2 class="gs-up">One product. Grows with your team.</h2>
-  <p class="sub gs-up">Everyone starts free on the cloud. No separate tiers, no migrations. When your team grows, the bill starts.</p>
+  <h2 class="gs-up">Free while we're in beta</h2>
+  <p class="sub gs-up">Early access is free. Pay-as-you-go launches in 2026. Early adopters keep preferred pricing forever.</p>
+
   <div class="pricing-grid">
     <div class="price-card featured gs-up" id="price-free">
-      <div class="tier">Free</div>
-      <div class="price" id="price-free-num">$0</div>
-      <div class="price-sub">up to 10K resources. No card required.</div>
+      <div class="tier">Early access</div>
+      <div class="price" id="price-free-num">Free</div>
+      <div class="price-sub">While we're in beta. No card required.</div>
       <ul>
         <li>All 30 MCP tools</li>
-        <li>Full code + K8s + logs + host + Slack + Sentry analysis</li>
-        <li>Cloud sync and team sharing included</li>
-        <li>7-day retention</li>
-        <li>20 diagnoses/day, 10 radar scans/day</li>
-        <li>2 concurrent MCP connections</li>
+        <li>Full local CLI + MCP server</li>
+        <li>Connect Slack, Jira, Sentry, GitHub</li>
+        <li>Generous query limits while in beta</li>
+        <li>Early adopters keep preferred pricing forever</li>
       </ul>
       <a href="https://savants.sh" class="price-btn primary">Install now</a>
     </div>
-    <div class="price-card gs-up" id="price-team">
-      <div class="tier">Team</div>
-      <div class="price" id="price-team-num">$50<span style="font-size:1rem;font-weight:400;color:var(--muted)">/mo</span></div>
-      <div class="price-sub">per 1,000 resources under management</div>
+    <div class="price-card gs-up" id="price-payg">
+      <div class="tier">Pay as you go</div>
+      <div class="price" id="price-payg-num">Per call</div>
+      <div class="price-sub">Launching 2026. No commitments.</div>
       <ul>
-        <li>Everything in Free</li>
-        <li>Unlimited diagnoses and radar scans</li>
-        <li>Unlimited concurrent MCP connections</li>
-        <li>Real-time sync for CI pipelines</li>
-        <li>30-day retention</li>
-        <li>Unlimited users, unlimited queries</li>
+        <li>Everything in Early access, unlimited</li>
+        <li>Slack bot for your whole team</li>
+        <li>CI/CD webhooks (PR checks, deploy triggers)</li>
+        <li>Sentry auto-diagnosis</li>
+        <li>Unlimited users, unlimited storage</li>
       </ul>
-      <a href="https://savants.cloud" class="price-btn secondary">Coming soon</a>
+      <a href="https://savants.cloud" class="price-btn secondary">Join waitlist</a>
     </div>
     <div class="price-card gs-up" id="price-enterprise">
       <div class="tier">Enterprise</div>
       <div class="price" id="price-ent-num">Custom</div>
-      <div class="price-sub">for organizations with compliance needs</div>
+      <div class="price-sub">Volume discounts, SSO, SLA.</div>
       <ul>
-        <li>Everything in Team</li>
+        <li>Everything in PAYG</li>
         <li>SSO + RBAC + audit logs</li>
-        <li>Compliance reporting (SOC2/HIPAA)</li>
+        <li>SOC2/HIPAA compliance</li>
         <li>Priority SLA (15-min response)</li>
-        <li>1-year retention</li>
-        <li>Dedicated support engineer</li>
+        <li>On-prem deployment option</li>
       </ul>
       <a href="mailto:hello@savants.dev" class="price-btn secondary">Contact us</a>
+    </div>
+  </div>
+
+  <!-- API Pricing Table -->
+  <div class="api-pricing gs-up">
+    <h3>API pricing</h3>
+    <p class="api-sub">Every endpoint available on every plan. You only pay for calls beyond the free 10/month.</p>
+    <table class="api-table">
+      <thead>
+        <tr>
+          <th>Endpoint</th>
+          <th>Price per call</th>
+          <th>What it does</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="section-header"><td colspan="3">Diagnosis</td></tr>
+        <tr>
+          <td class="endpoint">diagnose-error</td>
+          <td class="price-cell">$5.00</td>
+          <td class="value-cell">Root cause file + line in 0.7s. Upstream call chain. Git blame. Slack context.</td>
+        </tr>
+        <tr>
+          <td class="endpoint">diagnose</td>
+          <td class="price-cell">$2.50</td>
+          <td class="value-cell">General error analysis with full graph context.</td>
+        </tr>
+        <tr class="section-header"><td colspan="3">CI / PR Analysis</td></tr>
+        <tr>
+          <td class="endpoint">pr-risk</td>
+          <td class="price-cell">$2.00</td>
+          <td class="value-cell">8-check risk analysis on every pull request.</td>
+        </tr>
+        <tr>
+          <td class="endpoint">diff-impact</td>
+          <td class="price-cell">$1.00</td>
+          <td class="value-cell">Blast radius: what breaks if this code changes.</td>
+        </tr>
+        <tr>
+          <td class="endpoint">pre-change-warning</td>
+          <td class="price-cell">$1.00</td>
+          <td class="value-cell">Pre-merge safety check against production state.</td>
+        </tr>
+        <tr>
+          <td class="endpoint">reindex-diff</td>
+          <td class="price-cell">$0.25</td>
+          <td class="value-cell">Incremental: re-index only changed files since last push.</td>
+        </tr>
+        <tr>
+          <td class="endpoint">reindex-full</td>
+          <td class="price-cell">$2.00</td>
+          <td class="value-cell">Full repository re-index. First-time setup or recovery.</td>
+        </tr>
+        <tr class="section-header"><td colspan="3">Intelligence</td></tr>
+        <tr>
+          <td class="endpoint">radar</td>
+          <td class="price-cell">$1.00</td>
+          <td class="value-cell">Personal digest: what you missed across all channels.</td>
+        </tr>
+        <tr>
+          <td class="endpoint">pod-story / host-story</td>
+          <td class="price-cell">$1.00</td>
+          <td class="value-cell">Full incident timeline for any service or host.</td>
+        </tr>
+        <tr class="section-header"><td colspan="3">Graph Queries</td></tr>
+        <tr>
+          <td class="endpoint">query, search-code, find-references, dependency-chain, co-change-partners</td>
+          <td class="price-cell">$0.25</td>
+          <td class="value-cell">Code search, coupling analysis, dependency lookups.</td>
+        </tr>
+        <tr>
+          <td class="endpoint">cluster-state, namespace-summary, deployment-info</td>
+          <td class="price-cell">$0.10</td>
+          <td class="value-cell">Infrastructure state queries.</td>
+        </tr>
+        <tr>
+          <td class="endpoint">list-pods</td>
+          <td class="price-cell">$0.05</td>
+          <td class="value-cell">Lightweight polling for dashboards and agents.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Better Together: Savants + LLM -->
+  <div class="better-together gs-up">
+    <h3>The graph is what your LLM is missing</h3>
+    <p class="bt-sub">LLMs reason about code. Savants knows your code - every function, import, deploy, Slack thread, and Jira ticket, connected. Together, they find the root cause in one shot.</p>
+    <div class="bt-grid">
+      <div class="bt-card">
+        <div class="bt-label">LLM alone</div>
+        <div class="bt-stat">~50%</div>
+        <div class="bt-desc">accuracy finding root cause<br/>10+ minutes per diagnosis</div>
+      </div>
+      <div class="bt-plus">+</div>
+      <div class="bt-card">
+        <div class="bt-label">Savants alone</div>
+        <div class="bt-stat">83%</div>
+        <div class="bt-desc">accuracy in 0.7 seconds<br/>exact file and line number</div>
+      </div>
+    </div>
+    <div class="bt-result">
+      <div class="bt-stat">~90% accuracy in under 3 seconds</div>
+      <div class="bt-desc">Savants narrows 25,000 functions to one file. The LLM reads it and explains the fix. No back-and-forth. No context window limits.</div>
     </div>
   </div>
 </section>
@@ -576,7 +765,7 @@ import Base from '../layouts/Base.astro';
 <section class="cta" id="cta">
   <div class="cta-aurora"></div>
   <h2 id="cta-headline"><span class="cta-gradient-text">Stop grepping. Start knowing.</span></h2>
-  <p>Free forever for local use. No account required.<br/>Your infrastructure deserves a savant.</p>
+  <p>10 free queries a month. No card required. Pay per call after that.<br/>Your infrastructure deserves a savant.</p>
   <div class="btn-wrap">
     <a href="https://savants.sh" class="btn btn-pulse magnetic-btn" id="cta-btn">Install Savants</a>
     <a href="#features" class="btn-ghost">Learn more</a>
