@@ -109,7 +109,8 @@ impl From<Vec<String>> for ParamValue {
 
 impl GraphClient {
     pub fn new(graph_name: &str) -> RedisResult<Self> {
-        let host = "localhost".to_string();
+        // Host resolution: SAVANTS_HOST env var, default localhost
+        let host = env::var("SAVANTS_HOST").unwrap_or_else(|_| "localhost".to_string());
         // Port resolution order:
         // 1. SAVANTS_PORT env var (explicit override for CI/automation)
         // 2. ~/.savants/savants.port (written by the embedded manager)
