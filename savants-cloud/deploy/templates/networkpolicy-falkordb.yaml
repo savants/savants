@@ -1,0 +1,7 @@
+{{- if .Values.falkordb.external }}
+# Patch the atlas-system NetworkPolicy to allow savants-cloud access to FalkorDB.
+# This is applied as a separate resource since the NetworkPolicy lives in a different namespace.
+# Run manually if Helm can't cross-namespace:
+#   kubectl patch networkpolicy atlas-ingress -n atlas-system --type='json' \
+#     -p='[{"op":"add","path":"/spec/ingress/-","value":{"from":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"savants-cloud"}}}]}}]'
+{{- end }}
