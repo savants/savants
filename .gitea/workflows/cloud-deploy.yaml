@@ -5,44 +5,59 @@ on:
     branches: [main]
     paths:
       - 'savants-cloud/**'
+      - '.gitea/workflows/cloud-deploy.yaml'
   workflow_dispatch:
 
 jobs:
   build-and-deploy:
     name: Build and deploy savants-cloud
     runs-on: ubuntu-latest
+    container:
+      image: docker:27-dind
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /usr/local/bin/k3s:/usr/local/bin/k3s
+        - /etc/rancher/k3s/k3s.yaml:/etc/rancher/k3s/k3s.yaml
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install tools
+        run: |
+          apk add --no-cache curl bash
+          # Install kubectl
+          curl -sLO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl && mv kubectl /usr/local/bin/
+          # Install helm
+          curl -fsSL https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz | tar xz
+          mv linux-amd64/helm /usr/local/bin/
+          # Configure kubectl for k3s
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          kubectl get nodes
+
       - name: Build Docker image
         working-directory: savants-cloud
-        run: |
-          docker build -t savants/savants-cloud:latest -t savants/savants-cloud:${{ github.sha }} .
+        run: docker build -t savants/savants-cloud:latest .
 
-      - name: Export image for k3s
+      - name: Import to k3s
         run: |
-          docker save savants/savants-cloud:latest | gzip > /tmp/savants-cloud.tar.gz
-          echo "Image size: $(du -h /tmp/savants-cloud.tar.gz | cut -f1)"
+          docker save savants/savants-cloud:latest | k3s ctr images import -
+          echo "Image imported"
 
-      - name: Import image to k3s
+      - name: Deploy
         run: |
-          # The act-runner has access to the host's k3s via mounted socket
-          sudo k3s ctr images import /tmp/savants-cloud.tar.gz
-          echo "Image imported to k3s"
-
-      - name: Deploy via Helm
-        run: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
           helm upgrade --install savants-cloud savants-cloud/deploy/ \
             --namespace savants-cloud \
             --set api.image=savants/savants-cloud:latest \
-            --wait --timeout 3m
-          echo "Deployed savants-cloud"
-
-      - name: Verify deployment
-        run: |
+            --wait --timeout 5m
+          # Force new pod to pick up latest image
+          kubectl rollout restart deployment/savants-cloud-api -n savants-cloud
           kubectl rollout status deployment/savants-cloud-api -n savants-cloud --timeout=60s
-          echo "--- Health check ---"
-          kubectl exec -n savants-cloud deploy/savants-cloud-api -- wget -qO- http://localhost:3000/health || echo "Health check via exec"
-          echo ""
-          echo "--- Pod status ---"
+
+      - name: Verify
+        run: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
           kubectl get pods -n savants-cloud
+          echo "---"
+          sleep 5
+          curl -sf https://api.savants.cloud/health && echo " - healthy" || echo "waiting for rollout"
