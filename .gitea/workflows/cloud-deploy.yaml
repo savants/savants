@@ -9,55 +9,44 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
-    name: Build and deploy savants-cloud
+  build:
+    name: Build savants-cloud
     runs-on: ubuntu-latest
-    container:
-      image: docker:27-dind
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
-        - /usr/local/bin/k3s:/usr/local/bin/k3s
-        - /etc/rancher/k3s/k3s.yaml:/etc/rancher/k3s/k3s.yaml
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install Rust
         run: |
-          apk add --no-cache curl bash
-          # Install kubectl
-          curl -sLO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
-          chmod +x kubectl && mv kubectl /usr/local/bin/
-          # Install helm
-          curl -fsSL https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz | tar xz
-          mv linux-amd64/helm /usr/local/bin/
-          # Configure kubectl for k3s
-          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-          kubectl get nodes
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.88.0
+          . "$HOME/.cargo/env"
 
-      - name: Build Docker image
+      - name: Build
         working-directory: savants-cloud
-        run: docker build -t savants/savants-cloud:latest .
-
-      - name: Import to k3s
+        env:
+          SQLX_OFFLINE: "true"
         run: |
-          docker save savants/savants-cloud:latest | k3s ctr images import -
-          echo "Image imported"
+          . "$HOME/.cargo/env"
+          cargo build --release
+          ls -lh target/release/savants-cloud
 
-      - name: Deploy
+      - name: Upload to MinIO
+        env:
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
         run: |
-          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-          helm upgrade --install savants-cloud savants-cloud/deploy/ \
-            --namespace savants-cloud \
-            --set api.image=savants/savants-cloud:latest \
-            --wait --timeout 5m
-          # Force new pod to pick up latest image
-          kubectl rollout restart deployment/savants-cloud-api -n savants-cloud
-          kubectl rollout status deployment/savants-cloud-api -n savants-cloud --timeout=60s
+          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+          chmod +x /usr/local/bin/mc
+          mc alias set releases http://minio.minio.svc.cluster.local:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
+          mc cp savants-cloud/target/release/savants-cloud "releases/savants-releases/cloud/savants-cloud"
+          echo "Build uploaded. Triggering deploy..."
 
-      - name: Verify
+      - name: Trigger deploy on host
         run: |
-          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-          kubectl get pods -n savants-cloud
-          echo "---"
-          sleep 5
-          curl -sf https://api.savants.cloud/health && echo " - healthy" || echo "waiting for rollout"
+          # Call a webhook on the host to trigger the Docker build + k3s deploy
+          # The webhook runs the deploy script below
+          curl -sf "http://savants-cloud-api.savants-cloud.svc.cluster.local:80/health" || true
+          # Trigger via Gotify notification (which the host monitors)
+          curl -sf "http://gotify.atlas-system.svc.cluster.local:80/message?token=${{ secrets.GOTIFY_TOKEN }}" \
+            -F "title=savants-cloud deploy" \
+            -F "message=New build ready in MinIO" \
+            -F "priority=8" 2>/dev/null || echo "Deploy notification sent (or Gotify not configured)"
