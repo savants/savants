@@ -140,7 +140,7 @@ impl CloudProxyServer {
     fn cloud_get(&self, path: &str) -> Result<Value, String> {
         let url = format!("{}{}", self.cloud_url, path);
         let output = std::process::Command::new("curl")
-            .args(["-sf", "-H", &format!("Authorization: Bearer {}", self.api_key), &url])
+            .args(["-sf", "--max-time", "60", "-H", &format!("Authorization: Bearer {}", self.api_key), &url])
             .output()
             .map_err(|e| format!("curl failed: {}", e))?;
         if !output.status.success() {
@@ -155,7 +155,8 @@ impl CloudProxyServer {
         let body_str = serde_json::to_string(body).unwrap();
         let output = std::process::Command::new("curl")
             .args([
-                "-sf", "-X", "POST",
+                "-sf", "--max-time", "60",
+                "-X", "POST",
                 "-H", &format!("Authorization: Bearer {}", self.api_key),
                 "-H", "Content-Type: application/json",
                 "-d", &body_str,
