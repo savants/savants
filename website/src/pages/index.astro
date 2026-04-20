@@ -347,13 +347,13 @@ import Base from '../layouts/Base.astro';
   </div>
   <div class="hero-particles" id="hero-particles"></div>
   <div class="hero-content">
-    <h1 id="hero-headline">Stop investigating. Start knowing.</h1>
-    <p class="subtitle gs-up">7 data sources. One connected view. Production error to root cause in 60 seconds.</p>
+    <h1 id="hero-headline">The context engine for your LLM.</h1>
+    <p class="subtitle gs-up">Savants gives your AI the full picture - code, infrastructure, team conversations, and operational data - in one call. 8x fewer tokens. 83% root cause accuracy. Seconds, not minutes.</p>
     <div class="install-box gs-up" id="install-box">
       <code class="mono">curl -fsSL savants.sh | sh</code>
       <span class="copy-hint" id="copy-hint">click to copy</span>
     </div>
-    <span class="trust-line gs-up">No account. No cloud. No data leaves your machine.</span>
+    <span class="trust-line gs-up">Free during early access. Encrypted at rest and in transit.</span>
   </div>
   <div class="scroll-indicator gs-up">
     <span>Scroll</span>
@@ -388,7 +388,7 @@ import Base from '../layouts/Base.astro';
       <div class="spacer line"></div>
       <div class="line output">Found <span class="err">3 issues</span>:</div>
       <div class="line output">&nbsp; 1. <span class="err">15 pods in CrashLoopBackOff</span> - all caused by DNS failure</div>
-      <div class="line output">&nbsp; 2. Root cause: <span class="warn">coredns forwarding to unreachable upstream</span></div>
+      <div class="line output">&nbsp; 2. Root cause: <span class="warn">coredns forwarding to unreachable DNS server</span></div>
       <div class="line output">&nbsp; 3. Fix: <span class="hl">edit coredns ConfigMap, forward . 1.1.1.1 8.8.8.8</span></div>
       <div class="spacer line"></div>
       <div class="line output">7.5M log lines, 1 root cause, <span class="hl">45 seconds</span></div>
@@ -400,20 +400,20 @@ import Base from '../layouts/Base.astro';
 
 <!-- Benchmark Stats Banner -->
 <section class="benchmark-banner" id="benchmark">
-  <h2 class="gs-up">Tested on 30 real bugs across 20 open source projects</h2>
-  <p class="sub gs-up">Express, Fastify, tRPC, NestJS, SvelteKit, Prisma, Zod, Drizzle, Axios, Jest, Payload, TypeORM, Sequelize, Medusa, Astro, Vite, and more.</p>
+  <h2 class="gs-up">Benchmarked on 30 real bugs across 20 open source projects</h2>
+  <p class="sub gs-up">Real errors from Express, Fastify, tRPC, NestJS, SvelteKit, Prisma, Zod, Axios, Jest, and more. No synthetic tests.</p>
   <div class="stat-row">
     <div class="stat-block gs-up">
-      <div class="stat-number" id="stat-speed">1,011x</div>
-      <div class="stat-label">faster than LLM diagnosis</div>
+      <div class="stat-number" id="stat-tokens">8x</div>
+      <div class="stat-label">fewer tokens per diagnosis</div>
     </div>
     <div class="stat-block gs-up">
       <div class="stat-number" id="stat-accuracy">83%</div>
-      <div class="stat-label">accuracy finding root cause file</div>
+      <div class="stat-label">root cause accuracy</div>
     </div>
     <div class="stat-block gs-up">
-      <div class="stat-number" id="stat-time">0.7s</div>
-      <div class="stat-label">average diagnosis time</div>
+      <div class="stat-number" id="stat-time">seconds</div>
+      <div class="stat-label">not minutes</div>
     </div>
     <div class="stat-block gs-up">
       <div class="stat-number" id="stat-wrong">0</div>
@@ -424,44 +424,44 @@ import Base from '../layouts/Base.astro';
 
 <div class="section-divider"></div>
 
-<!-- MTTR Comparison - Full width -->
+<!-- Token cost comparison -->
 <section class="comparison" id="comparison">
-  <h2 class="gs-up">Savants vs LLM vs manual debugging</h2>
+  <h2 class="gs-up">Your LLM is reading files it doesn't need to</h2>
   <div class="compare-grid compare-grid-3">
-    <div class="compare-card before gs-left" id="card-manual">
-      <div class="label">Manual debugging</div>
-      <div class="big">45 min</div>
-      <p>Mean time to root cause</p>
+    <div class="compare-card before gs-left" id="card-without">
+      <div class="label">LLM without Savants</div>
+      <div class="big">~33K tokens</div>
+      <p>Per diagnosis</p>
       <ul>
-        <li>Grep through logs and code</li>
-        <li>Read files, trace imports</li>
-        <li>Check git blame manually</li>
-        <li>Search Slack for context</li>
-        <li>Guess at connections between failures</li>
+        <li>Read entire file to find the function (5K tokens)</li>
+        <li>"Show me the imports" - reads 3 more files (15K tokens)</li>
+        <li>"Who changed this?" - reads git diff (8K tokens)</li>
+        <li>"Any Slack threads?" - you paste them (3K tokens)</li>
+        <li>5 rounds of back-and-forth, 10+ minutes</li>
       </ul>
     </div>
-    <div class="compare-card before gs-up" id="card-llm">
-      <div class="label">LLM (ChatGPT/Claude)</div>
-      <div class="big">12 min</div>
-      <p>Mean time to root cause</p>
+    <div class="compare-card after gs-up" id="card-with">
+      <div class="label">LLM with Savants</div>
+      <div class="big">~4K tokens</div>
+      <p>Per diagnosis</p>
       <ul>
-        <li>Paste error, get generic advice</li>
-        <li>LLM asks "can you share the code?"</li>
-        <li>Copy-paste files back and forth</li>
-        <li>Can't see your git history or Slack</li>
-        <li>50% accuracy finding exact file</li>
+        <li>LLM calls Savants MCP tool (1 call)</li>
+        <li>Gets: root cause, contributing factors, team context</li>
+        <li>Everything in one structured response</li>
+        <li>LLM reads it and explains the fix</li>
+        <li>1 round, 3 seconds, done</li>
       </ul>
     </div>
-    <div class="compare-card after gs-right" id="card-after">
-      <div class="label">With Savants</div>
-      <div class="big" id="counter-after">0.7 sec</div>
-      <p>Mean time to root cause</p>
+    <div class="compare-card after gs-right" id="card-savings">
+      <div class="label">Monthly impact (60 engineers)</div>
+      <div class="big">$27K saved</div>
+      <p>Net savings per month</p>
       <ul>
-        <li>One command: exact file + line number</li>
-        <li>Upstream call chain traced automatically</li>
-        <li>Git blame, Slack context, Jira tickets</li>
-        <li>83% accuracy, 0% wrong answers</li>
-        <li>Works on any codebase, no context window limits</li>
+        <li>Token usage: 12.6M down to 1.7M</li>
+        <li>Claude API: $38K down to $5.1K</li>
+        <li>Savants cost: $5.5K</li>
+        <li>Net savings: $27K/month</li>
+        <li>Savants pays for itself 6x over</li>
       </ul>
     </div>
   </div>
@@ -471,26 +471,26 @@ import Base from '../layouts/Base.astro';
 
 <!-- Use Cases -->
 <section class="use-cases section-contained" id="use-cases">
-  <h2 class="gs-up">What you can do today</h2>
-  <p class="sub gs-up">Three commands that change how you work.</p>
+  <h2 class="gs-up">One call to the context engine. One answer back.</h2>
+  <p class="sub gs-up">Instead of your LLM reading 10 files to find the answer, it asks Savants once and gets a structured response. Fewer tokens, better results.</p>
   <div class="uc-grid">
     <div class="uc-card gs-up">
-      <span class="uc-cmd mono">savants diagnose-error</span>
-      <h3>Trace prod errors to root cause</h3>
-      <div class="uc-stat">83% accuracy on 30 real OSS bugs</div>
-      <p>Finds exact file and line in 0.7 seconds. Traces upstream call chains, checks validation, shows git blame and Slack context. 1,011x faster than LLM diagnosis.</p>
+      <span class="uc-cmd mono">diagnose-error</span>
+      <h3>Root cause in one call</h3>
+      <div class="uc-stat">~4K tokens vs ~33K without</div>
+      <p>Returns the root cause with full context in one structured response. Your LLM reads the answer instead of exploring 10 files.</p>
     </div>
     <div class="uc-card gs-up">
-      <span class="uc-cmd mono">savants pr-risk</span>
-      <h3>8-check analysis before human review</h3>
-      <div class="uc-stat">8 checks</div>
-      <p>Coupling violations, blast radius, test coverage gaps, secret exposure, dependency drift, API breakage, config impact, rollback risk.</p>
+      <span class="uc-cmd mono">pr-risk</span>
+      <h3>PR review context in one call</h3>
+      <div class="uc-stat">~3K tokens vs ~20K without</div>
+      <p>Returns everything your LLM needs to write a thorough review in one structured response, instead of reading every changed file.</p>
     </div>
     <div class="uc-card gs-up">
-      <span class="uc-cmd mono">savants radar</span>
-      <h3>Your personal what-did-I-miss</h3>
-      <div class="uc-stat">All channels</div>
-      <p>Aggregates Slack threads, Jira updates, Sentry alerts, and deploy events into a single catch-up digest. Never miss context again.</p>
+      <span class="uc-cmd mono">radar</span>
+      <h3>Team context in one call</h3>
+      <div class="uc-stat">~2K tokens vs ~15K without</div>
+      <p>Returns: unanswered questions, mentions, blocking tickets, deploy events, service errors. Your LLM summarizes instead of scanning hundreds of Slack messages.</p>
     </div>
   </div>
 </section>
@@ -500,8 +500,8 @@ import Base from '../layouts/Base.astro';
 <!-- Data Sources Convergence - Full width with bg image edge-to-edge -->
 <section class="convergence" id="convergence">
   <div class="convergence-bg"></div>
-  <h2 class="gs-up">Seven sources. One unified view.</h2>
-  <p class="sub gs-up">Every signal your team generates, connected and queryable.</p>
+  <h2 class="gs-up">Seven sources. One context engine.</h2>
+  <p class="sub gs-up">Your LLM gets the full picture without reading a single file.</p>
   <div class="convergence-visual" id="conv-visual">
     <svg class="conv-lines" id="conv-lines" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid meet">
       <line id="line-0" x1="300" y1="30" x2="300" y2="200"/>
@@ -555,22 +555,22 @@ import Base from '../layouts/Base.astro';
 
 <!-- How it works -->
 <section class="how" id="how">
-  <h2 class="gs-up">Three steps. Sixty seconds.</h2>
+  <h2 class="gs-up">Install in 60 seconds. Save tokens immediately.</h2>
   <div class="steps">
     <div class="step gs-up">
       <div class="num" id="step-1">1</div>
       <h3>Install</h3>
-      <p><code class="mono">curl savants.sh | sh</code><br/>Single binary. Zero deps. Works on any Linux box.</p>
+      <p><code class="mono">curl savants.sh | sh</code><br/>Single binary. Zero deps. Builds the context store automatically.</p>
     </div>
     <div class="step gs-up">
       <div class="num" id="step-2">2</div>
-      <h3>Auto-detect</h3>
-      <p><code class="mono">savants up</code><br/>Finds K8s clusters, Docker, systemd, git repos. No config files.</p>
+      <h3>Connect</h3>
+      <p><code class="mono">savants up</code><br/>Auto-detects your environment and builds the context store in under a minute.</p>
     </div>
     <div class="step gs-up">
       <div class="num" id="step-3">3</div>
-      <h3>Know</h3>
-      <p>Ingests everything, runs deep analysis, tells you what's broken and why. Start to finish: 60 seconds.</p>
+      <h3>Ask</h3>
+      <p>Your LLM calls Savants via MCP. Gets a structured answer in seconds. No more file-by-file exploration.</p>
     </div>
   </div>
 </section>
@@ -579,14 +579,14 @@ import Base from '../layouts/Base.astro';
 
 <!-- Features -->
 <section class="features" id="features">
-  <h2 class="gs-up">Six layers. One connected view.</h2>
-  <p class="sub gs-up">Every layer of your infrastructure, connected and queryable in milliseconds.</p>
+  <h2 class="gs-up">What's inside the context engine</h2>
+  <p class="sub gs-up">Six layers of your infrastructure, pre-indexed and queryable in milliseconds.</p>
   <div class="grid" id="features-grid">
-    <div class="card gs-up"><span class="tag tag-code">Code</span><h3>Code Analysis</h3><p>AST-level call graphs, class hierarchies, decorator maps, config keys, string-literal references. Structural understanding, not text search.</p></div>
+    <div class="card gs-up"><span class="tag tag-code">Code</span><h3>Code Analysis</h3><p>Deep structural understanding of your codebase. Knows what calls what, what depends on what, and what changed recently.</p></div>
     <div class="card gs-up"><span class="tag tag-live">Live</span><h3>K8s Cluster State</h3><p>Real-time watch streams with 1.3s propagation. Diff-based ingest skips unchanged resources. Every pod, deployment, service, configmap, live and connected.</p></div>
     <div class="card gs-up"><span class="tag tag-live">Live</span><h3>Log Intelligence</h3><p>3-tier pipeline: severity classifier, template extraction, actionable patterns. 7.5M lines compressed to 78 patterns. No Loki required.</p></div>
     <div class="card gs-up"><span class="tag tag-live">Live</span><h3>Host Monitoring</h3><p>CPU, memory, disk, network, systemd, Docker, kernel events, journal errors. Full host story in 0.9 seconds. Zero agents to install.</p></div>
-    <div class="card gs-up"><span class="tag tag-ai">AI-Native</span><h3>30 MCP Tools</h3><p>Works inside Claude Code, Cursor, Windsurf. Ask "what's wrong with my cluster?" and get a grounded answer, not a hallucination.</p></div>
+    <div class="card gs-up"><span class="tag tag-ai">AI-Native</span><h3>AI-Native Tools</h3><p>Works inside Claude Code, Cursor, Windsurf. Ask "what's wrong with my cluster?" and get a grounded answer, not a hallucination.</p></div>
     <div class="card gs-up"><span class="tag tag-ai">AI-Native</span><h3>Cross-Layer Queries</h3><p>"This pod crashed because this configmap was edited, which is read by this code path, changed in this commit by this person." One query.</p></div>
   </div>
 </section>
@@ -595,12 +595,12 @@ import Base from '../layouts/Base.astro';
 
 <!-- Trust -->
 <section class="trust gs-up" id="trust">
-  <p>Built for teams that care about reliability</p>
+  <p>Trusted like GitHub, Datadog, and Sentry</p>
   <div class="badges">
-    <div class="badge"><span class="icon">&#128274;</span> No source code ever leaves your machine</div>
-    <div class="badge"><span class="icon">&#9889;</span> Sub-second queries</div>
-    <div class="badge"><span class="icon">&#128640;</span> Free forever for local use</div>
-    <div class="badge"><span class="icon">&#128064;</span> Verifiable with a packet capture</div>
+    <div class="badge"><span class="icon">&#128274;</span> Encrypted at rest and in transit</div>
+    <div class="badge"><span class="icon">&#9889;</span> Sub-second responses</div>
+    <div class="badge"><span class="icon">&#128640;</span> Free during early access</div>
+    <div class="badge"><span class="icon">&#128101;</span> Per-org access controls</div>
     <div class="badge"><span class="icon">&#128220;</span> Patent Pending</div>
   </div>
 </section>
@@ -609,8 +609,8 @@ import Base from '../layouts/Base.astro';
 
 <!-- Pricing - Full width -->
 <section class="pricing" id="pricing">
-  <h2 class="gs-up">Free while we're in beta</h2>
-  <p class="sub gs-up">Early access is free. Pay-as-you-go launches in 2026. Early adopters keep preferred pricing forever.</p>
+  <h2 class="gs-up">Free during early access</h2>
+  <p class="sub gs-up">Pay-as-you-go launches later this year. Early adopters keep preferred pricing forever.</p>
 
   <div class="pricing-grid">
     <div class="price-card featured gs-up" id="price-free">
@@ -618,8 +618,8 @@ import Base from '../layouts/Base.astro';
       <div class="price" id="price-free-num">Free</div>
       <div class="price-sub">While we're in beta. No card required.</div>
       <ul>
-        <li>All 30 MCP tools</li>
-        <li>Full local CLI + MCP server</li>
+        <li>All context engine tools</li>
+        <li>Full CLI + AI integrations</li>
         <li>Connect Slack, Jira, Sentry, GitHub</li>
         <li>Generous query limits while in beta</li>
         <li>Early adopters keep preferred pricing forever</li>
@@ -671,7 +671,7 @@ import Base from '../layouts/Base.astro';
         <tr>
           <td class="endpoint">diagnose-error</td>
           <td class="price-cell">$5.00</td>
-          <td class="value-cell">Root cause file + line in 0.7s. Upstream call chain. Git blame. Slack context.</td>
+          <td class="value-cell">Root cause with full context in seconds, not minutes.</td>
         </tr>
         <tr>
           <td class="endpoint">diagnose</td>
@@ -687,7 +687,7 @@ import Base from '../layouts/Base.astro';
         <tr>
           <td class="endpoint">diff-impact</td>
           <td class="price-cell">$1.00</td>
-          <td class="value-cell">Blast radius: what breaks if this code changes.</td>
+          <td class="value-cell">Impact analysis: what breaks if this code changes.</td>
         </tr>
         <tr>
           <td class="endpoint">pre-change-warning</td>
@@ -715,7 +715,7 @@ import Base from '../layouts/Base.astro';
           <td class="price-cell">$1.00</td>
           <td class="value-cell">Full incident timeline for any service or host.</td>
         </tr>
-        <tr class="section-header"><td colspan="3">Graph Queries</td></tr>
+        <tr class="section-header"><td colspan="3">Context Queries</td></tr>
         <tr>
           <td class="endpoint">query, search-code, find-references, dependency-chain, co-change-partners</td>
           <td class="price-cell">$0.25</td>
@@ -737,8 +737,8 @@ import Base from '../layouts/Base.astro';
 
   <!-- Better Together: Savants + LLM -->
   <div class="better-together gs-up">
-    <h3>The graph is what your LLM is missing</h3>
-    <p class="bt-sub">LLMs reason about code. Savants knows your code - every function, import, deploy, Slack thread, and Jira ticket, connected. Together, they find the root cause in one shot.</p>
+    <h3>Context is what your LLM is missing</h3>
+    <p class="bt-sub">LLMs are good at reasoning. They're bad at context. Savants gives them the context they need in one call.</p>
     <div class="bt-grid">
       <div class="bt-card">
         <div class="bt-label">LLM alone</div>
@@ -749,12 +749,12 @@ import Base from '../layouts/Base.astro';
       <div class="bt-card">
         <div class="bt-label">Savants alone</div>
         <div class="bt-stat">83%</div>
-        <div class="bt-desc">accuracy in 0.7 seconds<br/>exact file and line number</div>
+        <div class="bt-desc">root cause accuracy<br/>in seconds, not minutes</div>
       </div>
     </div>
     <div class="bt-result">
       <div class="bt-stat">~90% accuracy in under 3 seconds</div>
-      <div class="bt-desc">Savants narrows 25,000 functions to one file. The LLM reads it and explains the fix. No back-and-forth. No context window limits.</div>
+      <div class="bt-desc">The context engine narrows 25,000 functions to one file. The LLM reads it and explains the fix. One round trip. 8x fewer tokens.</div>
     </div>
   </div>
 </section>
@@ -764,8 +764,8 @@ import Base from '../layouts/Base.astro';
 <!-- Final CTA - Full width -->
 <section class="cta" id="cta">
   <div class="cta-aurora"></div>
-  <h2 id="cta-headline"><span class="cta-gradient-text">Stop grepping. Start knowing.</span></h2>
-  <p>10 free queries a month. No card required. Pay per call after that.<br/>Your infrastructure deserves a savant.</p>
+  <h2 id="cta-headline"><span class="cta-gradient-text">Give your LLM the context it needs. Stop paying for the context it doesn't.</span></h2>
+  <p>Free during early access. Early adopters keep preferred pricing forever.</p>
   <div class="btn-wrap">
     <a href="https://savants.sh" class="btn btn-pulse magnetic-btn" id="cta-btn">Install Savants</a>
     <a href="#features" class="btn-ghost">Learn more</a>
