@@ -20,7 +20,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.88.0
           . "$HOME/.cargo/env"
 
-      - name: Build
+      - name: Build savants-cloud
         working-directory: savants-cloud
         env:
           SQLX_OFFLINE: "true"
@@ -28,6 +28,13 @@ jobs:
           . "$HOME/.cargo/env"
           cargo build --release
           ls -lh target/release/savants-cloud
+
+      - name: Build savants CLI (for cloud pod)
+        working-directory: savants-cli
+        run: |
+          . "$HOME/.cargo/env"
+          cargo build --release
+          ls -lh target/release/savants
 
       - name: Upload to MinIO
         env:
@@ -38,6 +45,7 @@ jobs:
           chmod +x /usr/local/bin/mc
           mc alias set releases http://minio.minio.svc.cluster.local:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
           mc cp savants-cloud/target/release/savants-cloud "releases/savants-releases/cloud/savants-cloud"
+          mc cp savants-cli/target/release/savants "releases/savants-releases/cloud/savants-cli"
           echo "Build uploaded. Triggering deploy..."
 
       - name: Trigger deploy on host

@@ -1,21 +1,26 @@
 #!/bin/bash
-# Deploy savants-cloud from MinIO binary to k3s
-# Run on astra after CI builds the binary
+# Deploy savants-cloud from MinIO binaries to k3s
+# Run on astra after CI builds the binaries
 set -e
 
 echo "=== Deploying savants-cloud ==="
 
-# Download binary from MinIO
+# Download both binaries from MinIO
 mc cp astra/savants-releases/cloud/savants-cloud /tmp/savants-cloud
-chmod +x /tmp/savants-cloud
+mc cp astra/savants-releases/cloud/savants-cli /tmp/savants-cli
+chmod +x /tmp/savants-cloud /tmp/savants-cli
 
-# Build minimal Docker image
+# Build Docker image with BOTH binaries
 cat > /tmp/Dockerfile.savants-cloud << 'EOF'
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY savants-cloud /usr/local/bin/savants-cloud
+COPY savants-cli /usr/local/bin/savants
 EXPOSE 3000
 ENV LISTEN_ADDR=0.0.0.0:3000
+ENV SAVANTS_HOST=192.168.100.148
+ENV SAVANTS_PORT=6379
+ENV SAVANTS_MEMORY=savants
 CMD ["savants-cloud"]
 EOF
 
