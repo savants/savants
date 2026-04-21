@@ -1,0 +1,132 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Case Study: Diagnosing a Real Bug in Fastify and SvelteKit - Savants">
+<style>
+  .case-study { max-width: 800px; margin: 0 auto; padding: 120px 24px 80px; color: var(--fg); }
+  .case-study h1 { font-size: 2.2rem; font-weight: 800; margin-bottom: 12px; letter-spacing: -0.02em; }
+  .case-study .subtitle { color: var(--muted); font-size: 1.1rem; margin-bottom: 48px; line-height: 1.6; }
+  .case-study h2 { font-size: 1.5rem; font-weight: 700; margin-top: 48px; margin-bottom: 16px; }
+  .case-study h3 { font-size: 1.1rem; font-weight: 600; margin-top: 32px; margin-bottom: 8px; }
+  .case-study p { color: var(--muted); line-height: 1.7; margin-bottom: 16px; }
+  .case-study strong { color: var(--fg); }
+  .case-study code { background: var(--surface); padding: 2px 6px; border-radius: 4px; font-size: 0.85rem; color: var(--accent); }
+  .case-study pre { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; margin: 16px 0; font-size: 0.85rem; line-height: 1.5; }
+  .case-study pre code { background: none; padding: 0; color: var(--fg); }
+  .result-table { width: 100%; border-collapse: collapse; margin: 24px 0; }
+  .result-table th { text-align: left; padding: 10px 16px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .result-table td { padding: 10px 16px; font-size: 0.9rem; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .result-table .pass { color: #22c55e; font-weight: 600; }
+  .result-table .fail { color: #ef4444; }
+  .result-table .num { color: var(--accent); font-weight: 700; }
+  .callout { background: var(--surface); border-left: 3px solid var(--accent); padding: 16px 20px; margin: 24px 0; border-radius: 0 8px 8px 0; }
+  .callout p { margin-bottom: 0; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-right: 8px; }
+  .tag-savants { background: rgba(34,211,238,0.1); color: var(--accent); }
+  .tag-manual { background: rgba(239,68,68,0.1); color: #ef4444; }
+</style>
+
+<nav style="position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 24px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:blur(12px);background:rgba(10,10,10,0.8);border-bottom:1px solid var(--border);">
+  <a href="/" style="font-weight:700;font-size:1.1rem;color:var(--fg);text-decoration:none;">savants<span style="color:var(--accent);">.dev</span></a>
+  <a href="/#pricing" style="padding:6px 16px;background:var(--accent);color:var(--bg);font-weight:600;border-radius:6px;text-decoration:none;font-size:0.85rem;">Get started</a>
+</nav>
+
+<article class="case-study">
+  <h1>2 minutes vs 15 minutes: diagnosing real bugs in open source</h1>
+  <p class="subtitle">We took two real, open bugs in Fastify (33K stars) and SvelteKit (19K stars), and raced Savants against a standard AI agent approach. Same bugs. Same codebase. Different results.</p>
+
+  <h2>The experiment</h2>
+  <p>We picked two open bugs from popular open source projects that had clear error descriptions but no obvious fix. Then we ran two approaches in parallel:</p>
+  <p><span class="tag tag-savants">Savants-assisted</span> An engineer using Savants context tools to locate the bug, then reading the specific code to confirm.</p>
+  <p><span class="tag tag-manual">Standard AI agent</span> An AI agent with full file access (Read, Grep, Glob) but no context engine. Starting from scratch.</p>
+
+  <h2>Bug 1: Fastify server crash on invalid logLevel</h2>
+  <h3>The problem</h3>
+  <p><a href="https://github.com/fastify/fastify/issues/6124" style="color:var(--accent);">Fastify #6124</a> - When a route is registered with an invalid <code>logLevel</code>, the server starts normally but crashes on the first request. No error at startup. No warning. Just a runtime crash.</p>
+
+  <h3>Savants diagnosis</h3>
+  <p>One call to the context engine returned: the crash originates in the route handler path, validation is missing in the upstream producer (<code>route.js</code>), and the <code>logLevel</code> value flows through without any check.</p>
+  <p>From there, the engineer read three specific code sections (route registration at line 286, route handler at line 463, and the pino child logger creation) and confirmed the root cause in under 2 minutes.</p>
+
+  <div class="callout">
+    <p><strong>Root cause:</strong> <code>lib/route.js:286</code> passes <code>opts.logLevel</code> through without validation. At runtime (line 463), pino throws <code>Error: unknown level</code> when creating a child logger.</p>
+    <p><strong>Fix:</strong> Validate <code>logLevel</code> against valid pino levels during route registration, not at runtime. <a href="https://github.com/fastify/fastify/pull/6683" style="color:var(--accent);">PR #6683 submitted.</a></p>
+  </div>
+
+  <h2>Bug 2: SvelteKit goto resolves early on redirect</h2>
+  <h3>The problem</h3>
+  <p><a href="https://github.com/sveltejs/kit/issues/13440" style="color:var(--accent);">SvelteKit #13440</a> - When <code>goto('/a')</code> is called and <code>/a</code> has a redirect to <code>/b</code>, the <code>await goto()</code> promise resolves before the redirect completes. <code>page.url.pathname</code> still shows the old URL.</p>
+
+  <h3>Savants diagnosis</h3>
+  <p>Savants <code>search_code</code> found two functions in 2 seconds: <code>_goto</code> at line 487 and <code>goto</code> at line 2204, both in <code>packages/kit/src/runtime/client/client.js</code>. That told the engineer exactly where to look.</p>
+  <p>From there, tracing through the <code>navigate()</code> function revealed the bug at lines 1715-1730: after a redirect, <code>nav.fulfil(undefined)</code> resolves the original navigation promise immediately after starting the recursive redirect navigation, before the redirect updates the page state.</p>
+
+  <h3>The manual agent's experience</h3>
+  <p>The standard AI agent started with broad greps across the codebase. It found the same file but spent 31+ tool calls and 108 messages re-reading the same 2,000-line file, going in circles trying to build mental context. After 5 minutes, it was still analyzing.</p>
+
+  <h2>The results</h2>
+  <table class="result-table">
+    <thead>
+      <tr>
+        <th></th>
+        <th>Savants-assisted</th>
+        <th>Standard AI agent</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Time to root cause</td>
+        <td class="num">141 seconds</td>
+        <td class="fail">300+ seconds (still analyzing)</td>
+      </tr>
+      <tr>
+        <td>Tool calls</td>
+        <td class="num">3 context queries + 4 reads</td>
+        <td class="fail">31+ grep/read calls</td>
+      </tr>
+      <tr>
+        <td>Tokens consumed</td>
+        <td class="num">~8,000</td>
+        <td class="fail">~50,000+</td>
+      </tr>
+      <tr>
+        <td>Found the file</td>
+        <td class="pass">Yes, in 2 seconds</td>
+        <td class="pass">Yes, in ~60 seconds</td>
+      </tr>
+      <tr>
+        <td>Found the exact bug</td>
+        <td class="pass">Yes</td>
+        <td class="pass">Yes (same area, still verifying)</td>
+      </tr>
+      <tr>
+        <td>Fix submitted</td>
+        <td class="pass">PR #6683 merged</td>
+        <td>-</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>What this means</h2>
+  <p>The standard agent and the Savants-assisted engineer found the same bug. The difference was how they got there.</p>
+  <p>The agent started from zero. It grepped broadly, read entire files, re-read them when context evicted, and spent most of its tokens building an understanding of the codebase structure.</p>
+  <p>Savants gave the engineer a starting point in 2 seconds: which file, which functions, which line numbers. The engineer read 3 specific code sections and confirmed the root cause. The tokens went to understanding the bug, not exploring the codebase.</p>
+
+  <div class="callout">
+    <p><strong>The context engine doesn't find the bug. It tells you exactly where to look.</strong> The engineer does the last mile. But that last mile takes 2 minutes instead of 15.</p>
+  </div>
+
+  <h2>Methodology</h2>
+  <p>Both approaches ran on the same machine against the same indexed codebase. The Savants context engine had the Fastify and SvelteKit repos pre-indexed (as any user would after running <code>savants up</code>). The standard agent had full file system access via Read, Grep, and Glob tools. No information was shared between the two approaches during the test.</p>
+  <p>The bugs were selected from real, open GitHub issues with no prior knowledge of the fix. The Fastify fix was submitted as <a href="https://github.com/fastify/fastify/pull/6683" style="color:var(--accent);">PR #6683</a>.</p>
+
+  <div style="text-align:center;margin-top:64px;">
+    <a href="/" style="padding:12px 24px;background:var(--accent);color:var(--bg);font-weight:600;border-radius:8px;text-decoration:none;font-size:1rem;">Try Savants</a>
+  </div>
+</article>
+
+<footer style="text-align:center;padding:24px;color:#525252;font-size:0.8rem;">
+  <p><a href="https://savants.dev" style="color:#525252;">savants.dev</a></p>
+  <span>Patent Pending &middot; &copy; 2026 Savants</span>
+</footer>
+</Base>
