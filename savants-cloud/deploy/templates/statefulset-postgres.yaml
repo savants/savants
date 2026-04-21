@@ -26,7 +26,10 @@ spec:
             - name: POSTGRES_USER
               value: {{ .Values.postgres.user }}
             - name: POSTGRES_PASSWORD
-              value: {{ .Values.postgres.password }}
+              valueFrom:
+                secretKeyRef:
+                  name: savants-cloud-secrets
+                  key: postgres-password
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data

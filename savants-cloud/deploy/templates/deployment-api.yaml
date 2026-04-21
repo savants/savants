@@ -20,6 +20,7 @@ spec:
       containers:
         - name: api
           image: {{ .Values.api.image }}
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: {{ .Values.api.port }}
           env:
