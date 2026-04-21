@@ -12,6 +12,12 @@ import Base from '../layouts/Base.astro';
   /* Section layout classes */
   .section-wide { width: 100%; padding: 80px 24px; position: relative; }
   .section-contained { width: 100%; max-width: 1000px; margin: 0 auto; padding: 80px 24px; position: relative; }
+  @media (max-width: 640px) {
+    .section-wide, .section-contained { padding: 40px 16px; }
+    .terminal-section { padding: 40px 16px !important; }
+    .benchmark-banner { padding: 40px 16px !important; }
+    .comparison { padding: 40px 16px !important; }
+  }
   .section-inner { max-width: 1000px; margin: 0 auto; }
 
   /* Gradient dividers between sections */
@@ -875,6 +881,9 @@ import Base from '../layouts/Base.astro';
     }
 
     gsap.registerPlugin(ScrollTrigger);
+
+    // Enable GSAP animations now that the library is loaded
+    document.body.classList.add('gsap-ready');
 
     // Character splitter utility
     function splitChars(el: HTMLElement) {
