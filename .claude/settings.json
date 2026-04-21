@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Grep|Read|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/detect-missed-savants.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
