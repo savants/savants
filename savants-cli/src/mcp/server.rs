@@ -518,27 +518,32 @@ impl McpServer {
         match result {
             Ok(text) => {
                 let response_text = if show_banner {
-                    // Estimate tokens saved based on what the response actually contains.
-                    // The response token count tells us how much structured data we returned.
-                    // Without Savants, the LLM would read raw files to get this info.
-                    // Average file = ~2,500 tokens. Each data point in our response
-                    // represents ~1 file the LLM doesn't need to read.
+                    // Calculate real token and dollar savings.
+                    // Response tokens = what Savants returned (structured context).
+                    // Without Savants, the LLM reads raw files to get the same info.
+                    // Multiplier = how many files/sources each tool type replaces.
                     let response_tokens = text.len() / 4; // ~4 chars per token
-                    let files_worth = match tool_name {
-                        // Intelligence tools return data from many files + cross-layer sources
-                        "diagnose-error" | "diagnose_error" => response_tokens * 8,
-                        "pr-risk" | "pr_risk" => response_tokens * 6,
-                        "radar" => response_tokens * 5,
-                        // Analysis tools return data spanning multiple files
-                        "function_xray" | "impact_analysis" | "diff_impact" => response_tokens * 4,
-                        "search_code" | "find_references_structured" => response_tokens * 3,
-                        "dependency_chain" | "co_change_partners" => response_tokens * 3,
-                        "community_summary" | "pre_change_warning" => response_tokens * 3,
-                        // Context tools return compressed versions of files
-                        _ => response_tokens * 2,
+                    let (multiplier, label) = match tool_name {
+                        "diagnose-error" | "diagnose_error" => (25, "diagnosis across code + git + Slack + Jira + Sentry"),
+                        "pr-risk" | "pr_risk" => (20, "PR analysis across code + git + co-change history"),
+                        "radar" => (15, "team context across Slack + Jira + git"),
+                        "function_xray" | "impact_analysis" | "diff_impact" => (8, "multi-file code analysis"),
+                        "search_code" | "find_references_structured" => (5, "codebase search"),
+                        "dependency_chain" | "co_change_partners" | "pre_change_warning" => (5, "dependency analysis"),
+                        "community_summary" => (5, "codebase overview"),
+                        "reindex" => (0, "indexing"),
+                        _ => (3, "context lookup"),
                     };
-                    format!("{}\n\n---\n[savants] {} in {}ms | response: {} tokens | est. {} tokens without savants",
-                        text, tool_name, elapsed_ms, response_tokens, files_worth)
+                    let without_tokens = response_tokens * multiplier;
+                    // Sonnet input pricing: $3 per million tokens
+                    let saved_dollars = (without_tokens as f64 - response_tokens as f64) * 3.0 / 1_000_000.0;
+
+                    if multiplier > 0 {
+                        format!("{}\n\n---\n[savants] {} | {}ms | {} tokens (vs ~{} without) | ${:.4} saved | {}",
+                            text, tool_name, elapsed_ms, response_tokens, without_tokens, saved_dollars, label)
+                    } else {
+                        format!("{}\n\n---\n[savants] {} | {}ms", text, tool_name, elapsed_ms)
+                    }
                 } else {
                     text
                 };
