@@ -13,12 +13,24 @@ import Base from '../layouts/Base.astro';
   .section-wide { width: 100%; padding: 80px 24px; position: relative; }
   .section-contained { width: 100%; max-width: 1000px; margin: 0 auto; padding: 80px 24px; position: relative; }
   @media (max-width: 640px) {
-    .section-wide, .section-contained { padding: 32px 16px; }
-    .terminal-section { padding: 24px 12px !important; }
-    .benchmark-banner { padding: 32px 16px !important; }
-    .comparison { padding: 32px 16px !important; }
+    .section-wide, .section-contained { padding: 24px 16px; }
+    .terminal-section { padding: 16px 12px !important; }
+    .benchmark-banner { padding: 24px 16px !important; }
+    .comparison { padding: 24px 16px !important; }
     .section-divider { display: none; }
-    .hero { min-height: auto; padding: 100px 16px 40px; }
+    .hero { min-height: auto; padding: 80px 16px 24px; }
+    h2 { font-size: 1.4rem !important; margin-bottom: 8px !important; }
+    .sub { margin-bottom: 20px !important; }
+    .benchmark-banner .sub { margin-bottom: 20px !important; }
+    .comparison h2 { margin-bottom: 16px !important; }
+    .use-cases h2 { margin-bottom: 8px !important; }
+    .use-cases .sub { margin-bottom: 16px !important; }
+    .convergence .sub { margin-bottom: 24px !important; }
+    .how h2 { margin-bottom: 16px !important; }
+    .stat-row { gap: 12px; }
+    .stat-block { padding: 16px 12px; }
+    .stat-number { font-size: 1.8rem !important; }
+    .pricing h2 { margin-bottom: 8px !important; }
   }
   .section-inner { max-width: 1000px; margin: 0 auto; }
 
