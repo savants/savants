@@ -473,6 +473,7 @@ impl McpServer {
     fn handle_tool_call(&self, req_id: &Value, params: &Value) -> Value {
         let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
+        let call_start = std::time::Instant::now();
 
         let result = match tool_name {
             "diagnose" => self.tool_diagnose(&args),
@@ -509,10 +510,42 @@ impl McpServer {
             _ => Err(format!("Unknown tool: {}", tool_name)),
         };
 
+        let elapsed_ms = call_start.elapsed().as_millis();
+
+        // Show savings banner (disable with SAVANTS_QUIET=1)
+        let show_banner = std::env::var("SAVANTS_QUIET").unwrap_or_default() != "1";
+
         match result {
-            Ok(text) => self.response(req_id, json!({
-                "content": [{"type": "text", "text": text}]
-            })),
+            Ok(text) => {
+                let response_text = if show_banner {
+                    // Estimate tokens saved based on what the response actually contains.
+                    // The response token count tells us how much structured data we returned.
+                    // Without Savants, the LLM would read raw files to get this info.
+                    // Average file = ~2,500 tokens. Each data point in our response
+                    // represents ~1 file the LLM doesn't need to read.
+                    let response_tokens = text.len() / 4; // ~4 chars per token
+                    let files_worth = match tool_name {
+                        // Intelligence tools return data from many files + cross-layer sources
+                        "diagnose-error" | "diagnose_error" => response_tokens * 8,
+                        "pr-risk" | "pr_risk" => response_tokens * 6,
+                        "radar" => response_tokens * 5,
+                        // Analysis tools return data spanning multiple files
+                        "function_xray" | "impact_analysis" | "diff_impact" => response_tokens * 4,
+                        "search_code" | "find_references_structured" => response_tokens * 3,
+                        "dependency_chain" | "co_change_partners" => response_tokens * 3,
+                        "community_summary" | "pre_change_warning" => response_tokens * 3,
+                        // Context tools return compressed versions of files
+                        _ => response_tokens * 2,
+                    };
+                    format!("{}\n\n---\n[savants] {} in {}ms | response: {} tokens | est. {} tokens without savants",
+                        text, tool_name, elapsed_ms, response_tokens, files_worth)
+                } else {
+                    text
+                };
+                self.response(req_id, json!({
+                    "content": [{"type": "text", "text": response_text}]
+                }))
+            },
             Err(e) => self.response(req_id, json!({
                 "content": [{"type": "text", "text": format!("Error: {}", e)}],
                 "isError": true
