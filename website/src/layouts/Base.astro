@@ -75,6 +75,11 @@ const { title, description = "The context engine for your LLM. Savants gives you
       background: var(--bg); color: var(--fg);
       line-height: 1.6; -webkit-font-smoothing: antialiased;
       overflow-x: hidden;
+      opacity: 0;
+    }
+    body.ready {
+      opacity: 1;
+      transition: opacity 0.4s ease;
     }
     code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
     .container { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
@@ -87,5 +92,19 @@ const { title, description = "The context engine for your LLM. Savants gives you
     .gs-scale { opacity: 0; transform: scale(0.95); }
   </style>
 </head>
-<body><slot /></body>
+<body>
+<slot />
+<script>
+  // Reveal the page smoothly after critical resources load.
+  // Prevents the 200ms flash of unstyled video/content before GSAP runs.
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => document.body.classList.add('ready'));
+  } else {
+    // Fallback: reveal after a short delay
+    setTimeout(() => document.body.classList.add('ready'), 100);
+  }
+  // Safety: always reveal within 500ms even if fonts fail
+  setTimeout(() => document.body.classList.add('ready'), 500);
+</script>
+</body>
 </html>

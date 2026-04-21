@@ -38,7 +38,8 @@ import Base from '../layouts/Base.astro';
   /* Hero */
   .hero { width: 100%; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; position: relative; overflow: hidden; padding: 120px 24px 80px; }
   .hero-bg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; z-index: 0; }
-  .hero-bg video { width: 100%; height: 100%; object-fit: cover; opacity: 0.15; will-change: transform; }
+  .hero-bg video { width: 100%; height: 100%; object-fit: cover; opacity: 0; will-change: transform; transition: opacity 1s ease; }
+  .hero-bg video.loaded { opacity: 0.15; }
   .hero-bg img.fallback { width: 100%; height: 100%; object-fit: cover; opacity: 0.08; display: none; }
   .hero-content { position: relative; z-index: 2; max-width: 800px; }
   .hero h1 { font-size: clamp(2.5rem, 5vw, 4rem); font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 24px; }
@@ -341,7 +342,7 @@ import Base from '../layouts/Base.astro';
 <!-- Hero - Full viewport -->
 <section class="hero">
   <div class="hero-bg" id="hero-bg">
-    <video autoplay muted loop playsinline poster="/hero-bg.png">
+    <video autoplay muted loop playsinline poster="/hero-bg.png" oncanplaythrough="this.classList.add('loaded')" onloadeddata="this.classList.add('loaded')">
       <source src="/hero-video.mp4" type="video/mp4" />
     </video>
   </div>
