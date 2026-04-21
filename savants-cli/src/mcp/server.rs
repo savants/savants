@@ -466,6 +466,55 @@ impl McpServer {
                 }
             },
             {
+                "name": "import_tree",
+                "description": "Returns the full import graph of a file to a given depth. Shows what each file imports and what those files import, recursively. One call replaces reading 5+ files to trace a dependency chain.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file": {"type": "string", "description": "File path (relative to repo root)"},
+                        "repo": {"type": "string", "description": "Repository name"},
+                        "depth": {"type": "integer", "description": "How many levels deep to trace. Default: 2"}
+                    },
+                    "required": ["file"]
+                }
+            },
+            {
+                "name": "module_exports",
+                "description": "Returns just the public API surface of a file: exported function names with parameter signatures. No bodies, no internal functions. Use this when you need to know what a module provides without reading the whole file.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file": {"type": "string", "description": "File path (relative to repo root)"},
+                        "repo": {"type": "string", "description": "Repository name"}
+                    },
+                    "required": ["file"]
+                }
+            },
+            {
+                "name": "blast_radius",
+                "description": "Given a function, returns all functions that directly or transitively depend on it. Shows what would break if you change this function.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "function": {"type": "string", "description": "Function name"},
+                        "repo": {"type": "string", "description": "Repository name"},
+                        "depth": {"type": "integer", "description": "Max traversal depth. Default: 3"}
+                    },
+                    "required": ["function"]
+                }
+            },
+            {
+                "name": "dead_code",
+                "description": "Find functions with zero callers - candidates for removal during refactoring.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string", "description": "Repository name"},
+                        "file": {"type": "string", "description": "Optional: limit to a specific file"}
+                    }
+                }
+            },
+            {
                 "name": "pr-risk",
                 "description": "Analyze open PRs for risk: removed null guards, schema changes, deleted files, co-change gaps, blast radius, high-churn functions, unanswered Slack questions, Jira mismatches, and known prod errors.",
                 "inputSchema": {
@@ -525,6 +574,10 @@ impl McpServer {
             "file_skeleton" => self.tool_file_skeleton(&args),
             "where_used" => self.tool_where_used(&args),
             "callers" => self.tool_callers(&args),
+            "import_tree" => self.tool_import_tree(&args),
+            "module_exports" => self.tool_module_exports(&args),
+            "blast_radius" => self.tool_blast_radius(&args),
+            "dead_code" => self.tool_dead_code(&args),
             "search_code" => self.tool_search_code(&args),
             "find_references_structured" => self.tool_find_references(&args),
             "function_xray" => self.tool_function_xray(&args),
@@ -1669,6 +1722,191 @@ impl McpServer {
             let line = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
             lines.push(format!("  {}:{} - {}()", file, line, name));
         }
+        Ok(lines.join("\n"))
+    }
+
+    fn tool_import_tree(&self, args: &Value) -> Result<String, String> {
+        let file = arg_str(args, "file")?;
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+        let depth = args.get("depth").and_then(|v| v.as_i64()).unwrap_or(2) as usize;
+
+        let mut lines = vec![format!("=== Import tree: {} (depth {}) ===", file, depth)];
+        let mut visited = std::collections::HashSet::new();
+        self.build_import_tree(&file, repo, depth, 0, &mut lines, &mut visited);
+
+        if lines.len() == 1 {
+            lines.push(format!("  No imports found for '{}'", file));
+        }
+        Ok(lines.join("\n"))
+    }
+
+    fn build_import_tree(&self, file: &str, repo: &str, max_depth: usize, current_depth: usize,
+                         lines: &mut Vec<String>, visited: &mut std::collections::HashSet<String>) {
+        if current_depth >= max_depth || visited.contains(file) { return; }
+        visited.insert(file.to_string());
+
+        let indent = "  ".repeat(current_depth + 1);
+
+        // Get all functions imported by this file
+        let imports = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (fi:CodeFile {{repo: '{}', path: '{}'}})-[:IMPORTS]->(fn:CodeFunction) \
+                 RETURN DISTINCT fn.name, fn.file ORDER BY fn.file",
+                repo, file.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        // Group by file
+        let mut by_file: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for row in &imports {
+            let name = row.get(0).map(|v| v.as_str()).unwrap_or("?").to_string();
+            let imp_file = row.get(1).map(|v| v.as_str()).unwrap_or("?").to_string();
+            by_file.entry(imp_file).or_default().push(name);
+        }
+
+        for (imp_file, names) in &by_file {
+            let name_list = names.join(", ");
+            lines.push(format!("{}-> {} [{}]", indent, imp_file, name_list));
+            // Recurse
+            self.build_import_tree(imp_file, repo, max_depth, current_depth + 1, lines, visited);
+        }
+    }
+
+    fn tool_module_exports(&self, args: &Value) -> Result<String, String> {
+        let file = arg_str(args, "file")?;
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+
+        // Get all functions in this file (these are the "exports" since tree-sitter
+        // extracts top-level and exported declarations)
+        let functions = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (f:CodeFunction {{repo: '{}', file: '{}'}}) \
+                 RETURN f.name, f.params, f.line ORDER BY f.line",
+                repo, file.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        let interfaces = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (i:CodeInterface {{repo: '{}', file: '{}'}}) \
+                 RETURN i.name, i.line ORDER BY i.line",
+                repo, file.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        if functions.is_empty() && interfaces.is_empty() {
+            return Ok(format!("No exports found in '{}'", file));
+        }
+
+        let mut lines = vec![format!("=== Exports: {} ===", file)];
+
+        for row in &interfaces {
+            let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+            let line = row.get(1).map(|v| v.as_i64()).unwrap_or(0);
+            lines.push(format!("  type {} (line {})", name, line));
+        }
+
+        for row in &functions {
+            let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+            let params = row.get(1).map(|v| v.as_str()).unwrap_or("");
+            let line = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
+            lines.push(format!("  {}({}) (line {})", name, params, line));
+        }
+
+        lines.push(format!("\n{} functions, {} types", functions.len(), interfaces.len()));
+        Ok(lines.join("\n"))
+    }
+
+    fn tool_blast_radius(&self, args: &Value) -> Result<String, String> {
+        let function = arg_str(args, "function")?;
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+        let depth = args.get("depth").and_then(|v| v.as_i64()).unwrap_or(3);
+
+        // Find all transitive callers (functions that depend on this one)
+        let dependents = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (caller:CodeFunction {{repo: '{}'}})-[:CALLS*1..{}]->(target:CodeFunction {{repo: '{}', name: '{}'}}) \
+                 RETURN DISTINCT caller.name, caller.file ORDER BY caller.file",
+                repo, depth, repo, function.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        if dependents.is_empty() {
+            return Ok(format!("No dependents found for '{}' (blast radius: 0)", function));
+        }
+
+        let mut lines = vec![format!("=== Blast radius: {} ({} dependents, depth {}) ===", function, dependents.len(), depth)];
+
+        // Group by file
+        let mut current_file = String::new();
+        for row in &dependents {
+            let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+            let file = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+            if file != current_file {
+                current_file = file.to_string();
+                lines.push(format!("\n  {}:", file));
+            }
+            lines.push(format!("    {}()", name));
+        }
+
+        // Also count affected files
+        let mut files: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for row in &dependents {
+            files.insert(row.get(1).map(|v| v.as_str()).unwrap_or("?"));
+        }
+        lines.push(format!("\nIf you change {}: {} functions across {} files could break.", function, dependents.len(), files.len()));
+
+        Ok(lines.join("\n"))
+    }
+
+    fn tool_dead_code(&self, args: &Value) -> Result<String, String> {
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+        let file_filter = args.get("file").and_then(|v| v.as_str());
+
+        let query = if let Some(f) = file_filter {
+            format!(
+                "MATCH (f:CodeFunction {{repo: '{}', file: '{}'}}) \
+                 WHERE NOT ()-[:CALLS]->(f) AND NOT f.name STARTS WITH '_' \
+                 RETURN f.name, f.file, f.line ORDER BY f.file",
+                repo, f.replace('\'', "\\'")
+            )
+        } else {
+            format!(
+                "MATCH (f:CodeFunction {{repo: '{}'}}) \
+                 WHERE NOT ()-[:CALLS]->(f) AND NOT f.name STARTS WITH '_' \
+                 AND NOT f.file CONTAINS 'test' AND NOT f.file CONTAINS '__mock' \
+                 RETURN f.name, f.file, f.line ORDER BY f.file LIMIT 50",
+                repo
+            )
+        };
+
+        let dead = self.query_text(&self.client, &query, &[]).unwrap_or_default();
+
+        if dead.is_empty() {
+            return Ok("No dead code found (all functions have callers).".to_string());
+        }
+
+        let mut lines = vec![format!("=== Dead code candidates ({}) ===", dead.len())];
+        let mut current_file = String::new();
+        for row in &dead {
+            let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+            let file = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+            let line = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
+            if file != current_file {
+                current_file = file.to_string();
+                lines.push(format!("\n  {}:", file));
+            }
+            lines.push(format!("    {}() line {} - no callers found", name, line));
+        }
+        lines.push("\nNote: entry points (routes, exports, main) may appear here.".to_string());
         Ok(lines.join("\n"))
     }
 
