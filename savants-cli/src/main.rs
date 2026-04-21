@@ -92,6 +92,8 @@ enum Commands {
     },
     /// Disconnect from savants.cloud
     Disconnect,
+    /// Show usage this month (calls, cost, by tool)
+    Usage,
     /// View internal state
     Config {
         #[command(subcommand)]
@@ -406,6 +408,9 @@ async fn main() {
         },
         Commands::Disconnect => {
             commands::connect::disconnect();
+        }
+        Commands::Usage => {
+            commands::usage::run().await;
         }
         Commands::Config { action } => {
             match action {

@@ -127,6 +127,15 @@ impl CloudProxyServer {
                             }]
                         })))
                     }
+                    Err(e) if e.contains("402") || e.contains("Payment") => {
+                        Some(self.response(&req_id, json!({
+                            "content": [{
+                                "type": "text",
+                                "text": "Free tier limit reached (10 calls/month).\n\nUpgrade to pay-as-you-go: https://savants.cloud/billing\nOr run: savants usage"
+                            }],
+                            "isError": true
+                        })))
+                    }
                     Err(e) => Some(self.error(&req_id, -32000, &format!("Cloud error: {}", e))),
                 }
             }
