@@ -13,10 +13,12 @@ import Base from '../layouts/Base.astro';
   .section-wide { width: 100%; padding: 80px 24px; position: relative; }
   .section-contained { width: 100%; max-width: 1000px; margin: 0 auto; padding: 80px 24px; position: relative; }
   @media (max-width: 640px) {
-    .section-wide, .section-contained { padding: 40px 16px; }
-    .terminal-section { padding: 40px 16px !important; }
-    .benchmark-banner { padding: 40px 16px !important; }
-    .comparison { padding: 40px 16px !important; }
+    .section-wide, .section-contained { padding: 32px 16px; }
+    .terminal-section { padding: 24px 12px !important; }
+    .benchmark-banner { padding: 32px 16px !important; }
+    .comparison { padding: 32px 16px !important; }
+    .section-divider { display: none; }
+    .hero { min-height: auto; padding: 100px 16px 40px; }
   }
   .section-inner { max-width: 1000px; margin: 0 auto; }
 
