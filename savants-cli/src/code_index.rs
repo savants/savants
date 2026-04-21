@@ -37,10 +37,21 @@ impl CodeIndexer {
     }
 
     /// Index an entire repository.
+    /// Prunes stale nodes first - any code that was deleted since last index is removed.
     pub fn index_repo(&mut self, repo_path: &str) -> IndexStats {
         // Build workspace map from package.json files before indexing
         self.workspace_map = Self::build_workspace_map(repo_path);
         let mut stats = IndexStats::default();
+
+        // PRUNE: Delete all code nodes for this repo before re-creating.
+        // This ensures deleted files/functions don't persist as stale data.
+        let _ = self.graph.query(
+            &format!(
+                "MATCH (n) WHERE n.repo = '{}' AND (n:CodeFunction OR n:CodeFile OR n:CodeClass OR n:CodeInterface) DETACH DELETE n",
+                esc(&self.repo_name)
+            ),
+            &[],
+        );
 
         let skip_dirs = [
             "node_modules", ".git", "dist", "build", ".next", "target",

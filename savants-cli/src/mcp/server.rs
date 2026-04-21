@@ -430,6 +430,42 @@ impl McpServer {
                 }
             },
             {
+                "name": "file_skeleton",
+                "description": "Returns the structure of a file: all function names, class names, type definitions, their line ranges, and export status. No function bodies. Use this instead of reading the full file when you need to understand a file's structure.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file": {"type": "string", "description": "File path (relative to repo root, e.g. 'server/services/stripe.ts')"},
+                        "repo": {"type": "string", "description": "Repository name"}
+                    },
+                    "required": ["file"]
+                }
+            },
+            {
+                "name": "where_used",
+                "description": "Find every place a symbol (function, class, type, variable) is used across the entire codebase. Returns: callers, importers, and type references, grouped by file. Use this instead of grep.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "The symbol name to search for"},
+                        "repo": {"type": "string", "description": "Repository name"}
+                    },
+                    "required": ["symbol"]
+                }
+            },
+            {
+                "name": "callers",
+                "description": "Find all functions that directly call a given function. Returns caller name, file, and line number.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "function": {"type": "string", "description": "Function name to find callers of"},
+                        "repo": {"type": "string", "description": "Repository name"}
+                    },
+                    "required": ["function"]
+                }
+            },
+            {
                 "name": "pr-risk",
                 "description": "Analyze open PRs for risk: removed null guards, schema changes, deleted files, co-change gaps, blast radius, high-churn functions, unanswered Slack questions, Jira mismatches, and known prod errors.",
                 "inputSchema": {
@@ -486,6 +522,9 @@ impl McpServer {
             "deployment_info" => self.tool_deployment_info(&args),
             "pod_dependencies" => self.tool_pod_dependencies(&args),
             "namespace_summary" => self.tool_namespace_summary(&args),
+            "file_skeleton" => self.tool_file_skeleton(&args),
+            "where_used" => self.tool_where_used(&args),
+            "callers" => self.tool_callers(&args),
             "search_code" => self.tool_search_code(&args),
             "find_references_structured" => self.tool_find_references(&args),
             "function_xray" => self.tool_function_xray(&args),
@@ -1446,6 +1485,193 @@ impl McpServer {
         Ok(lines.join("\n"))
     }
 
+    // ---------------------------------------------------------------
+    // Context tools: replace grep/read for LLMs
+    // ---------------------------------------------------------------
+
+    fn tool_file_skeleton(&self, args: &Value) -> Result<String, String> {
+        let file = arg_str(args, "file")?;
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+
+        // Get all functions, classes, and interfaces in this file
+        let functions = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (f:CodeFunction {{repo: '{}', file: '{}'}}) \
+                 RETURN f.name, f.line, f.end_line, f.params \
+                 ORDER BY f.line",
+                repo, file.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        let classes = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (c:CodeClass {{repo: '{}', file: '{}'}}) \
+                 RETURN c.name, c.line, c.end_line \
+                 ORDER BY c.line",
+                repo, file.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        let interfaces = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (i:CodeInterface {{repo: '{}', file: '{}'}}) \
+                 RETURN i.name, i.line, i.end_line \
+                 ORDER BY i.line",
+                repo, file.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        if functions.is_empty() && classes.is_empty() && interfaces.is_empty() {
+            return Ok(format!("No code entities found in '{}'. Is it indexed?", file));
+        }
+
+        let mut lines = vec![format!("=== {} ===", file)];
+
+        if !classes.is_empty() {
+            lines.push("Classes:".to_string());
+            for row in &classes {
+                let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                let line = row.get(1).map(|v| v.as_i64()).unwrap_or(0);
+                let end = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
+                lines.push(format!("  class {} (lines {}-{})", name, line, end));
+            }
+        }
+
+        if !interfaces.is_empty() {
+            lines.push("Types/Interfaces:".to_string());
+            for row in &interfaces {
+                let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                let line = row.get(1).map(|v| v.as_i64()).unwrap_or(0);
+                let end = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
+                lines.push(format!("  {} (lines {}-{})", name, line, end));
+            }
+        }
+
+        if !functions.is_empty() {
+            lines.push("Functions:".to_string());
+            for row in &functions {
+                let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                let line = row.get(1).map(|v| v.as_i64()).unwrap_or(0);
+                let end = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
+                let params = row.get(3).map(|v| v.as_str()).unwrap_or("");
+                lines.push(format!("  {}({}) (lines {}-{})", name, params, line, end));
+            }
+        }
+
+        lines.push(format!("\n{} functions, {} classes, {} types",
+            functions.len(), classes.len(), interfaces.len()));
+        Ok(lines.join("\n"))
+    }
+
+    fn tool_where_used(&self, args: &Value) -> Result<String, String> {
+        let symbol = arg_str(args, "symbol")?;
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+
+        let mut lines = vec![format!("=== Where '{}' is used ===", symbol)];
+
+        // 1. Direct callers (functions that call this symbol)
+        let callers = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (caller:CodeFunction {{repo: '{}'}})-[:CALLS]->(target:CodeFunction {{repo: '{}', name: '{}'}}) \
+                 RETURN caller.name, caller.file, caller.line ORDER BY caller.file",
+                repo, repo, symbol.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        if !callers.is_empty() {
+            lines.push(format!("\nCallers ({}):", callers.len()));
+            for row in &callers {
+                let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                let file = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                let line = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
+                lines.push(format!("  {}:{} - {}()", file, line, name));
+            }
+        }
+
+        // 2. Importers (files that import this symbol)
+        let importers = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (fi:CodeFile {{repo: '{}'}})-[:IMPORTS]->(fn:CodeFunction {{repo: '{}', name: '{}'}}) \
+                 RETURN fi.path ORDER BY fi.path",
+                repo, repo, symbol.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        if !importers.is_empty() {
+            lines.push(format!("\nImported by ({} files):", importers.len()));
+            for row in &importers {
+                let path = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                lines.push(format!("  {}", path));
+            }
+        }
+
+        // 3. Functions that reference this symbol in their body
+        let body_refs = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (f:CodeFunction {{repo: '{}'}}) \
+                 WHERE toLower(f.body) CONTAINS toLower('{}') AND f.name <> '{}' \
+                 RETURN f.name, f.file, f.line ORDER BY f.file LIMIT 20",
+                repo, symbol.replace('\'', "\\'"), symbol.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        if !body_refs.is_empty() {
+            lines.push(format!("\nReferenced in body ({}):", body_refs.len()));
+            for row in &body_refs {
+                let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+                let file = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+                let line = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
+                lines.push(format!("  {}:{} - {}()", file, line, name));
+            }
+        }
+
+        if callers.is_empty() && importers.is_empty() && body_refs.is_empty() {
+            lines.push(format!("\nNo usages of '{}' found in {}", symbol, repo));
+        }
+
+        Ok(lines.join("\n"))
+    }
+
+    fn tool_callers(&self, args: &Value) -> Result<String, String> {
+        let function = arg_str(args, "function")?;
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+
+        let callers = self.query_text(
+            &self.client,
+            &format!(
+                "MATCH (caller:CodeFunction {{repo: '{}'}})-[:CALLS]->(target:CodeFunction {{repo: '{}', name: '{}'}}) \
+                 RETURN caller.name, caller.file, caller.line ORDER BY caller.file",
+                repo, repo, function.replace('\'', "\\'")
+            ),
+            &[],
+        ).unwrap_or_default();
+
+        if callers.is_empty() {
+            return Ok(format!("No callers found for '{}' in {}", function, repo));
+        }
+
+        let mut lines = vec![format!("=== Callers of {} ({}) ===", function, callers.len())];
+        for row in &callers {
+            let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
+            let file = row.get(1).map(|v| v.as_str()).unwrap_or("?");
+            let line = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
+            lines.push(format!("  {}:{} - {}()", file, line, name));
+        }
+        Ok(lines.join("\n"))
+    }
+
     fn tool_search_code(&self, args: &Value) -> Result<String, String> {
         let pattern = arg_str(args, "pattern")?;
 
@@ -1456,8 +1682,8 @@ impl McpServer {
         // Search by name
         if let Ok(rows) = self.query_text(
             &self.client,
-            "MATCH (n) WHERE (n:Function OR n:Class OR n:CodeFunction OR n:CodeClass) AND toLower(n.name) CONTAINS toLower($pattern) \
-             RETURN labels(n)[0], n.name, n.file_path, n.file, n.line, n.repo LIMIT 50",
+            "MATCH (n) WHERE (n:CodeFunction OR n:Class OR n:CodeFunction OR n:CodeClass) AND toLower(n.name) CONTAINS toLower($pattern) \
+             RETURN labels(n)[0], n.name, n.file, n.file, n.line, n.repo LIMIT 50",
             &[("pattern", &pattern)],
         ) {
             for r in &rows {
@@ -1507,14 +1733,14 @@ impl McpServer {
         let where_extra = if include_tests {
             ""
         } else {
-            "AND NOT caller.file_path STARTS WITH 'tests/'"
+            "AND NOT caller.file STARTS WITH 'tests/'"
         };
 
         let query = format!(
-            "MATCH (caller:Function)-[:CALLS]->(target:Function {{name: $name}}) \
+            "MATCH (caller:CodeFunction)-[:CALLS]->(target:CodeFunction {{name: $name}}) \
              WHERE 1=1 {} \
-             RETURN caller.name, caller.file_path \
-             ORDER BY caller.file_path LIMIT 50",
+             RETURN caller.name, caller.file \
+             ORDER BY caller.file LIMIT 50",
             where_extra,
         );
         let rows = self.query_text(&self.client, &query, &[("name", &function_name)])?;
@@ -1548,15 +1774,15 @@ impl McpServer {
         let fn_result = if let Some(fp) = file_path {
             self.query_text(
                 &self.client,
-                "MATCH (fn:Function {name: $name, file_path: $fp}) \
-                 RETURN fn.name, fn.file_path, fn.start_line, fn.end_line, fn.parameters",
+                "MATCH (fn:CodeFunction {name: $name, file: $fp}) \
+                 RETURN fn.name, fn.file, fn.start_line, fn.end_line, fn.parameters",
                 &[("name", &function_name), ("fp", fp)],
             )?
         } else {
             self.query_text(
                 &self.client,
-                "MATCH (fn:Function {name: $name}) \
-                 RETURN fn.name, fn.file_path, fn.start_line, fn.end_line, fn.parameters \
+                "MATCH (fn:CodeFunction {name: $name}) \
+                 RETURN fn.name, fn.file, fn.start_line, fn.end_line, fn.parameters \
                  LIMIT 5",
                 &[("name", &function_name)],
             )?
@@ -1581,8 +1807,8 @@ impl McpServer {
             // Callers
             let callers = self.query_text(
                 &self.client,
-                "MATCH (c:Function)-[:CALLS]->(t:Function {name: $name, file_path: $fp}) \
-                 RETURN c.name, c.file_path LIMIT 25",
+                "MATCH (c:CodeFunction)-[:CALLS]->(t:CodeFunction {name: $name, file: $fp}) \
+                 RETURN c.name, c.file LIMIT 25",
                 &[("name", name), ("fp", fp)],
             ).unwrap_or_default();
             lines.push(format!("|  Direct callers: {}", callers.len()));
@@ -1599,7 +1825,7 @@ impl McpServer {
             // Callees
             let callees = self.query_text(
                 &self.client,
-                "MATCH (t:Function {name: $name, file_path: $fp})-[:CALLS]->(c:Function) \
+                "MATCH (t:CodeFunction {name: $name, file: $fp})-[:CALLS]->(c:CodeFunction) \
                  RETURN c.name LIMIT 15",
                 &[("name", name), ("fp", fp)],
             ).unwrap_or_default();
@@ -1613,9 +1839,9 @@ impl McpServer {
             // Episodes (history)
             let episodes = self.query_text(
                 &self.client,
-                "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name, file_path: $fp}) \
-                 RETURN e.timestamp, e.author, e.message \
-                 ORDER BY e.timestamp DESC LIMIT 5",
+                "MATCH (e:Commit)-[:MODIFIED]->(:CodeFunction {name: $name, file: $fp}) \
+                 RETURN e.date, e.author_name, e.message \
+                 ORDER BY e.date DESC LIMIT 5",
                 &[("name", name), ("fp", fp)],
             ).unwrap_or_default();
             if !episodes.is_empty() {
@@ -1645,23 +1871,23 @@ impl McpServer {
         // Direct dependents
         let direct = self.query_text(
             &self.client,
-            "MATCH (c:Function)-[:CALLS]->(t:Function {name: $name}) \
-             RETURN DISTINCT c.name, c.file_path",
+            "MATCH (c:CodeFunction)-[:CALLS]->(t:CodeFunction {name: $name}) \
+             RETURN DISTINCT c.name, c.file",
             &[("name", &function_name)],
         )?;
 
         // Transitive dependents
         let query = format!(
-            "MATCH (c:Function)-[:CALLS*1..{}]->(t:Function {{name: $name}}) \
-             RETURN DISTINCT c.name, c.file_path",
+            "MATCH (c:CodeFunction)-[:CALLS*1..{}]->(t:CodeFunction {{name: $name}}) \
+             RETURN DISTINCT c.name, c.file",
             max_depth,
         );
         let transitive = self.query_text(&self.client, &query, &[("name", &function_name)])?;
 
         // Affected files
         let aff_query = format!(
-            "MATCH (c:Function)-[:CALLS*1..{}]->(t:Function {{name: $name}}) \
-             RETURN DISTINCT c.file_path",
+            "MATCH (c:CodeFunction)-[:CALLS*1..{}]->(t:CodeFunction {{name: $name}}) \
+             RETURN DISTINCT c.file",
             max_depth,
         );
         let affected = self.query_text(&self.client, &aff_query, &[("name", &function_name)])?;
@@ -1697,7 +1923,7 @@ impl McpServer {
         // Blast radius
         let trans = self.query_text(
             &self.client,
-            "MATCH (c:Function)-[:CALLS*1..3]->(t:Function {name: $name}) \
+            "MATCH (c:CodeFunction)-[:CALLS*1..3]->(t:CodeFunction {name: $name}) \
              RETURN count(DISTINCT c)",
             &[("name", &function_name)],
         )?;
@@ -1713,8 +1939,8 @@ impl McpServer {
         // Bus factor
         let maintainers = self.query_text(
             &self.client,
-            "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name}) \
-             RETURN e.author, count(e) AS t ORDER BY t DESC",
+            "MATCH (e:Commit)-[:MODIFIED]->(:CodeFunction {name: $name}) \
+             RETURN e.author_name, count(e) AS t ORDER BY t DESC",
             &[("name", &function_name)],
         )?;
         let (bus, bus_note) = if maintainers.is_empty() {
@@ -1734,7 +1960,7 @@ impl McpServer {
         // Incident correlation
         let fix_commits = self.query_text(
             &self.client,
-            "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name}) \
+            "MATCH (e:Commit)-[:MODIFIED]->(:CodeFunction {name: $name}) \
              WHERE toLower(e.message) CONTAINS 'fix' OR toLower(e.message) CONTAINS 'hotfix' \
              RETURN count(e)",
             &[("name", &function_name)],
@@ -1762,9 +1988,9 @@ impl McpServer {
 
         let fn_rows = self.query_text(
             &self.client,
-            "MATCH (f:Function)-[:DECORATED_BY]->(d:Decorator) \
+            "MATCH (f:CodeFunction)-[:DECORATED_BY]->(d:Decorator) \
              WHERE d.name = $needle OR d.name ENDS WITH $dot_needle \
-             RETURN DISTINCT 'Function' AS kind, f.name AS name, f.file_path AS fp, d.name AS dec \
+             RETURN DISTINCT 'Function' AS kind, f.name AS name, f.file AS fp, d.name AS dec \
              ORDER BY fp, name",
             &[("needle", needle), ("dot_needle", &dot_needle)],
         )?;
@@ -1773,7 +1999,7 @@ impl McpServer {
             &self.client,
             "MATCH (c:Class)-[:DECORATED_BY]->(d:Decorator) \
              WHERE d.name = $needle OR d.name ENDS WITH $dot_needle \
-             RETURN DISTINCT 'Class' AS kind, c.name AS name, c.file_path AS fp, d.name AS dec \
+             RETURN DISTINCT 'Class' AS kind, c.name AS name, c.file AS fp, d.name AS dec \
              ORDER BY fp, name",
             &[("needle", needle), ("dot_needle", &dot_needle)],
         )?;
@@ -1807,15 +2033,15 @@ impl McpServer {
 
         let defs = self.query_text(
             &self.client,
-            "MATCH (n) WHERE (n:Function OR n:Class) AND n.name = $t \
-             RETURN labels(n)[0], n.name, n.file_path LIMIT 20",
+            "MATCH (n) WHERE (n:CodeFunction OR n:Class) AND n.name = $t \
+             RETURN labels(n)[0], n.name, n.file LIMIT 20",
             &[("t", terminal)],
         )?;
 
         let refs = self.query_text(
             &self.client,
-            "MATCH (c:Function)-[:REFERENCES_SYMBOL]->(t) WHERE t.name = $t \
-             RETURN DISTINCT c.name, c.file_path LIMIT 30",
+            "MATCH (c:CodeFunction)-[:REFERENCES_SYMBOL]->(t) WHERE t.name = $t \
+             RETURN DISTINCT c.name, c.file LIMIT 30",
             &[("t", terminal)],
         )?;
 
@@ -1850,8 +2076,8 @@ impl McpServer {
         let max_results = args.get("max_results").and_then(|v| v.as_i64()).unwrap_or(10);
 
         let query = format!(
-            "MATCH (f:Function)-[r:CALLS]->() \
-             RETURN f.file_path, count(r) AS edges \
+            "MATCH (f:CodeFunction)-[r:CALLS]->() \
+             RETURN f.file, count(r) AS edges \
              ORDER BY edges DESC LIMIT {}",
             max_results,
         );
@@ -1876,9 +2102,9 @@ impl McpServer {
 
         let rows = self.query_text(
             &self.client,
-            "MATCH (a:Function)-[:CALLS*1..6]->(b:Function) \
-             WHERE a.file_path = $from AND b.file_path = $to \
-             RETURN DISTINCT a.file_path, b.file_path \
+            "MATCH (a:CodeFunction)-[:CALLS*1..6]->(b:CodeFunction) \
+             WHERE a.file = $from AND b.file = $to \
+             RETURN DISTINCT a.file, b.file \
              LIMIT 20",
             &[("from", &from_file), ("to", &to_file)],
         )?;
@@ -1898,8 +2124,8 @@ impl McpServer {
         let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10);
 
         let query = format!(
-            "MATCH (e:Episode)-[:CHANGES]->(fn1:Function {{name: $name}}) \
-             MATCH (e)-[:CHANGES]->(fn2:Function) \
+            "MATCH (e:Commit)-[:MODIFIED]->(fn1:CodeFunction {{name: $name}}) \
+             MATCH (e)-[:MODIFIED]->(fn2:CodeFunction) \
              WHERE fn1.name <> fn2.name \
              RETURN fn2.name, count(e) AS co \
              ORDER BY co DESC LIMIT {}",
@@ -1938,7 +2164,7 @@ impl McpServer {
         // Episodes
         let episodes = self.query_text(
             &self.client,
-            "MATCH (e:Episode) WHERE e.content CONTAINS $q \
+            "MATCH (e:Commit) WHERE e.content CONTAINS $q \
              RETURN e.source_type, e.content LIMIT 10",
             &[("q", &query)],
         ).unwrap_or_default();
@@ -1971,8 +2197,8 @@ impl McpServer {
         // Query 1: code graph
         let code_hits = self.query_text(
             &self.client,
-            "MATCH (n) WHERE (n:Function OR n:Class) AND n.name = $symbol \
-             RETURN labels(n)[0], n.name, n.file_path LIMIT 10",
+            "MATCH (n) WHERE (n:CodeFunction OR n:Class) AND n.name = $symbol \
+             RETURN labels(n)[0], n.name, n.file LIMIT 10",
             &[("symbol", &symbol)],
         ).unwrap_or_default();
 
@@ -2081,14 +2307,14 @@ impl McpServer {
         // Blast radius
         let callers = self.query_text(
             &self.client,
-            "MATCH (c:Function)-[:CALLS]->(t:Function {name: $name}) RETURN count(c)",
+            "MATCH (c:CodeFunction)-[:CALLS]->(t:CodeFunction {name: $name}) RETURN count(c)",
             &[("name", &function_name)],
         )?;
         let direct = callers.first().and_then(|r| r.first()).map(|v| v.as_i64()).unwrap_or(0);
 
         let transitive = self.query_text(
             &self.client,
-            "MATCH (c:Function)-[:CALLS*1..3]->(t:Function {name: $name}) \
+            "MATCH (c:CodeFunction)-[:CALLS*1..3]->(t:CodeFunction {name: $name}) \
              RETURN count(DISTINCT c)",
             &[("name", &function_name)],
         )?;
@@ -2097,16 +2323,16 @@ impl McpServer {
         // Last touched
         let last_touch = self.query_text(
             &self.client,
-            "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name}) \
-             RETURN e.timestamp, e.author ORDER BY e.timestamp DESC LIMIT 1",
+            "MATCH (e:Commit)-[:MODIFIED]->(:CodeFunction {name: $name}) \
+             RETURN e.date, e.author_name ORDER BY e.date DESC LIMIT 1",
             &[("name", &function_name)],
         ).unwrap_or_default();
 
         // Maintainer concentration
         let maintainers = self.query_text(
             &self.client,
-            "MATCH (e:Episode)-[:CHANGES]->(:Function {name: $name}) \
-             RETURN e.author, count(e) AS touches ORDER BY touches DESC LIMIT 3",
+            "MATCH (e:Commit)-[:MODIFIED]->(:CodeFunction {name: $name}) \
+             RETURN e.author_name, count(e) AS touches ORDER BY touches DESC LIMIT 3",
             &[("name", &function_name)],
         ).unwrap_or_default();
 
@@ -2158,9 +2384,9 @@ impl McpServer {
 
         let result = self.query_text(
             &self.client,
-            "MATCH (a:Function)-[:CALLS]->(b:Function) \
-             WHERE a.file_path STARTS WITH $from_mod \
-               AND b.file_path STARTS WITH $to_mod \
+            "MATCH (a:CodeFunction)-[:CALLS]->(b:CodeFunction) \
+             WHERE a.file STARTS WITH $from_mod \
+               AND b.file STARTS WITH $to_mod \
              RETURN count(*) AS edge_count",
             &[("from_mod", &from_module), ("to_mod", &to_module)],
         )?;
@@ -2271,7 +2497,7 @@ impl McpServer {
             if let Ok(affected) = self.query_text(
                 &self.client,
                 &format!(
-                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:MODIFIED]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
                      RETURN f.name, f.file, ch.change_type LIMIT 10",
                     num, repo
                 ),
@@ -2292,7 +2518,7 @@ impl McpServer {
             if let Ok(history) = self.query_text(
                 &self.client,
                 &format!(
-                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:MODIFIED]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
                      MATCH (prev:Commit {{repo: '{}'}})-[:MODIFIED]->(f) \
                      MATCH (m:SlackMessage) WHERE m.channel_name IN ['prod-errors', 'engineering-alerts-prod'] \
                      AND m.has_symptom = true AND toLower(m.text) CONTAINS toLower(f.name) \
@@ -2320,7 +2546,7 @@ impl McpServer {
             if let Ok(cochange) = self.query_text(
                 &self.client,
                 &format!(
-                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange) \
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:MODIFIED]->(ch:PRChange) \
                      WITH p, collect(ch.file) AS pr_files \
                      MATCH (c1:Commit {{repo: '{}'}})-[:MODIFIED_FILE]->(f1:CodeFile) \
                      WHERE f1.path IN pr_files \
@@ -2347,7 +2573,7 @@ impl McpServer {
             if let Ok(callers) = self.query_text(
                 &self.client,
                 &format!(
-                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:MODIFIED]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
                      MATCH (caller:CodeFunction)-[:CALLS]->(f) \
                      WITH f, count(caller) AS caller_count WHERE caller_count >= 2 \
                      RETURN f.name, f.file, caller_count ORDER BY caller_count DESC LIMIT 5",
@@ -2370,7 +2596,7 @@ impl McpServer {
             if let Ok(unanswered) = self.query_text(
                 &self.client,
                 &format!(
-                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:MODIFIED]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
                      MATCH (m:SlackMessage)-[:SENT_BY]->(u:SlackUser) \
                      WHERE m.text CONTAINS '?' AND m.reply_count = 0 \
                      AND (toLower(m.text) CONTAINS toLower(f.name) OR toLower(m.text) CONTAINS toLower(ch.file)) \
@@ -2394,7 +2620,7 @@ impl McpServer {
             if let Ok(churn) = self.query_text(
                 &self.client,
                 &format!(
-                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:MODIFIED]->(ch:PRChange)-[:AFFECTS]->(f:CodeFunction) \
                      MATCH (c:Commit {{repo: '{}'}})-[:MODIFIED]->(f) \
                      WITH f, count(c) AS changes WHERE changes >= 5 \
                      RETURN f.name, f.file, changes ORDER BY changes DESC LIMIT 5",
@@ -2438,7 +2664,7 @@ impl McpServer {
             if let Ok(issues) = self.query_text(
                 &self.client,
                 &format!(
-                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:CHANGES]->(ch:PRChange)-[:HAS_KNOWN_ISSUE]->(m:SlackMessage) \
+                    "MATCH (p:GitHubPR {{number: {}, repo: '{}'}})-[:MODIFIED]->(ch:PRChange)-[:HAS_KNOWN_ISSUE]->(m:SlackMessage) \
                      RETURN m.channel_name, m.text LIMIT 3",
                     num, repo
                 ),
