@@ -24,52 +24,100 @@ pub async fn run() {
         return;
     }
 
-    // Step 1: Request device code
+    // Step 1: Request device code from the cloud API
     println!("Requesting device authorization...");
     println!();
 
-    // In production, this would be an HTTP POST to:
-    //   POST {CLOUD_ENDPOINT}/auth/device/code
-    //   → { device_code, user_code, verification_uri, interval, expires_in }
-    //
-    // For now, show what the flow WILL look like when savants.cloud is built.
-    // The actual HTTP calls are stubbed until the cloud backend exists.
+    let client = reqwest::Client::new();
+    let code_response = match client.post(&format!("{}/auth/device/code", CLOUD_ENDPOINT))
+        .send().await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            resp.json::<serde_json::Value>().await.unwrap_or_default()
+        }
+        Ok(resp) => {
+            eprintln!("{}: cloud returned status {}", "Error".red(), resp.status());
+            return;
+        }
+        Err(e) => {
+            eprintln!("{}: could not reach savants.cloud: {}", "Error".red(), e);
+            eprintln!("  Check your internet connection or try again later.");
+            return;
+        }
+    };
 
-    let verification_url = format!("{}/auth/device", CLOUD_ENDPOINT);
+    let device_code = code_response.get("device_code").and_then(|v| v.as_str()).unwrap_or("");
+    let user_code = code_response.get("user_code").and_then(|v| v.as_str()).unwrap_or("");
+    let default_uri = format!("{}/activate", CLOUD_ENDPOINT);
+    let verification_uri = code_response.get("verification_uri").and_then(|v| v.as_str())
+        .unwrap_or(&default_uri);
+    let interval = code_response.get("interval").and_then(|v| v.as_u64()).unwrap_or(5);
 
     println!("To authenticate, visit:");
     println!();
-    println!("    {}", verification_url.cyan().bold().underline());
+    println!("    {}", verification_uri.cyan().bold().underline());
+    println!();
+    println!("And enter code: {}", user_code.yellow().bold());
     println!();
     println!("Waiting for authentication...");
     println!("{}", "(This will complete automatically once you sign in)".dimmed());
-    println!();
 
-    // Step 2: Poll for completion
-    // In production, this polls:
-    //   POST {CLOUD_ENDPOINT}/auth/device/token
-    //   { device_code, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }
-    //
-    // Response states:
-    //   - authorization_pending → keep polling
-    //   - slow_down → increase interval
-    //   - access_denied → user denied
-    //   - expired_token → device code expired, restart flow
-    //   - success → { access_token, org, device_id }
+    // Step 2: Poll for token
+    for _ in 0..180 {  // 15 minutes max
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
 
-    // STUB: In the real implementation, this would loop polling the token endpoint.
-    // For now, we print what happens and exit gracefully.
-    println!("{}", "savants.cloud is not yet live. This flow will work when the cloud tier launches.".yellow());
-    println!();
-    println!("What will happen:");
-    println!("  1. You open the URL above in your browser");
-    println!("  2. Sign in with Google, GitHub, or your company's SSO");
-    println!("  3. The CLI automatically receives a device token");
-    println!("  4. Your local context start syncing to savants.cloud");
-    println!("  5. Your team can see cross-cluster and cross-repo queries");
-    println!();
-    println!("Want to be notified when savants.cloud launches?");
-    println!("  Visit {}", "https://savants.dev/cloud".cyan());
+        let poll_response = match client.post(&format!("{}/auth/device/token", CLOUD_ENDPOINT))
+            .json(&serde_json::json!({"device_code": device_code}))
+            .send().await
+        {
+            Ok(resp) => resp,
+            Err(_) => continue,
+        };
+
+        let status = poll_response.status();
+        let body = poll_response.json::<serde_json::Value>().await.unwrap_or_default();
+
+        if status.is_success() {
+            // Got the token
+            let access_token = body.get("access_token").and_then(|v| v.as_str()).unwrap_or("");
+            let org_id = body.get("org_id").and_then(|v| v.as_str()).unwrap_or("");
+
+            // Save to state
+            let mut state = State::load();
+            state.cloud_device_token = Some(access_token.to_string());
+            state.cloud_org = Some(org_id.to_string());
+            if let Err(e) = state.save() {
+                eprintln!("{}: failed to save state: {}", "Error".red(), e);
+                return;
+            }
+
+            println!();
+            println!("  {} Connected to savants.cloud (org: {})", "●".green(), org_id.cyan());
+            println!();
+            println!("  Your context engine is now synced to the cloud.");
+            println!("  Team members can connect with: {}", "savants connect".cyan());
+            return;
+        }
+
+        let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        match error {
+            "authorization_pending" => continue,
+            "slow_down" => {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                continue;
+            }
+            "expired_token" => {
+                eprintln!("{}: device code expired. Run {} again.", "Error".red(), "savants connect".cyan());
+                return;
+            }
+            "access_denied" => {
+                eprintln!("{}: authentication denied.", "Error".red());
+                return;
+            }
+            _ => continue,
+        }
+    }
+    eprintln!("{}: authentication timed out. Run {} again.", "Error".red(), "savants connect".cyan());
 }
 
 /// Extract Slack xoxc token directly from the Slack desktop app's local storage.

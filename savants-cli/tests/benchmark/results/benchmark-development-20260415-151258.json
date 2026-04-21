@@ -1,0 +1,14 @@
+{
+  "test_set": "development",
+  "date": "2026-04-15T15:12:58-04:00",
+  "total": 20,
+  "correct": 15,
+  "partial": 4,
+  "direction": 1,
+  "wrong": 0,
+  "errors": 0,
+  "strict_accuracy": 75,
+  "useful_accuracy": 95,
+  "category_accuracy": 100,
+  "duration_seconds": 11
+}

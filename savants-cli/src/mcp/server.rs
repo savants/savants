@@ -431,7 +431,7 @@ impl McpServer {
             },
             {
                 "name": "file_skeleton",
-                "description": "Returns the structure of a file: all function names, class names, type definitions, their line ranges, and export status. No function bodies. Use this instead of reading the full file when you need to understand a file's structure.",
+                "description": "FASTER THAN READ: Returns the structure of a file - all function names, class names, type definitions, their line ranges, and export status. No function bodies. 10x fewer tokens than reading the full file. Always use this before Read when you need to understand a file's structure.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -443,7 +443,7 @@ impl McpServer {
             },
             {
                 "name": "where_used",
-                "description": "Find every place a symbol (function, class, type, variable) is used across the entire codebase. Returns: callers, importers, and type references, grouped by file. Use this instead of grep.",
+                "description": "FASTER THAN GREP: Find every place a symbol is used across the entire codebase. Returns callers, importers, and body references grouped by file. Milliseconds vs seconds. Always use this instead of Grep when searching for function/class/variable usage.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -455,7 +455,7 @@ impl McpServer {
             },
             {
                 "name": "callers",
-                "description": "Find all functions that directly call a given function. Returns caller name, file, and line number.",
+                "description": "FASTER THAN GREP: Find all functions that directly call a given function. Returns caller name, file, and line number. Use this instead of grep when finding callers.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -467,7 +467,7 @@ impl McpServer {
             },
             {
                 "name": "import_tree",
-                "description": "Returns the full import graph of a file to a given depth. Shows what each file imports and what those files import, recursively. One call replaces reading 5+ files to trace a dependency chain.",
+                "description": "FASTER THAN READ: Returns the full import graph of a file to a given depth. Shows what each file imports recursively. One call replaces reading 5+ files to trace dependencies. Always use this instead of reading import statements manually.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -480,7 +480,7 @@ impl McpServer {
             },
             {
                 "name": "module_exports",
-                "description": "Returns just the public API surface of a file: exported function names with parameter signatures. No bodies, no internal functions. Use this when you need to know what a module provides without reading the whole file.",
+                "description": "FASTER THAN READ: Returns just the public API surface of a file - exported function names with parameter signatures. No bodies. Use this instead of Read when you need to know what a module exports.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
