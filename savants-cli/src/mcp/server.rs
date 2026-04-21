@@ -518,73 +518,9 @@ impl McpServer {
         match result {
             Ok(text) => {
                 let response_text = if show_banner && tool_name != "reindex" {
-                    let response_tokens = text.len() / 4; // ~4 chars per token
-                    let avg_file_tokens: usize = 2500;
-
-                    // Calculate the brute-force cost from actual graph data.
-                    // Query the graph for the real structure: file count, import
-                    // count, edge count. This gives the exact algorithmic cost
-                    // of what an LLM would traverse via BFS/DFS without Savants.
-                    let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
-
-                    let file_count = self.query_text(&self.client,
-                        &format!("MATCH (f:CodeFile {{repo: '{}'}}) RETURN count(f)", repo), &[])
-                        .ok().and_then(|r| r.first().map(|row| row[0].as_i64() as usize)).unwrap_or(100);
-
-                    let without_tokens = match tool_name {
-                        "diagnose-error" | "diagnose_error" => {
-                            // BFS: grep(500) + read match(2500) + read imports(min(imports,5)*2500)
-                            // + check upstream(3*2500) + git blame(1000) + re-reads(2*2500)
-                            let func = args.get("error").and_then(|v| v.as_str()).unwrap_or("");
-                            let import_count = self.query_text(&self.client,
-                                &format!("MATCH (f:CodeFile {{repo: '{}'}})-[:IMPORTS]->() RETURN count(*)", repo), &[])
-                                .ok().and_then(|r| r.first().map(|row| row[0].as_i64() as usize / file_count.max(1))).unwrap_or(5);
-                            let imports_to_read = import_count.min(5);
-                            500 + avg_file_tokens + imports_to_read * avg_file_tokens + 3 * avg_file_tokens + 1000 + 2 * avg_file_tokens
-                        },
-                        "pr-risk" | "pr_risk" => {
-                            // Read changed files + related files + git log
-                            let pr_files = 5; // typical PR touches 5 files
-                            pr_files * avg_file_tokens + 3 * avg_file_tokens + 1000
-                        },
-                        "radar" => {
-                            // Scan Slack messages + Jira tickets (can't do without Savants)
-                            // LLM would need to read raw API responses
-                            12000
-                        },
-                        "function_xray" | "impact_analysis" => {
-                            // Read file + trace callers/callees
-                            avg_file_tokens + 3 * avg_file_tokens + 1000
-                        },
-                        "diff_impact" => avg_file_tokens * 4,
-                        "search_code" | "find_references_structured" => {
-                            // Grep returns matches, then read result files
-                            500 + 2 * avg_file_tokens
-                        },
-                        "dependency_chain" => {
-                            // Read file + N levels of imports
-                            3 * avg_file_tokens
-                        },
-                        "co_change_partners" | "pre_change_warning" => {
-                            // Git log analysis
-                            4000
-                        },
-                        "community_summary" => {
-                            // Read hub files for overview
-                            let hub_files = (file_count / 20).max(3).min(10);
-                            hub_files * avg_file_tokens
-                        },
-                        _ => avg_file_tokens,
-                    };
-
-                    // Cost at Sonnet input: $3/M tokens, output: $15/M tokens
-                    let cost_without = without_tokens as f64 * 3.0 / 1_000_000.0 + 500.0 * 15.0 / 1_000_000.0;
-                    let cost_with = response_tokens as f64 * 3.0 / 1_000_000.0 + 300.0 * 15.0 / 1_000_000.0;
-                    let saved = cost_without - cost_with;
-                    let ratio = if response_tokens > 0 { without_tokens / response_tokens } else { 0 };
-
-                    format!("{}\n\n---\n[savants] {} | {}ms | {} tokens (vs ~{} brute-force) | {}x | ${:.4} saved | {} files in repo",
-                        text, tool_name, elapsed_ms, response_tokens, without_tokens, ratio, saved, file_count)
+                    let response_tokens = text.len() / 4;
+                    format!("{}\n\n---\n[savants] {} | {}ms | {} tokens",
+                        text, tool_name, elapsed_ms, response_tokens)
                 } else {
                     text
                 };
