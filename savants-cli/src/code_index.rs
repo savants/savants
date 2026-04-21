@@ -90,6 +90,12 @@ impl CodeIndexer {
                         self.ingest_entities(&entities, &mut stats);
                     }
                 }
+                "rs" => {
+                    if let Ok(source) = std::fs::read_to_string(path) {
+                        let entities = self.parse_rust(&source, path, repo_path);
+                        self.ingest_entities(&entities, &mut stats);
+                    }
+                }
                 _ => continue,
             }
 
@@ -138,6 +144,12 @@ impl CodeIndexer {
         self.extract_entities(&mut parser, source, path, repo_root)
     }
 
+    fn parse_rust(&self, source: &str, path: &Path, repo_root: &str) -> Vec<CodeEntity> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_rust::language()).unwrap();
+        self.extract_entities(&mut parser, source, path, repo_root)
+    }
+
     fn extract_entities(&self, parser: &mut tree_sitter::Parser, source: &str, path: &Path, repo_root: &str) -> Vec<CodeEntity> {
         let tree = match parser.parse(source, None) {
             Some(t) => t,
@@ -170,8 +182,8 @@ impl CodeIndexer {
         let kind = node.kind();
 
         match kind {
-            // Functions
-            "function_declaration" | "function_definition" | "method_definition" => {
+            // Functions (JS/TS/Python + Rust)
+            "function_declaration" | "function_definition" | "method_definition" | "function_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = name_node.utf8_text(source).unwrap_or("").to_string();
                     let body_text = node.utf8_text(source).unwrap_or("");
@@ -222,7 +234,8 @@ impl CodeIndexer {
             }
 
             // Classes
-            "class_declaration" | "class_definition" => {
+            // Classes/Structs (JS/TS/Python + Rust)
+            "class_declaration" | "class_definition" | "struct_item" | "enum_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = name_node.utf8_text(source).unwrap_or("").to_string();
 
@@ -241,7 +254,8 @@ impl CodeIndexer {
             }
 
             // TypeScript interfaces and type aliases
-            "interface_declaration" | "type_alias_declaration" => {
+            // TypeScript interfaces/types + Rust traits/type aliases
+            "interface_declaration" | "type_alias_declaration" | "trait_item" | "type_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = name_node.utf8_text(source).unwrap_or("").to_string();
                     let body_text = node.utf8_text(source).unwrap_or("");
@@ -267,7 +281,8 @@ impl CodeIndexer {
             }
 
             // Import statements — track what's imported from where
-            "import_statement" => {
+            // Import statements (JS/TS + Rust use declarations)
+            "import_statement" | "use_declaration" => {
                 let full_text = node.utf8_text(source).unwrap_or("").to_string();
                 // Extract source: import { foo } from './bar'
                 if let Some(source_node) = node.child_by_field_name("source") {
