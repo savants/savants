@@ -77,6 +77,10 @@ async fn main() {
         .route("/api/v1/org", get(api::v1::org::get_org))
         .route("/api/v1/org/members", get(api::v1::org::list_members))
         .route("/api/v1/org/members/invite", post(api::v1::org::invite_member))
+        // API Keys
+        .route("/api/v1/org/keys", get(api::v1::org::list_api_keys))
+        .route("/api/v1/org/keys", post(api::v1::org::create_api_key))
+        .route("/api/v1/org/keys/:key_id", axum::routing::delete(api::v1::org::delete_api_key))
         // Billing
         .route("/api/v1/billing", get(billing::get_billing))
         .route("/api/v1/billing/checkout", post(billing::create_checkout))

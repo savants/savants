@@ -4,7 +4,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::auth::middleware::AuthUser;
-use crate::db::{Membership, Org};
+use crate::db::{Membership, Org, ApiKey};
 use crate::AppState;
 
 #[derive(Serialize)]
@@ -121,4 +121,106 @@ pub async fn invite_member(
         status: "invited".to_string(),
         email: body.email,
     }))
+}
+
+// ---------------------------------------------------------------
+// API Key management
+// ---------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct CreateKeyRequest {
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub struct CreateKeyResponse {
+    pub key: String,
+    pub name: String,
+    pub prefix: String,
+    pub note: String,
+}
+
+#[derive(Serialize)]
+pub struct KeyInfo {
+    pub id: Uuid,
+    pub name: String,
+    pub prefix: String,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub async fn create_api_key(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Json(body): Json<CreateKeyRequest>,
+) -> Result<Json<CreateKeyResponse>, StatusCode> {
+    // Generate a random API key: sk_live_ + 48 hex chars
+    let raw_key: String = format!("sk_live_{}", (0..24).map(|_| format!("{:02x}", rand::random::<u8>())).collect::<String>());
+    let prefix = raw_key[..12].to_string();
+
+    // Hash with bcrypt (cost 4 for speed)
+    let hash = bcrypt::hash(&raw_key, 4).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    sqlx::query(
+        "INSERT INTO api_keys (org_id, name, key_hash, key_prefix) VALUES ($1, $2, $3, $4)"
+    )
+    .bind(auth.org_id)
+    .bind(&body.name)
+    .bind(&hash)
+    .bind(&prefix)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(CreateKeyResponse {
+        key: raw_key,
+        name: body.name,
+        prefix,
+        note: "Save this key now. It will not be shown again.".to_string(),
+    }))
+}
+
+pub async fn list_api_keys(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+) -> Result<Json<Vec<KeyInfo>>, StatusCode> {
+    let keys = sqlx::query_as::<_, (Uuid, String, String, Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>)>(
+        "SELECT id, name, key_prefix, last_used_at, created_at FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC"
+    )
+    .bind(auth.org_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let result: Vec<KeyInfo> = keys.iter().map(|(id, name, prefix, last_used, created)| {
+        KeyInfo {
+            id: *id,
+            name: name.clone(),
+            prefix: prefix.clone(),
+            last_used_at: *last_used,
+            created_at: *created,
+        }
+    }).collect();
+
+    Ok(Json(result))
+}
+
+pub async fn delete_api_key(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    axum::extract::Path(key_id): axum::extract::Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    let result = sqlx::query(
+        "DELETE FROM api_keys WHERE id = $1 AND org_id = $2"
+    )
+    .bind(key_id)
+    .bind(auth.org_id)
+    .execute(&state.db)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
