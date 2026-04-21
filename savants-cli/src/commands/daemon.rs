@@ -230,7 +230,7 @@ pub async fn run() {
                                     println!("[k8s] {} — {}", cluster,
                                         stats.summary().lines().next().unwrap_or(""));
                                 }
-                                Err(e) => println!("[k8s] {} graph error: {}", cluster, e),
+                                Err(e) => println!("[k8s] {} context engine error: {}", cluster, e),
                             }
                         }
                         Err(e) => println!("[k8s] {} connect error: {}", cluster, e),

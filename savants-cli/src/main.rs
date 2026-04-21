@@ -422,7 +422,7 @@ async fn main() {
                 }
                 None => {
                     let state = config::State::load();
-                    println!("Graph:  {}:{}/{}", state.graph_host(), state.graph_port(), state.graph_name());
+                    println!("Context: {}:{}/{}", state.graph_host(), state.graph_port(), state.graph_name());
                     if state.is_cloud_authenticated() {
                         println!("Cloud:  {} (org: {})", "connected".green(), state.cloud_org.as_deref().unwrap_or("?"));
                     } else {
@@ -451,7 +451,7 @@ async fn run_k8s_snapshot(cluster: &str, context: Option<&str>) {
     let graph = match graph::GraphClient::new(&graph_name) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("{}: failed to connect to graph: {}", "Error".red(), e);
+            eprintln!("{}: failed to connect to context engine: {}", "Error".red(), e);
             return;
         }
     };
@@ -478,7 +478,7 @@ async fn run_k8s_watch(cluster: &str, context: Option<&str>) {
     let graph = match graph::GraphClient::new(&graph_name) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("{}: failed to connect to graph: {}", "Error".red(), e);
+            eprintln!("{}: failed to connect to context engine: {}", "Error".red(), e);
             return;
         }
     };

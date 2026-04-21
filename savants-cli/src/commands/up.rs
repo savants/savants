@@ -10,10 +10,10 @@ pub async fn run(repo: Option<String>, _tail_lines: u32) {
     // 1. Ensure embedded graph engine is running
     let embedded = EmbeddedEngine::new();
     match embedded.ensure_running() {
-        Ok(true) => println!("  {} Graph: {}", "●".green(), "started".green()),
-        Ok(false) => println!("  {} Graph: {}", "●".green(), "connected".green()),
+        Ok(true) => println!("  {} Context: {}", "●".green(), "started".green()),
+        Ok(false) => println!("  {} Context: {}", "●".green(), "connected".green()),
         Err(e) => {
-            eprintln!("  {} Graph: {}", "●".red(), e.red());
+            eprintln!("  {} Context: {}", "●".red(), e.red());
             eprintln!("  Install Redis or run the savants installer.");
             std::process::exit(1);
         }

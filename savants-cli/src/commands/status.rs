@@ -9,7 +9,7 @@ pub async fn run() {
     match GraphClient::new("savants") {
         Ok(client) => {
             if client.is_connected() {
-                println!("  {} Graph: {}", "●".green(), "connected".green());
+                println!("  {} Context: {}", "●".green(), "connected".green());
                 // Node/edge counts
                 if let Ok(r) = client.query("MATCH (n) RETURN count(n)", &[]) {
                     if let Some(row) = r.rows.first() {
@@ -36,12 +36,12 @@ pub async fn run() {
                     }
                 }
             } else {
-                println!("  {} Graph: {}", "●".red(), "not connected".red());
-                println!("    Run 'savants up' to start the graph.");
+                println!("  {} Context: {}", "●".red(), "not connected".red());
+                println!("    Run 'savants up' to start the context engine.");
             }
         }
         Err(_) => {
-            println!("  {} Graph: {}", "●".red(), "not running".red());
+            println!("  {} Context: {}", "●".red(), "not running".red());
             println!("    Run 'savants up' to start.");
         }
     }

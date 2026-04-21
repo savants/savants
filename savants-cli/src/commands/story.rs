@@ -10,7 +10,7 @@ pub async fn run(
     let client = match GraphClient::new("savants") {
         Ok(c) if c.is_connected() => c,
         _ => {
-            eprintln!("{}", "Graph not connected. Run 'savants up' first.".red());
+            eprintln!("{}", "Context engine not connected. Run 'savants up' first.".red());
             return;
         }
     };

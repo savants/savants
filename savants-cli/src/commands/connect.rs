@@ -65,7 +65,7 @@ pub async fn run() {
     println!("  1. You open the URL above in your browser");
     println!("  2. Sign in with Google, GitHub, or your company's SSO");
     println!("  3. The CLI automatically receives a device token");
-    println!("  4. Your local graphs start syncing to savants.cloud");
+    println!("  4. Your local context start syncing to savants.cloud");
     println!("  5. Your team can see cross-cluster and cross-repo queries");
     println!();
     println!("Want to be notified when savants.cloud launches?");
@@ -573,7 +573,7 @@ pub async fn slack_from_browser() {
                         println!("  For the daemon to read Slack, create a Slack app for a standalone token:");
                         println!("    {} → Create App → Bot Token → {}", "api.slack.com/apps".cyan(), "savants connect slack --bot-token xoxb-...".dimmed());
                         println!();
-                        println!("  Or use the token directly for graph queries (read-only via browser).");
+                        println!("  Or use the token directly for context queries (read-only via browser).");
                     }
                 }
                 return;
@@ -752,5 +752,5 @@ pub fn disconnect() {
     }
 
     println!("{}", "Disconnected from savants.cloud.".green());
-    println!("Your local graphs are unaffected. Federation sync has stopped.");
+    println!("Your local context are unaffected. Federation sync has stopped.");
 }

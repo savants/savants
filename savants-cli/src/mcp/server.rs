@@ -1321,7 +1321,7 @@ impl McpServer {
 
         if cm_rows.is_empty() && sec_rows.is_empty() {
             return Ok(format!(
-                "Pod {}/{} has no ConfigMap or Secret dependencies (or doesn't exist in graph).",
+                "Pod {}/{} has no ConfigMap or Secret dependencies (or doesn't exist in context).",
                 namespace, pod,
             ));
         }
@@ -2014,7 +2014,7 @@ impl McpServer {
         lines.push(String::new());
 
         if !code_hits.is_empty() {
-            lines.push(format!("Code graph ({} matches):", code_hits.len()));
+            lines.push(format!("Context ({} matches):", code_hits.len()));
             for r in &code_hits {
                 let label = r.get(0).map(|v| v.as_str()).unwrap_or("?");
                 let name = r.get(1).map(|v| v.as_str()).unwrap_or("?");
@@ -2069,7 +2069,7 @@ impl McpServer {
         }
 
         if !cluster_found {
-            lines.push(format!("Cluster graph: no references to '{}' found.", symbol));
+            lines.push(format!("Context: no references to '{}' found.", symbol));
         }
 
         Ok(lines.join("\n"))
@@ -3418,7 +3418,7 @@ impl McpServer {
         let code_count = self.query_text(&self.client,
             &format!("MATCH (f:CodeFunction {{repo: '{}'}}) RETURN count(f)", repo), &[])
             .ok().and_then(|r| r.first().map(|row| row[0].as_i64())).unwrap_or(0);
-        sources_available.push(("Code graph (functions)", code_count > 0, code_count));
+        sources_available.push(("Context (functions)", code_count > 0, code_count));
 
         // Git history
         let commit_count = self.query_text(&self.client,
@@ -3572,7 +3572,7 @@ impl McpServer {
 
         let radar = match crate::radar::PersonalRadar::from_graph(&self.client, &user) {
             Some(r) => r,
-            None => return Err(format!("Could not find user '{}' in the graph. Try your Slack username, git author name, or email.", user)),
+            None => return Err(format!("Could not find user '{}' in the context engine. Try your Slack username, git author name, or email.", user)),
         };
 
         let items = radar.scan(&self.client, hours);
