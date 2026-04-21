@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use chrono::Datelike;
+use uuid::Uuid;
 use crate::auth::middleware::AuthUser;
 use crate::AppState;
 
@@ -110,15 +111,16 @@ pub async fn call_tool(
         return Err(StatusCode::PAYMENT_REQUIRED);
     }
 
-    // Resolve the graph name for this org
-    let graph_name = sqlx::query_scalar::<_, String>(
-        "SELECT falkordb_graph_name FROM graph_scopes WHERE org_id = $1 ORDER BY created_at LIMIT 1"
-    )
-    .bind(auth.org_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .unwrap_or_else(|| "savants".to_string());
+    // Resolve the graph name for this org, provisioning a default scope if none exists.
+    // Each org gets its own isolated FalkorDB graph namespace.
+    let graph_name = resolve_org_graph(&state.db, auth.org_id).await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tracing::info!(
+        org_id = %auth.org_id,
+        graph = %graph_name,
+        "resolved tenant graph"
+    );
 
     // Build MCP JSON-RPC request
     let init_msg = serde_json::json!({
@@ -149,6 +151,7 @@ pub async fn call_tool(
 
     let mut child = tokio::process::Command::new("savants")
         .arg("serve")
+        .env("SAVANTS_MEMORY", &graph_name)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -197,6 +200,34 @@ pub async fn call_tool(
         cost_cents,
         duration_ms,
     }))
+}
+
+/// Resolve the FalkorDB graph name for an org. If no graph_scope row exists,
+/// provision a default one using the deterministic naming convention org_<uuid_no_hyphens>.
+async fn resolve_org_graph(
+    db: &sqlx::PgPool,
+    org_id: Uuid,
+) -> Result<String, sqlx::Error> {
+    // Fast path: look up existing scope
+    if let Some(name) = sqlx::query_scalar::<_, String>(
+        "SELECT falkordb_graph_name FROM graph_scopes WHERE org_id = $1 ORDER BY created_at LIMIT 1"
+    )
+    .bind(org_id)
+    .fetch_optional(db)
+    .await?
+    {
+        return Ok(name);
+    }
+
+    // Slow path: provision a new default scope via the DB function (handles races with ON CONFLICT)
+    let graph_name: String = sqlx::query_scalar(
+        "SELECT ensure_default_graph_scope($1)"
+    )
+    .bind(org_id)
+    .fetch_one(db)
+    .await?;
+
+    Ok(graph_name)
 }
 
 pub async fn list_tools() -> Json<ToolListResponse> {

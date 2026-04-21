@@ -1,49 +1,442 @@
 ---
-// This page serves the install script content-type when accessed as savants.sh
-// For the website (savants.dev/install), it shows a human-readable page
 import Base from '../layouts/Base.astro';
 ---
-<Base title="Install Savants">
+<Base title="Install Savants - One command. Full context." description="Install Savants in 60 seconds. One curl command gives your LLM 37 MCP tools, 4 language support, and full infrastructure context.">
 <style>
-  .install-page { padding: 120px 0 80px; max-width: 640px; margin: 0 auto; }
-  .install-page h1 { font-size: 2rem; font-weight: 700; margin-bottom: 24px; }
-  .install-page .cmd { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 24px; margin: 24px 0; }
-  .install-page .cmd code { color: var(--accent); font-size: 1rem; }
-  .install-page p { color: var(--muted); margin-bottom: 16px; }
-  .install-page h2 { font-size: 1.3rem; margin-top: 32px; margin-bottom: 12px; }
-  .install-page pre { background: #0d0d0d; border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 0.85rem; color: var(--muted); }
+  /* Nav - minimal for install page */
+  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; backdrop-filter: blur(12px); background: rgba(10,10,10,0.8); border-bottom: 1px solid var(--border); }
+  nav .brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
+  nav .brand span { color: var(--accent); }
+  nav .links { display: flex; gap: 24px; align-items: center; }
+  nav .links a { color: var(--muted); text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
+  nav .links a:hover { color: var(--fg); }
+
+  /* Section layout */
+  .section { width: 100%; padding: 80px 24px; position: relative; }
+  .section-inner { max-width: 800px; margin: 0 auto; }
+  .section-divider { width: 100%; height: 1px; background: linear-gradient(90deg, transparent, var(--border), var(--accent-dim), var(--border), transparent); }
+
+  /* Hero */
+  .hero { width: 100%; min-height: 80vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 140px 24px 60px; position: relative; overflow: hidden; }
+  .hero::before { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 600px; height: 600px; background: radial-gradient(circle, rgba(34,211,238,0.06) 0%, transparent 70%); pointer-events: none; }
+  .hero h1 { font-size: clamp(2rem, 4vw, 3rem); font-weight: 800; letter-spacing: -0.03em; line-height: 1.15; margin-bottom: 16px; }
+  .hero h1 .accent { color: var(--accent); }
+  .hero .subtitle { font-size: 1.1rem; color: var(--muted); max-width: 520px; margin: 0 auto 48px; line-height: 1.7; }
+
+  /* Terminal install box */
+  .terminal-wrap { width: 100%; max-width: 640px; margin: 0 auto; }
+  .terminal-bar { background: #1a1a1a; border: 1px solid var(--border); border-bottom: none; border-radius: 12px 12px 0 0; padding: 12px 16px; display: flex; gap: 8px; align-items: center; }
+  .terminal-bar .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .terminal-bar .dot-r { background: #f87171; }
+  .terminal-bar .dot-y { background: #facc15; }
+  .terminal-bar .dot-g { background: #4ade80; }
+  .terminal-bar .title { color: var(--muted); font-size: 0.75rem; margin-left: 12px; }
+  .terminal-body { background: #0d0d0d; border: 1px solid var(--border); border-top: none; border-radius: 0 0 12px 12px; padding: 32px 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; transition: border-color 0.3s, box-shadow 0.3s; }
+  .terminal-body:hover { border-color: var(--accent); box-shadow: 0 8px 32px rgba(34,211,238,0.1); }
+  .terminal-body code { font-size: 1.1rem; color: var(--accent); white-space: nowrap; }
+  .terminal-body .prompt { color: var(--green); }
+  .copy-btn { background: var(--accent-dim); border: 1px solid rgba(34,211,238,0.3); color: var(--accent); padding: 8px 16px; border-radius: 6px; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: background 0.2s, transform 0.2s; white-space: nowrap; font-family: 'Inter', sans-serif; }
+  .copy-btn:hover { background: rgba(34,211,238,0.2); transform: translateY(-1px); }
+  .copy-btn.copied { background: rgba(74,222,128,0.15); border-color: rgba(74,222,128,0.3); color: var(--green); }
+  .trust-line { color: var(--muted); font-size: 0.8rem; text-align: center; margin-top: 16px; }
+  .trust-line a { color: var(--accent); text-decoration: none; }
+  .trust-line a:hover { text-decoration: underline; }
+
+  /* Steps section */
+  .steps-section h2 { font-size: 1.8rem; font-weight: 700; text-align: center; margin-bottom: 12px; }
+  .steps-section .sub { color: var(--muted); text-align: center; margin-bottom: 48px; font-size: 0.95rem; }
+  .steps-grid { display: flex; gap: 32px; justify-content: center; }
+  .step-card { flex: 1; max-width: 240px; text-align: center; }
+  .step-num { display: inline-flex; width: 48px; height: 48px; border-radius: 50%; background: var(--accent-dim); color: var(--accent); font-weight: 700; font-size: 1.2rem; align-items: center; justify-content: center; margin-bottom: 16px; }
+  .step-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+  .step-card p { color: var(--muted); font-size: 0.85rem; line-height: 1.6; }
+  .step-card .step-cmd { font-size: 0.75rem; color: var(--accent); background: var(--accent-dim); display: inline-block; padding: 2px 8px; border-radius: 4px; margin-top: 8px; }
+  @media (max-width: 640px) { .steps-grid { flex-direction: column; align-items: center; } }
+
+  /* Platforms */
+  .platforms-section h2 { font-size: 1.8rem; font-weight: 700; text-align: center; margin-bottom: 48px; }
+  .platform-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; max-width: 700px; margin: 0 auto; }
+  @media (max-width: 640px) { .platform-grid { grid-template-columns: repeat(2, 1fr); } }
+  .platform-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px 16px; text-align: center; transition: border-color 0.3s, transform 0.3s; }
+  .platform-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .platform-icon { font-size: 2rem; margin-bottom: 12px; display: block; }
+  .platform-card .os { font-size: 0.9rem; font-weight: 600; margin-bottom: 4px; }
+  .platform-card .arch { font-size: 0.75rem; color: var(--muted); }
+  .platform-check { color: var(--green); font-size: 0.8rem; margin-top: 8px; }
+
+  /* What you get */
+  .get-section h2 { font-size: 1.8rem; font-weight: 700; text-align: center; margin-bottom: 48px; }
+  .get-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; max-width: 800px; margin: 0 auto; }
+  @media (max-width: 640px) { .get-grid { grid-template-columns: 1fr; } }
+  .get-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; text-align: center; transition: border-color 0.3s; }
+  .get-card:hover { border-color: var(--accent); }
+  .get-number { font-size: 2.5rem; font-weight: 800; color: var(--accent); line-height: 1; margin-bottom: 8px; }
+  .get-label { font-size: 0.95rem; font-weight: 600; margin-bottom: 8px; }
+  .get-detail { font-size: 0.8rem; color: var(--muted); line-height: 1.5; }
+
+  /* Quick start */
+  .quickstart-section h2 { font-size: 1.8rem; font-weight: 700; text-align: center; margin-bottom: 12px; }
+  .quickstart-section .sub { color: var(--muted); text-align: center; margin-bottom: 48px; font-size: 0.95rem; }
+  .qs-terminal { max-width: 640px; margin: 0 auto; }
+  .qs-body { background: #0d0d0d; border: 1px solid var(--border); border-top: none; border-radius: 0 0 12px 12px; padding: 24px 28px; text-align: left; overflow-x: auto; font-size: 0.85rem; line-height: 2; }
+  .qs-body .prompt { color: var(--green); }
+  .qs-body .comment { color: #525252; }
+  .qs-body .output { color: var(--muted); }
+  .qs-body .hl { color: var(--accent); }
+  @media (max-width: 640px) { .qs-body { font-size: 0.72rem; padding: 16px; } }
+
+  /* Compatible with */
+  .compat-row { display: flex; gap: 24px; justify-content: center; align-items: center; margin-top: 32px; flex-wrap: wrap; }
+  .compat-badge { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 20px; font-size: 0.85rem; font-weight: 500; color: var(--fg); transition: border-color 0.2s; }
+  .compat-badge:hover { border-color: var(--accent); }
+
+  /* CTA footer */
+  .cta-footer { text-align: center; padding: 100px 24px 80px; position: relative; }
+  .cta-footer::before { content: ''; position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 400px; height: 400px; background: radial-gradient(circle, rgba(34,211,238,0.05) 0%, transparent 70%); pointer-events: none; }
+  .cta-footer h2 { font-size: 1.8rem; font-weight: 700; margin-bottom: 16px; position: relative; }
+  .cta-footer .accent { color: var(--accent); }
+  .cta-links { display: flex; gap: 32px; justify-content: center; margin-top: 32px; flex-wrap: wrap; position: relative; }
+  .cta-link { display: flex; flex-direction: column; align-items: center; gap: 6px; text-decoration: none; padding: 16px 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; transition: border-color 0.3s, transform 0.3s; min-width: 180px; }
+  .cta-link:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .cta-link .link-domain { font-size: 1rem; font-weight: 600; color: var(--accent); }
+  .cta-link .link-desc { font-size: 0.8rem; color: var(--muted); }
+
+  /* Footer */
+  footer { text-align: center; padding: 32px 24px; border-top: 1px solid var(--border); }
+  footer p { color: var(--muted); font-size: 0.8rem; }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+  footer .patent { display: block; color: #525252; font-size: 0.7rem; margin-top: 8px; }
+
+  /* GSAP utility */
+  .gs-up { opacity: 0; transform: translateY(40px); }
 </style>
 
-<div class="container">
-  <div class="install-page">
-    <h1>Install Savants</h1>
-
-    <div class="cmd"><code class="mono">curl -fsSL savants.sh | sh</code></div>
-
-    <p>This downloads the Savants CLI and installs it to <code>~/.savants/bin/</code>.</p>
-
-    <h2>After install</h2>
-    <pre class="mono">
-# Auto-detect everything and show what's broken
-savants up
-
-# Set up MCP for Claude Code / Cursor
-savants mcp install
-
-# Live cluster monitoring
-savants k8s watch my-cluster --logs
-
-# Full diagnosis
-savants story</pre>
-
-    <h2>Requirements</h2>
-    <p>Linux x86_64 or aarch64. macOS support coming soon.</p>
-    <p>Optional: kubectl (for K8s features), Docker (for container monitoring).</p>
-
-    <h2>Manual install (pip)</h2>
-    <pre class="mono">pip install savants</pre>
-
-    <p><a href="https://savants.dev" style="color: var(--accent);">Back to savants.dev</a></p>
+<!-- Nav -->
+<nav>
+  <a href="https://savants.dev" class="brand">savants<span>.sh</span></a>
+  <div class="links">
+    <a href="https://savants.dev">Docs</a>
+    <a href="https://savants.dev/#pricing">Pricing</a>
+    <a href="https://savants.cloud">Cloud</a>
   </div>
-</div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <h1 class="gs-up">Install <span class="accent">Savants</span></h1>
+  <p class="subtitle gs-up">One command. 60 seconds to full context.</p>
+
+  <div class="terminal-wrap gs-up">
+    <div class="terminal-bar">
+      <span class="dot dot-r"></span>
+      <span class="dot dot-y"></span>
+      <span class="dot dot-g"></span>
+      <span class="title mono">terminal</span>
+    </div>
+    <div class="terminal-body" id="install-cmd" onclick="copyInstall()">
+      <code class="mono"><span class="prompt">$</span> curl -fsSL savants.sh | sh</code>
+      <button class="copy-btn" id="copy-btn">Copy</button>
+    </div>
+  </div>
+  <p class="trust-line gs-up">Installs to <code class="mono" style="color:var(--accent);font-size:0.8rem;">~/.savants/bin/</code> - no sudo required. <a href="https://github.com/bernadinm/savants">View source</a></p>
+</section>
+
+<div class="section-divider"></div>
+
+<!-- What happens -->
+<section class="section steps-section">
+  <div class="section-inner">
+    <h2 class="gs-up">What happens when you run it</h2>
+    <p class="sub gs-up">Three steps, fully automatic.</p>
+    <div class="steps-grid">
+      <div class="step-card gs-up">
+        <div class="step-num">1</div>
+        <h3>Download</h3>
+        <p>Detects your OS and architecture. Downloads the correct binary. No dependencies, no runtime.</p>
+        <span class="step-cmd mono">~3 seconds</span>
+      </div>
+      <div class="step-card gs-up">
+        <div class="step-num">2</div>
+        <h3>Detect</h3>
+        <p>Finds your git repos, Kubernetes clusters, running services, and environment. Builds an initial map.</p>
+        <span class="step-cmd mono">~10 seconds</span>
+      </div>
+      <div class="step-card gs-up">
+        <div class="step-num">3</div>
+        <h3>Index</h3>
+        <p>Parses code, builds the knowledge graph, connects everything. Ready to answer questions.</p>
+        <span class="step-cmd mono">~45 seconds</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="section-divider"></div>
+
+<!-- Supported platforms -->
+<section class="section platforms-section">
+  <div class="section-inner">
+    <h2 class="gs-up">Supported platforms</h2>
+    <div class="platform-grid">
+      <div class="platform-card gs-up">
+        <span class="platform-icon">&#128039;</span>
+        <div class="os">Linux</div>
+        <div class="arch mono">x86_64</div>
+        <div class="platform-check">&#10003; Available</div>
+      </div>
+      <div class="platform-card gs-up">
+        <span class="platform-icon">&#128039;</span>
+        <div class="os">Linux</div>
+        <div class="arch mono">aarch64</div>
+        <div class="platform-check">&#10003; Available</div>
+      </div>
+      <div class="platform-card gs-up">
+        <span class="platform-icon">&#63743;</span>
+        <div class="os">macOS</div>
+        <div class="arch mono">Intel</div>
+        <div class="platform-check">&#10003; Available</div>
+      </div>
+      <div class="platform-card gs-up">
+        <span class="platform-icon">&#63743;</span>
+        <div class="os">macOS</div>
+        <div class="arch mono">Apple Silicon</div>
+        <div class="platform-check">&#10003; Available</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="section-divider"></div>
+
+<!-- What you get -->
+<section class="section get-section">
+  <div class="section-inner">
+    <h2 class="gs-up">What you get</h2>
+    <div class="get-grid">
+      <div class="get-card gs-up">
+        <div class="get-number">37</div>
+        <div class="get-label">MCP Tools</div>
+        <div class="get-detail">diagnose-error, pr-risk, radar, query, search-code, impact-analysis, and 31 more.</div>
+      </div>
+      <div class="get-card gs-up">
+        <div class="get-number">4</div>
+        <div class="get-label">Languages</div>
+        <div class="get-detail">Rust, Go, Python, TypeScript. Full AST parsing, cross-file references, dependency chains.</div>
+      </div>
+      <div class="get-card gs-up">
+        <div class="get-number">3</div>
+        <div class="get-label">IDE Integrations</div>
+        <div class="get-detail">Works with Claude Code, Cursor, and Windsurf. Any MCP-compatible client.</div>
+      </div>
+    </div>
+
+    <div class="compat-row gs-up">
+      <div class="compat-badge">Claude Code</div>
+      <div class="compat-badge">Cursor</div>
+      <div class="compat-badge">Windsurf</div>
+      <div class="compat-badge">Any MCP Client</div>
+    </div>
+  </div>
+</section>
+
+<div class="section-divider"></div>
+
+<!-- Quick start -->
+<section class="section quickstart-section">
+  <div class="section-inner">
+    <h2 class="gs-up">Quick start</h2>
+    <p class="sub gs-up">Two commands and you're live.</p>
+
+    <div class="qs-terminal gs-up">
+      <div class="terminal-bar">
+        <span class="dot dot-r"></span>
+        <span class="dot dot-y"></span>
+        <span class="dot dot-g"></span>
+        <span class="title mono">terminal</span>
+      </div>
+      <div class="qs-body mono">
+        <div><span class="comment"># Start Savants - auto-detects repos, clusters, services</span></div>
+        <div><span class="prompt">$</span> savants up</div>
+        <div><span class="output">Indexed 27,431 nodes across 3 repos in 42s</span></div>
+        <div><span class="output">MCP server listening on stdio</span></div>
+        <div>&nbsp;</div>
+        <div><span class="comment"># Register MCP tools with your editor</span></div>
+        <div><span class="prompt">$</span> savants mcp install</div>
+        <div><span class="output">Installed for: <span class="hl">Claude Code</span>, <span class="hl">Cursor</span></span></div>
+        <div>&nbsp;</div>
+        <div><span class="comment"># Now ask your LLM anything - it calls Savants automatically</span></div>
+        <div><span class="prompt">$</span> claude <span class="hl">"Why is the payments service throwing 500s?"</span></div>
+        <div><span class="output">Calling diagnose-error... root cause: stale DB connection pool</span></div>
+        <div><span class="output">in <span class="hl">src/db/pool.rs:147</span> - max_idle_time exceeded after deploy</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="section-divider"></div>
+
+<!-- CTA -->
+<section class="cta-footer">
+  <h2 class="gs-up">Ready to give your LLM the <span class="accent">full picture</span>?</h2>
+  <div class="cta-links gs-up">
+    <a href="https://savants.dev" class="cta-link">
+      <span class="link-domain">savants.dev</span>
+      <span class="link-desc">Full documentation</span>
+    </a>
+    <a href="https://savants.cloud" class="cta-link">
+      <span class="link-domain">savants.cloud</span>
+      <span class="link-desc">Team and enterprise features</span>
+    </a>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p><a href="https://savants.dev">savants.dev</a> &middot; <a href="https://savants.sh">savants.sh</a> &middot; <a href="https://savants.cloud">savants.cloud</a></p>
+  <span class="patent">Patent Pending &middot; &copy; 2026 Savants</span>
+</footer>
+
+<script>
+  // ---- Copy to clipboard ----
+  function copyInstall() {
+    const cmd = 'curl -fsSL savants.sh | sh';
+    navigator.clipboard.writeText(cmd).then(() => {
+      const btn = document.getElementById('copy-btn');
+      if (btn) {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 2000);
+      }
+    });
+  }
+
+  // ---- GSAP scroll animations ----
+  function initAnimations() {
+    if (typeof gsap === 'undefined' || typeof ScrollTrigger === 'undefined') {
+      // Fallback: just show everything
+      document.querySelectorAll('.gs-up').forEach(el => {
+        el.style.opacity = '1';
+        el.style.transform = 'none';
+      });
+      return;
+    }
+
+    gsap.registerPlugin(ScrollTrigger);
+
+    // Animate all .gs-up elements on scroll
+    gsap.utils.toArray('.gs-up').forEach((el, i) => {
+      gsap.to(el, {
+        opacity: 1,
+        y: 0,
+        duration: 0.8,
+        ease: 'power3.out',
+        scrollTrigger: {
+          trigger: el,
+          start: 'top 85%',
+          once: true,
+        },
+      });
+    });
+
+    // Stagger step cards
+    const stepCards = gsap.utils.toArray('.step-card');
+    if (stepCards.length) {
+      gsap.to(stepCards, {
+        opacity: 1,
+        y: 0,
+        duration: 0.6,
+        stagger: 0.15,
+        ease: 'power3.out',
+        scrollTrigger: {
+          trigger: stepCards[0],
+          start: 'top 85%',
+          once: true,
+        },
+      });
+    }
+
+    // Stagger platform cards
+    const platformCards = gsap.utils.toArray('.platform-card');
+    if (platformCards.length) {
+      gsap.to(platformCards, {
+        opacity: 1,
+        y: 0,
+        duration: 0.5,
+        stagger: 0.1,
+        ease: 'power3.out',
+        scrollTrigger: {
+          trigger: platformCards[0],
+          start: 'top 85%',
+          once: true,
+        },
+      });
+    }
+
+    // Stagger get cards
+    const getCards = gsap.utils.toArray('.get-card');
+    if (getCards.length) {
+      gsap.to(getCards, {
+        opacity: 1,
+        y: 0,
+        duration: 0.6,
+        stagger: 0.15,
+        ease: 'power3.out',
+        scrollTrigger: {
+          trigger: getCards[0],
+          start: 'top 85%',
+          once: true,
+        },
+      });
+    }
+
+    // Number count-up animation for stat numbers
+    document.querySelectorAll('.get-number').forEach(el => {
+      const target = parseInt(el.textContent);
+      if (isNaN(target)) return;
+      const obj = { val: 0 };
+      gsap.to(obj, {
+        val: target,
+        duration: 1.2,
+        ease: 'power2.out',
+        scrollTrigger: {
+          trigger: el,
+          start: 'top 85%',
+          once: true,
+        },
+        onUpdate: () => {
+          el.textContent = Math.round(obj.val);
+        },
+      });
+    });
+
+    // Terminal typing effect for quick start
+    const qsLines = document.querySelectorAll('.qs-body > div');
+    if (qsLines.length) {
+      qsLines.forEach(line => { line.style.opacity = '0'; line.style.transform = 'translateY(4px)'; });
+      gsap.to(qsLines, {
+        opacity: 1,
+        y: 0,
+        duration: 0.3,
+        stagger: 0.12,
+        ease: 'power2.out',
+        scrollTrigger: {
+          trigger: '.qs-body',
+          start: 'top 80%',
+          once: true,
+        },
+      });
+    }
+  }
+
+  // Wait for GSAP to load
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(initAnimations, 100));
+  } else {
+    setTimeout(initAnimations, 100);
+  }
+</script>
 </Base>

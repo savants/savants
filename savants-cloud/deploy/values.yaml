@@ -23,6 +23,16 @@ falkordb:
   host: falkordb.atlas-system.svc.cluster.local
   port: 6379
 
+stripe:
+  # All three come from k8s Secret "savants-cloud-secrets"
+  # STRIPE_SECRET_KEY: sk_live_...
+  # STRIPE_WEBHOOK_SECRET: whsec_...
+  # STRIPE_PAYG_PRICE_ID: price_savants_payg_cluster
+  payg_price_id: "price_savants_payg_cluster"
+
+env:
+  BASE_URL: "https://savants.cloud"
+
 # No ingress needed - cloudflared tunnel routes traffic directly to the Service.
 # Tunnel config: savants.cloud -> http://savants-cloud-api.savants-cloud.svc.cluster.local:80
 # API access: api.savants.cloud -> same Service, no Cloudflare Access gate

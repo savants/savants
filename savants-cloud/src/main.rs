@@ -19,6 +19,10 @@ pub struct AppState {
     pub db: sqlx::PgPool,
     pub redis: redis::Client,
     pub jwt_secret: String,
+    pub stripe_secret_key: String,
+    pub stripe_webhook_secret: String,
+    pub stripe_payg_price_id: String,
+    pub base_url: String,
 }
 
 #[tokio::main]
@@ -35,6 +39,14 @@ async fn main() {
         .unwrap_or_else(|_| "redis://localhost:16379".to_string());
     let jwt_secret = std::env::var("JWT_SECRET")
         .unwrap_or_else(|_| "savants-dev-secret-change-in-production".to_string());
+    let stripe_secret_key = std::env::var("STRIPE_SECRET_KEY")
+        .unwrap_or_default();
+    let stripe_webhook_secret = std::env::var("STRIPE_WEBHOOK_SECRET")
+        .unwrap_or_default();
+    let stripe_payg_price_id = std::env::var("STRIPE_PAYG_PRICE_ID")
+        .unwrap_or_else(|_| "price_savants_payg_cluster".to_string());
+    let base_url = std::env::var("BASE_URL")
+        .unwrap_or_else(|_| "https://savants.cloud".to_string());
 
     let db = PgPoolOptions::new()
         .max_connections(10)
@@ -55,6 +67,10 @@ async fn main() {
         db,
         redis,
         jwt_secret,
+        stripe_secret_key,
+        stripe_webhook_secret,
+        stripe_payg_price_id,
+        base_url,
     });
 
     let app = Router::new()
