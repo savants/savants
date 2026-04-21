@@ -81,7 +81,8 @@ import Base from '../layouts/Base.astro';
   .terminal-bar .dot-g { background: #4ade80; }
   .terminal-bar .title { color: var(--muted); font-size: 0.75rem; margin-left: 12px; }
   .terminal { background: #0d0d0d; border: 1px solid var(--border); border-top: none; border-radius: 0 0 12px 12px; padding: 24px 28px; text-align: left; overflow-x: auto; font-size: 0.85rem; line-height: 1.8; }
-  .terminal .line { opacity: 0; transform: translateY(4px); }
+  .terminal .line { opacity: 1; }
+  .terminal.animate .line { opacity: 0; transform: translateY(4px); }
   .terminal .prompt { color: var(--green); }
   .terminal .output { color: var(--muted); }
   .terminal .hl { color: var(--accent); }
@@ -935,6 +936,10 @@ import Base from '../layouts/Base.astro';
           scrub: true
         }
       });
+
+      // Add animate class so lines start hidden (only when GSAP is available)
+      const termEl = document.getElementById('term');
+      if (termEl) termEl.classList.add('animate');
 
       // Lines appear as if typed
       const lines = document.querySelectorAll('#term .line');
