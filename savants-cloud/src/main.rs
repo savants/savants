@@ -79,6 +79,7 @@ async fn main() {
         // Auth
         .route("/auth/device/code", post(auth::device::request_code))
         .route("/auth/device/token", post(auth::device::poll_token))
+        .route("/auth/device/activate", post(auth::device::activate_device))
         .route("/auth/callback/google", get(auth::oauth::google_callback))
         .route("/auth/callback/github", get(auth::oauth::github_callback))
         // Tools (the core API - metered PAYG endpoints)

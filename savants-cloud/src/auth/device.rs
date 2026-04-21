@@ -197,3 +197,118 @@ pub async fn poll_token(
         )),
     }
 }
+
+/// Activate a device code - called from the web UI after the user signs in.
+/// This creates the user + org if they don't exist, then approves the device session.
+#[derive(Deserialize)]
+pub struct ActivateRequest {
+    pub user_code: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub provider: Option<String>,
+}
+
+pub async fn activate_device(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ActivateRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    // Find the pending session by user code
+    let session = sqlx::query_as::<_, crate::db::DeviceAuthSession>(
+        "SELECT * FROM device_auth_sessions WHERE user_code = $1 AND status = 'pending'",
+    )
+    .bind(&body.user_code)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "db_error".to_string() })))?;
+
+    let session = match session {
+        Some(s) => s,
+        None => return Err((StatusCode::NOT_FOUND, Json(ErrorResponse { error: "invalid_code".to_string() }))),
+    };
+
+    if session.expires_at < Utc::now() {
+        return Err((StatusCode::GONE, Json(ErrorResponse { error: "expired_code".to_string() })));
+    }
+
+    // Create or find user
+    let email = body.email.unwrap_or_else(|| "anonymous@savants.dev".to_string());
+    let name = body.name.unwrap_or_else(|| "Savants User".to_string());
+    let provider = body.provider.unwrap_or_else(|| "device".to_string());
+
+    let user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, name, auth_provider, auth_provider_id) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name \
+         RETURNING id"
+    )
+    .bind(&email)
+    .bind(&name)
+    .bind(&provider)
+    .bind(&email)  // use email as provider_id for simplicity
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "user_create_error".to_string() })))?;
+
+    // Create org if user doesn't have one
+    let org_id: Uuid = match sqlx::query_scalar::<_, Uuid>(
+        "SELECT org_id FROM memberships WHERE user_id = $1 LIMIT 1"
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "db_error".to_string() })))?
+    {
+        Some(oid) => oid,
+        None => {
+            // Create new org
+            let slug = email.split('@').next().unwrap_or("user").replace('.', "-");
+            let org_id: Uuid = sqlx::query_scalar(
+                "INSERT INTO orgs (slug, name, plan) VALUES ($1, $2, 'free') RETURNING id"
+            )
+            .bind(&slug)
+            .bind(&format!("{}'s workspace", name))
+            .fetch_one(&state.db)
+            .await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "org_create_error".to_string() })))?;
+
+            // Add user as owner
+            let _ = sqlx::query(
+                "INSERT INTO memberships (user_id, org_id, role) VALUES ($1, $2, 'owner')"
+            )
+            .bind(user_id)
+            .bind(org_id)
+            .execute(&state.db)
+            .await;
+
+            // Create default graph scope
+            let graph_name = format!("org_{}", org_id.to_string().replace('-', ""));
+            let _ = sqlx::query(
+                "INSERT INTO graph_scopes (org_id, scope_type, scope_name, falkordb_graph_name) \
+                 VALUES ($1, 'default', 'main', $2) ON CONFLICT DO NOTHING"
+            )
+            .bind(org_id)
+            .bind(&graph_name)
+            .execute(&state.db)
+            .await;
+
+            org_id
+        }
+    };
+
+    // Approve the device session
+    sqlx::query(
+        "UPDATE device_auth_sessions SET status = 'approved', user_id = $1, org_id = $2 WHERE id = $3"
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .bind(session.id)
+    .execute(&state.db)
+    .await
+    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "approve_error".to_string() })))?;
+
+    Ok(Json(serde_json::json!({
+        "status": "activated",
+        "user_id": user_id,
+        "org_id": org_id,
+    })))
+}

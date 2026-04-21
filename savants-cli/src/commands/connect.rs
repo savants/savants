@@ -91,11 +91,50 @@ pub async fn run() {
                 return;
             }
 
+            // Generate an API key for this device
+            let key_resp = client.post(&format!("{}/api/v1/org/keys", CLOUD_ENDPOINT))
+                .header("Authorization", format!("Bearer {}", access_token))
+                .json(&serde_json::json!({"name": format!("cli-{}", gethostname::gethostname().to_string_lossy())}))
+                .send().await;
+
+            let api_key = match key_resp {
+                Ok(resp) if resp.status().is_success() => {
+                    let data = resp.json::<serde_json::Value>().await.unwrap_or_default();
+                    data.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string()
+                }
+                _ => String::new(),
+            };
+
+            // Save cloud config
+            state.cloud_device_token = Some(access_token.to_string());
+            state.cloud_org = Some(org_id.to_string());
+            if let Err(e) = state.save() {
+                eprintln!("{}: failed to save state: {}", "Error".red(), e);
+                return;
+            }
+
             println!();
             println!("  {} Connected to savants.cloud (org: {})", "●".green(), org_id.cyan());
             println!();
-            println!("  Your context engine is now synced to the cloud.");
-            println!("  Team members can connect with: {}", "savants connect".cyan());
+
+            if !api_key.is_empty() {
+                println!("  Your MCP config (add to {}):", "~/.mcp.json".cyan());
+                println!("  {{");
+                println!("    \"mcpServers\": {{");
+                println!("      \"savants\": {{");
+                println!("        \"command\": \"savants\",");
+                println!("        \"args\": [\"serve\"],");
+                println!("        \"env\": {{");
+                println!("          \"SAVANTS_CLOUD_URL\": \"{}\",", CLOUD_ENDPOINT);
+                println!("          \"SAVANTS_API_KEY\": \"{}\"", api_key);
+                println!("        }}");
+                println!("      }}");
+                println!("    }}");
+                println!("  }}");
+            }
+
+            println!();
+            println!("  Restart Claude Code to use Savants.");
             return;
         }
 

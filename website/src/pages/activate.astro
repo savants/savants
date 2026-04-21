@@ -1,0 +1,142 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Activate Device - Savants Cloud">
+<style>
+  .activate-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .activate-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 48px; max-width: 420px; width: 100%; text-align: center; }
+  .activate-card h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 8px; }
+  .activate-card .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 32px; }
+  .code-input { display: flex; gap: 8px; justify-content: center; margin-bottom: 24px; }
+  .code-input input { width: 48px; height: 56px; text-align: center; font-size: 1.5rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; background: var(--bg); border: 2px solid var(--border); border-radius: 8px; color: var(--fg); outline: none; transition: border-color 0.2s; }
+  .code-input input:focus { border-color: var(--accent); }
+  .activate-btn { width: 100%; padding: 14px; background: var(--accent); color: var(--bg); font-weight: 700; font-size: 1rem; border: none; border-radius: 8px; cursor: pointer; transition: opacity 0.2s; }
+  .activate-btn:hover { opacity: 0.9; }
+  .activate-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .or-divider { color: var(--muted); font-size: 0.8rem; margin: 24px 0; }
+  .oauth-buttons { display: flex; flex-direction: column; gap: 12px; }
+  .oauth-btn { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--fg); font-size: 0.9rem; font-weight: 500; cursor: pointer; text-decoration: none; transition: border-color 0.2s; }
+  .oauth-btn:hover { border-color: var(--muted); }
+  .oauth-btn svg { width: 20px; height: 20px; }
+  .status { margin-top: 16px; font-size: 0.85rem; }
+  .status.success { color: var(--green); }
+  .status.error { color: var(--red); }
+  .status.pending { color: var(--muted); }
+  .terminal-hint { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-top: 24px; text-align: left; }
+  .terminal-hint code { color: var(--accent); font-size: 0.85rem; }
+  .terminal-hint .label { color: var(--muted); font-size: 0.75rem; margin-bottom: 4px; }
+</style>
+
+<div class="activate-page">
+  <div class="activate-card">
+    <h1>Activate Savants</h1>
+    <p class="sub">Enter the code shown in your terminal to connect your device.</p>
+
+    <div class="code-input" id="code-input">
+      <input type="text" maxlength="1" data-index="0" autofocus />
+      <input type="text" maxlength="1" data-index="1" />
+      <input type="text" maxlength="1" data-index="2" />
+      <input type="text" maxlength="1" data-index="3" />
+      <input type="text" maxlength="1" data-index="4" />
+      <input type="text" maxlength="1" data-index="5" />
+      <input type="text" maxlength="1" data-index="6" />
+      <input type="text" maxlength="1" data-index="7" />
+    </div>
+
+    <button class="activate-btn" id="activate-btn" disabled>Activate Device</button>
+
+    <div class="or-divider">or sign in to create a new account</div>
+
+    <div class="oauth-buttons">
+      <a href="https://api.savants.cloud/auth/callback/google" class="oauth-btn">
+        <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        Continue with Google
+      </a>
+      <a href="https://api.savants.cloud/auth/callback/github" class="oauth-btn">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+        Continue with GitHub
+      </a>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div class="terminal-hint">
+      <div class="label">From your terminal:</div>
+      <code>$ savants connect</code>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Auto-advance code inputs
+  const inputs = document.querySelectorAll('.code-input input');
+  const btn = document.getElementById('activate-btn');
+  const status = document.getElementById('status');
+
+  inputs.forEach((input, i) => {
+    input.addEventListener('input', (e) => {
+      const val = (e.target as HTMLInputElement).value.toUpperCase();
+      (e.target as HTMLInputElement).value = val;
+      if (val && i < inputs.length - 1) {
+        (inputs[i + 1] as HTMLInputElement).focus();
+      }
+      checkComplete();
+    });
+    input.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Backspace' && !(e.target as HTMLInputElement).value && i > 0) {
+        (inputs[i - 1] as HTMLInputElement).focus();
+      }
+    });
+    // Handle paste
+    input.addEventListener('paste', (e) => {
+      e.preventDefault();
+      const paste = (e as ClipboardEvent).clipboardData?.getData('text') || '';
+      paste.split('').slice(0, 8).forEach((char, j) => {
+        if (inputs[j]) (inputs[j] as HTMLInputElement).value = char.toUpperCase();
+      });
+      checkComplete();
+    });
+  });
+
+  function checkComplete() {
+    const code = Array.from(inputs).map(i => (i as HTMLInputElement).value).join('');
+    (btn as HTMLButtonElement).disabled = code.length < 8;
+  }
+
+  btn?.addEventListener('click', async () => {
+    const code = Array.from(inputs).map(i => (i as HTMLInputElement).value).join('');
+    if (code.length < 8) return;
+
+    (btn as HTMLButtonElement).disabled = true;
+    (btn as HTMLButtonElement).textContent = 'Activating...';
+    status!.className = 'status pending';
+    status!.textContent = 'Verifying code...';
+
+    try {
+      // Find the device auth session by user code and approve it
+      const resp = await fetch('https://api.savants.cloud/auth/device/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_code: code }),
+      });
+
+      if (resp.ok) {
+        status!.className = 'status success';
+        status!.textContent = 'Device activated! Return to your terminal.';
+        (btn as HTMLButtonElement).textContent = 'Activated';
+      } else {
+        const data = await resp.json().catch(() => ({}));
+        status!.className = 'status error';
+        status!.textContent = data.error || 'Invalid or expired code. Try again.';
+        (btn as HTMLButtonElement).disabled = false;
+        (btn as HTMLButtonElement).textContent = 'Activate Device';
+      }
+    } catch (e) {
+      status!.className = 'status error';
+      status!.textContent = 'Connection error. Try again.';
+      (btn as HTMLButtonElement).disabled = false;
+      (btn as HTMLButtonElement).textContent = 'Activate Device';
+    }
+  });
+</script>
+</Base>

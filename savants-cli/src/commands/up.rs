@@ -12,10 +12,16 @@ pub async fn run(repo: Option<String>, _tail_lines: u32) {
     match embedded.ensure_running() {
         Ok(true) => println!("  {} Context: {}", "●".green(), "started".green()),
         Ok(false) => println!("  {} Context: {}", "●".green(), "connected".green()),
-        Err(e) => {
-            eprintln!("  {} Context: {}", "●".red(), e.red());
-            eprintln!("  Install Redis or run the savants installer.");
-            std::process::exit(1);
+        Err(_e) => {
+            // No local Redis available - check if cloud is configured
+            if std::env::var("SAVANTS_CLOUD_URL").is_ok() {
+                println!("  {} Context: {} (cloud mode)", "●".green(), "api.savants.cloud".cyan());
+            } else {
+                println!("  {} Context: {}", "●".yellow(), "no local engine".yellow());
+                println!("    Run {} to use the cloud context engine.", "savants connect".cyan());
+                println!("    Or install Redis locally for offline use.");
+                // Don't exit - let them connect to cloud
+            }
         }
     }
 
