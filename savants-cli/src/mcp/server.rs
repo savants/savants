@@ -2678,20 +2678,55 @@ impl McpServer {
             return Err(format!("Not a directory: {}", repo_path));
         }
 
-        // Derive repo name from path
         let repo_name = std::path::Path::new(repo_path)
             .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
-        let mut indexer = crate::code_index::CodeIndexer::new(self.client.clone(), &repo_name);
-        let stats = indexer.index_repo(repo_path);
+        // Check if we're in cloud mode - if so, parse locally and send metadata
+        if let Ok(cloud_url) = std::env::var("SAVANTS_CLOUD_URL") {
+            let api_key = std::env::var("SAVANTS_API_KEY").unwrap_or_default();
 
-        // Also analyze open PRs if they exist in the graph
-        let pr_analyzer = crate::code_index::PRAnalyzer::new(self.client.clone(), &repo_name);
-        let prs_analyzed = pr_analyzer.analyze_open_prs(repo_path);
+            // Parse locally (tree-sitter only, no graph)
+            let mut parser = crate::code_parser::CodeParser::new(&repo_name);
+            let result = parser.parse_repo(repo_path);
+            let entity_count = result.entities.len();
+            let file_count = result.files;
 
-        Ok(format!("Indexed {}: {}. Analyzed {} open PRs.", repo_name, stats.summary(), prs_analyzed))
+            // Send parsed metadata to cloud for graph construction
+            let body = serde_json::to_string(&result)
+                .map_err(|e| format!("serialize error: {}", e))?;
+
+            let output = std::process::Command::new("curl")
+                .args([
+                    "-sf", "--max-time", "60",
+                    "-X", "POST",
+                    "-H", &format!("Authorization: Bearer {}", api_key),
+                    "-H", "Content-Type: application/json",
+                    "-d", &body,
+                    &format!("{}/api/v1/ingest", cloud_url),
+                ])
+                .output()
+                .map_err(|e| format!("upload failed: {}", e))?;
+
+            if output.status.success() {
+                Ok(format!("Parsed {}: {} files, {} entities. Uploaded to cloud for indexing.", repo_name, file_count, entity_count))
+            } else {
+                // Fall back to local indexing if cloud upload fails
+                let mut indexer = crate::code_index::CodeIndexer::new(self.client.clone(), &repo_name);
+                let stats = indexer.index_repo(repo_path);
+                Ok(format!("Cloud upload failed. Indexed locally: {}. {}", repo_name, stats.summary()))
+            }
+        } else {
+            // Local mode - use graph directly
+            let mut indexer = crate::code_index::CodeIndexer::new(self.client.clone(), &repo_name);
+            let stats = indexer.index_repo(repo_path);
+
+            let pr_analyzer = crate::code_index::PRAnalyzer::new(self.client.clone(), &repo_name);
+            let prs_analyzed = pr_analyzer.analyze_open_prs(repo_path);
+
+            Ok(format!("Indexed {}: {}. Analyzed {} open PRs.", repo_name, stats.summary(), prs_analyzed))
+        }
     }
 
     fn tool_pr_risk(&self, args: &Value) -> Result<String, String> {

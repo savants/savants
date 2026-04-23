@@ -17,6 +17,7 @@ mod commands;
 mod host;
 mod k8s;
 mod code_index;
+mod code_parser;
 mod github;
 mod jira;
 mod mcp;
