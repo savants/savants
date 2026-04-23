@@ -39,8 +39,10 @@ walkdir = "2"
 glob = "0.3"
 
 [profile.release]
-strip = "symbols"
+opt-level = 3
+strip = true
 panic = "abort"
 lto = true
+codegen-units = 1
 codegen-units = 1
 opt-level = "z"
