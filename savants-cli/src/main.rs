@@ -18,6 +18,7 @@ mod host;
 mod k8s;
 mod code_index;
 mod code_parser;
+mod semantic_search;
 mod github;
 mod jira;
 mod mcp;

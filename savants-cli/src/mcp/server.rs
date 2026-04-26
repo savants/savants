@@ -504,6 +504,19 @@ impl McpServer {
                 }
             },
             {
+                "name": "semantic_search",
+                "description": "NATURAL LANGUAGE CODE SEARCH: Find functions by describing what they do, not by name. 'payment retry logic' finds handleTransactionWithBackoff. 'user authentication' finds verifyJwtToken. Uses BM25 ranking - no API keys, no external services, works offline.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Natural language description of what you're looking for"},
+                        "repo": {"type": "string", "description": "Repository name"},
+                        "limit": {"type": "integer", "description": "Max results. Default: 10"}
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
                 "name": "dead_code",
                 "description": "Find functions with zero callers - candidates for removal during refactoring.",
                 "inputSchema": {
@@ -577,6 +590,7 @@ impl McpServer {
             "import_tree" => self.tool_import_tree(&args),
             "module_exports" => self.tool_module_exports(&args),
             "blast_radius" => self.tool_blast_radius(&args),
+            "semantic_search" => self.tool_semantic_search(&args),
             "dead_code" => self.tool_dead_code(&args),
             "search_code" => self.tool_search_code(&args),
             "find_references_structured" => self.tool_find_references(&args),
@@ -1864,6 +1878,51 @@ impl McpServer {
         }
         lines.push(format!("\nIf you change {}: {} functions across {} files could break.", function, dependents.len(), files.len()));
 
+        Ok(lines.join("\n"))
+    }
+
+    fn tool_semantic_search(&self, args: &Value) -> Result<String, String> {
+        let query = arg_str(args, "query")?;
+        let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
+        let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
+
+        // Parse the repo to build the search index
+        // In production this would be cached, but for now we parse on each search
+        let repo_path_candidates = [
+            format!("/home/miguel/git/sourcecoders-ai/{}", repo),
+            format!("/home/miguel/git/bernadinm/{}", repo),
+            format!("/home/miguel/git/{}", repo),
+            std::env::current_dir().unwrap_or_default().to_string_lossy().to_string(),
+        ];
+
+        let repo_path = repo_path_candidates.iter()
+            .find(|p| std::path::Path::new(p).is_dir())
+            .cloned()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
+
+        let mut parser = crate::code_parser::CodeParser::new(repo);
+        let parse_result = parser.parse_repo(&repo_path);
+
+        if parse_result.entities.is_empty() {
+            return Ok(format!("No code found in '{}'. Is the path correct?", repo_path));
+        }
+
+        let index = crate::semantic_search::SemanticIndex::from_parse_result(&parse_result);
+        let results = index.search(&query, limit);
+
+        if results.is_empty() {
+            return Ok(format!("No results for '{}' in {}", query, repo));
+        }
+
+        let mut lines = vec![format!("=== Semantic search: '{}' ({} results) ===", query, results.len())];
+        for r in &results {
+            lines.push(format!("\n  {} {}() [{}]", r.file, r.name, r.kind));
+            lines.push(format!("  Line {}, score: {:.2}", r.line, r.score));
+            if !r.snippet.is_empty() {
+                let preview: String = r.snippet.chars().take(120).collect();
+                lines.push(format!("  {}", preview.replace('\n', " ")));
+            }
+        }
         Ok(lines.join("\n"))
     }
 
