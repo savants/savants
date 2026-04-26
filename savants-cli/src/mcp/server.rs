@@ -1891,22 +1891,78 @@ impl McpServer {
             let store = crate::embedding_store::EmbeddingStore::load(repo)
                 .map_err(|e| format!("Load embeddings: {}", e))?;
 
-            // Embed just the query (fast, single string)
             let mut engine = crate::embeddings::EmbeddingEngine::new()
                 .map_err(|e| format!("Embedding engine: {}", e))?;
             let query_vec = engine.embed_one(&query)
                 .map_err(|e| format!("Embed query: {}", e))?;
 
-            let results = store.search(&query_vec, limit);
+            // Method 1: Embedding similarity (top 20 candidates)
+            let embed_results = store.search(&query_vec, 20);
 
-            if results.is_empty() {
+            // Method 2: Graph keyword search (name, file, body)
+            let query_terms: Vec<String> = query.to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() >= 2)
+                .map(|w| w.to_string())
+                .collect();
+
+            // Query the graph for keyword matches
+            let mut graph_scored: Vec<(String, f32)> = vec![];
+            for (idx, entry) in store.entries.iter().enumerate() {
+                let mut score = 0.0f32;
+                let name_lower = entry.name.to_lowercase();
+                let file_lower = entry.file.to_lowercase();
+
+                // Split function name into parts
+                let mut name_parts = vec![];
+                let mut current = String::new();
+                for ch in entry.name.chars() {
+                    if ch == '_' || ch == '-' || (ch.is_uppercase() && !current.is_empty()) {
+                        if !current.is_empty() { name_parts.push(current.to_lowercase()); current.clear(); }
+                        if ch.is_uppercase() { current.push(ch); }
+                    } else { current.push(ch); }
+                }
+                if !current.is_empty() { name_parts.push(current.to_lowercase()); }
+
+                let mut name_hits = 0;
+                for qt in &query_terms {
+                    // Name part match (strongest signal)
+                    if name_parts.iter().any(|p| p == qt) { score += 40.0; name_hits += 1; }
+                    // Name substring match
+                    else if name_lower.contains(qt.as_str()) { score += 20.0; name_hits += 1; }
+                    // File path segment match (e.g., "stripe" in "services/stripe.ts")
+                    if file_lower.split('/').any(|seg| seg.contains(qt.as_str())) { score += 30.0; }
+                }
+                // Multi-term name bonus
+                if name_hits >= 2 { score += 60.0; }
+                if name_hits >= 3 { score += 120.0; }
+
+                if score > 0.0 { graph_scored.push((idx.to_string(), score)); }
+            }
+            graph_scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            // Build ranked lists for RRF
+            let embed_ranked: Vec<(String, usize)> = embed_results.iter()
+                .enumerate().map(|(rank, (idx, _))| (idx.to_string(), rank)).collect();
+            let graph_ranked: Vec<(String, usize)> = graph_scored.iter()
+                .take(20).enumerate().map(|(rank, (idx, _))| (idx.clone(), rank)).collect();
+
+            // RRF fusion
+            let fused = crate::embeddings::reciprocal_rank_fusion(
+                &[embed_ranked, graph_ranked], 60.0
+            );
+
+            if fused.is_empty() {
                 return Ok(format!("No results for '{}' in {}", query, repo));
             }
 
-            let mut lines = vec![format!("=== Semantic search: '{}' ({} results, cached) ===", query, results.len())];
-            for (idx, score) in &results {
-                let entry = &store.entries[*idx];
-                lines.push(format!("  {}:{} {}() [{:.3}]", entry.file, entry.line, entry.name, score));
+            let mut lines = vec![format!("=== Semantic search: '{}' ({} results, hybrid) ===", query, fused.len().min(limit))];
+            for (idx_str, score) in fused.iter().take(limit) {
+                let idx: usize = idx_str.parse().unwrap_or(0);
+                if idx < store.entries.len() {
+                    let entry = &store.entries[idx];
+                    lines.push(format!("  {}:{} {}() [{:.3}]", entry.file, entry.line, entry.name, score));
+                }
             }
             return Ok(lines.join("\n"));
         }
