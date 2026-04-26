@@ -29,14 +29,13 @@ pub struct SemanticIndex {
     entry_embeddings: Vec<embeddings::Embedding>,
 }
 
-struct IndexEntry {
-    name: String,
-    file: String,
-    line: usize,
-    kind: String,
-    body_preview: String,
-    /// The text that was embedded (name + file + body summary)
-    embed_text: String,
+pub struct IndexEntry {
+    pub name: String,
+    pub file: String,
+    pub line: usize,
+    pub kind: String,
+    pub body_preview: String,
+    pub embed_text: String,
 }
 
 impl SemanticIndex {
@@ -83,6 +82,11 @@ impl SemanticIndex {
         let entry_embeddings = engine.embed(&texts)?;
 
         Ok(SemanticIndex { entries, entry_embeddings })
+    }
+
+    /// Get entries with their embeddings (for persistence to disk).
+    pub fn entries_with_embeddings(&self) -> impl Iterator<Item = (&IndexEntry, &embeddings::Embedding)> {
+        self.entries.iter().zip(self.entry_embeddings.iter())
     }
 
     /// Search by natural language query using embedding similarity.

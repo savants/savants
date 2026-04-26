@@ -20,6 +20,7 @@ mod code_index;
 mod code_parser;
 mod semantic_search;
 mod embeddings;
+mod embedding_store;
 mod github;
 mod jira;
 mod mcp;

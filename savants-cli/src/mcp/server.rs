@@ -1886,7 +1886,32 @@ impl McpServer {
         let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
         let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
 
-        // Find the repo path
+        // Try loading cached embeddings first (instant, <1ms)
+        if crate::embedding_store::EmbeddingStore::exists(repo) {
+            let store = crate::embedding_store::EmbeddingStore::load(repo)
+                .map_err(|e| format!("Load embeddings: {}", e))?;
+
+            // Embed just the query (fast, single string)
+            let mut engine = crate::embeddings::EmbeddingEngine::new()
+                .map_err(|e| format!("Embedding engine: {}", e))?;
+            let query_vec = engine.embed_one(&query)
+                .map_err(|e| format!("Embed query: {}", e))?;
+
+            let results = store.search(&query_vec, limit);
+
+            if results.is_empty() {
+                return Ok(format!("No results for '{}' in {}", query, repo));
+            }
+
+            let mut lines = vec![format!("=== Semantic search: '{}' ({} results, cached) ===", query, results.len())];
+            for (idx, score) in &results {
+                let entry = &store.entries[*idx];
+                lines.push(format!("  {}:{} {}() [{:.3}]", entry.file, entry.line, entry.name, score));
+            }
+            return Ok(lines.join("\n"));
+        }
+
+        // No cache - parse and embed (slow, ~15s, happens once)
         let repo_path_candidates = [
             format!("/home/miguel/git/sourcecoders-ai/{}", repo),
             format!("/home/miguel/git/bernadinm/{}", repo),
@@ -1897,21 +1922,31 @@ impl McpServer {
             .cloned()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
 
-        // Parse the repo
         let mut parser = crate::code_parser::CodeParser::new(repo);
         let parse_result = parser.parse_repo(&repo_path);
 
         if parse_result.entities.is_empty() {
-            return Ok(format!("No code found in '{}'", repo_path));
+            return Ok(format!("No code found in '{}'. Run reindex first.", repo_path));
         }
 
-        // Initialize embedding engine
         let mut engine = crate::embeddings::EmbeddingEngine::new()
             .map_err(|e| format!("Embedding engine: {}", e))?;
 
-        // Build index and search
+        // Build index, search, AND persist for next time
         let index = crate::semantic_search::SemanticIndex::from_parse_result(&parse_result, &mut engine)
             .map_err(|e| format!("Index: {}", e))?;
+
+        // Save embeddings to disk for instant future searches
+        let dim = engine.embed_one("test").map(|v| v.len() as u32).unwrap_or(128);
+        let mut store = crate::embedding_store::EmbeddingStore::new(dim);
+        for (entry, emb) in index.entries_with_embeddings() {
+            let kind = match entry.kind.as_str() { "class" => 1, "interface" => 2, _ => 0 };
+            store.add(&entry.name, &entry.file, entry.line as u32, kind, emb.clone());
+        }
+        if let Err(e) = store.save(repo) {
+            eprintln!("Warning: could not cache embeddings: {}", e);
+        }
+
         let results = index.search(&query, &mut engine, limit)
             .map_err(|e| format!("Search: {}", e))?;
 
@@ -1919,7 +1954,7 @@ impl McpServer {
             return Ok(format!("No results for '{}' in {}", query, repo));
         }
 
-        let mut lines = vec![format!("=== Semantic search: '{}' ({} results) ===", query, results.len())];
+        let mut lines = vec![format!("=== Semantic search: '{}' ({} results, indexed) ===", query, results.len())];
         for r in &results {
             lines.push(format!("  {}:{} {}() [{:.3}]", r.file, r.line, r.name, r.score));
         }
