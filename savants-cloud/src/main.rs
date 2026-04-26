@@ -23,6 +23,10 @@ pub struct AppState {
     pub stripe_webhook_secret: String,
     pub stripe_payg_price_id: String,
     pub base_url: String,
+    pub google_client_id: String,
+    pub google_client_secret: String,
+    pub github_client_id: String,
+    pub github_client_secret: String,
 }
 
 #[tokio::main]
@@ -47,6 +51,14 @@ async fn main() {
         .unwrap_or_else(|_| "price_savants_payg_cluster".to_string());
     let base_url = std::env::var("BASE_URL")
         .unwrap_or_else(|_| "https://savants.cloud".to_string());
+    let google_client_id = std::env::var("GOOGLE_CLIENT_ID")
+        .unwrap_or_default();
+    let google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET")
+        .unwrap_or_default();
+    let github_client_id = std::env::var("GITHUB_CLIENT_ID")
+        .unwrap_or_default();
+    let github_client_secret = std::env::var("GITHUB_CLIENT_SECRET")
+        .unwrap_or_default();
 
     let db = PgPoolOptions::new()
         .max_connections(10)
@@ -71,6 +83,10 @@ async fn main() {
         stripe_webhook_secret,
         stripe_payg_price_id,
         base_url,
+        google_client_id,
+        google_client_secret,
+        github_client_id,
+        github_client_secret,
     });
 
     let app = Router::new()
@@ -80,6 +96,8 @@ async fn main() {
         .route("/auth/device/code", post(auth::device::request_code))
         .route("/auth/device/token", post(auth::device::poll_token))
         .route("/auth/device/activate", post(auth::device::activate_device))
+        .route("/auth/google", get(auth::oauth::google_start))
+        .route("/auth/github", get(auth::oauth::github_start))
         .route("/auth/callback/google", get(auth::oauth::google_callback))
         .route("/auth/callback/github", get(auth::oauth::github_callback))
         // Tools (the core API - metered PAYG endpoints)

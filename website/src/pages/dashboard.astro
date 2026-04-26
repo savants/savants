@@ -1,0 +1,691 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Savants Cloud - Dashboard" description="Manage your context engine, API keys, team members, and usage.">
+<style>
+  /* Dashboard layout */
+  .dash-page { min-height: 100vh; padding-top: 72px; }
+
+  /* Nav */
+  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; backdrop-filter: blur(12px); background: rgba(10,10,10,0.9); border-bottom: 1px solid var(--border); }
+  nav .brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
+  nav .brand span { color: var(--accent); }
+  nav .nav-right { display: flex; align-items: center; gap: 20px; }
+  nav .org-name { font-size: 0.85rem; color: var(--muted); font-weight: 500; }
+  nav .nav-icon { background: none; border: none; color: var(--muted); cursor: pointer; padding: 6px; border-radius: 6px; transition: color 0.2s, background 0.2s; display: flex; align-items: center; }
+  nav .nav-icon:hover { color: var(--fg); background: rgba(255,255,255,0.05); }
+  nav .nav-icon svg { width: 18px; height: 18px; }
+  .logout-btn { background: none; border: 1px solid var(--border); color: var(--muted); cursor: pointer; padding: 5px 14px; border-radius: 6px; font-size: 0.78rem; font-family: 'Inter', sans-serif; font-weight: 500; transition: color 0.2s, border-color 0.2s; }
+  .logout-btn:hover { color: var(--red); border-color: var(--red); }
+
+  /* Grain overlay */
+  .grain-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9998; opacity: 0.03; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E"); }
+
+  /* Main container */
+  .dash-container { max-width: 1000px; margin: 0 auto; padding: 32px 24px 80px; }
+  .dash-header { margin-bottom: 32px; }
+  .dash-header h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 4px; }
+  .dash-header p { color: var(--muted); font-size: 0.9rem; }
+
+  /* Grid */
+  .dash-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+  @media (max-width: 768px) { .dash-grid { grid-template-columns: 1fr; } }
+
+  /* Cards */
+  .dash-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; transition: border-color 0.3s; }
+  .dash-card:hover { border-color: #333; }
+  .dash-card.full-width { grid-column: 1 / -1; }
+  .dash-card .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  .dash-card .card-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .dash-card .card-label .icon { font-size: 1rem; }
+  .card-action { padding: 6px 14px; font-size: 0.75rem; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--accent); cursor: pointer; font-family: 'Inter', sans-serif; font-weight: 500; transition: border-color 0.2s, background 0.2s; }
+  .card-action:hover { border-color: var(--accent); background: rgba(34,211,238,0.04); }
+
+  /* Loading state */
+  .loading-skeleton { background: linear-gradient(90deg, var(--border) 25%, #333 50%, var(--border) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; height: 16px; margin-bottom: 8px; }
+  .loading-skeleton.wide { width: 80%; }
+  .loading-skeleton.narrow { width: 50%; }
+  .loading-skeleton.tiny { width: 30%; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* Error state */
+  .error-msg { color: var(--red); font-size: 0.82rem; padding: 12px; background: rgba(248,113,113,0.06); border: 1px solid rgba(248,113,113,0.15); border-radius: 8px; }
+
+  /* Usage section */
+  .usage-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  .usage-stat { text-align: center; }
+  .usage-stat .val { font-size: 1.8rem; font-weight: 800; color: var(--accent); line-height: 1.2; }
+  .usage-stat .label { font-size: 0.72rem; color: var(--muted); margin-top: 4px; }
+  .usage-bar { margin-top: 20px; }
+  .usage-bar .bar-label { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); margin-bottom: 6px; }
+  .usage-bar .bar-track { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .usage-bar .bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), #a78bfa); transition: width 1.5s ease; }
+  .tool-breakdown { margin-top: 20px; }
+  .tool-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .tool-name { font-size: 0.78rem; color: var(--muted); min-width: 110px; }
+  .tool-bar-track { flex: 1; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .tool-bar-fill { height: 100%; border-radius: 2px; transition: width 1.2s ease; }
+  .tool-bar-fill.diagnose { background: var(--accent); }
+  .tool-bar-fill.pr-risk { background: #a78bfa; }
+  .tool-bar-fill.query { background: var(--green); }
+  .tool-bar-fill.reindex { background: var(--yellow); }
+  .tool-bar-fill.other { background: var(--muted); }
+  .tool-count { font-size: 0.72rem; color: var(--muted); min-width: 40px; text-align: right; font-family: 'JetBrains Mono', monospace; }
+
+  /* API keys section */
+  .api-key-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05); flex-wrap: wrap; gap: 8px; }
+  .api-key-row:last-child { border-bottom: none; }
+  .key-info { display: flex; flex-direction: column; gap: 2px; }
+  .key-name { font-size: 0.85rem; font-weight: 500; }
+  .key-meta { font-size: 0.68rem; color: var(--muted); }
+  .key-prefix { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--muted); background: var(--bg); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border); }
+  .key-actions { display: flex; gap: 8px; }
+  .key-btn { padding: 4px 10px; font-size: 0.72rem; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; font-family: 'Inter', sans-serif; transition: border-color 0.2s, color 0.2s; }
+  .key-btn:hover { border-color: var(--muted); color: var(--fg); }
+  .key-btn.danger:hover { border-color: var(--red); color: var(--red); }
+  .add-key-btn { margin-top: 16px; padding: 8px 16px; font-size: 0.8rem; border-radius: 6px; border: 1px dashed var(--border); background: transparent; color: var(--accent); cursor: pointer; font-family: 'Inter', sans-serif; width: 100%; transition: border-color 0.2s, background 0.2s; }
+  .add-key-btn:hover { border-color: var(--accent); background: rgba(34,211,238,0.04); }
+
+  /* Team section */
+  .team-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .team-row:last-child { border-bottom: none; }
+  .team-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--accent-dim); display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 600; color: var(--accent); flex-shrink: 0; }
+  .team-info { flex: 1; }
+  .team-name { font-size: 0.85rem; font-weight: 500; }
+  .team-email { font-size: 0.68rem; color: var(--muted); }
+  .team-role { font-size: 0.68rem; color: var(--muted); background: var(--bg); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); }
+  .invite-btn { margin-top: 16px; padding: 8px 16px; font-size: 0.8rem; border-radius: 6px; border: 1px dashed var(--border); background: transparent; color: var(--accent); cursor: pointer; font-family: 'Inter', sans-serif; width: 100%; transition: border-color 0.2s, background 0.2s; }
+  .invite-btn:hover { border-color: var(--accent); background: rgba(34,211,238,0.04); }
+
+  /* Context engine section */
+  .repo-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .repo-row:last-child { border-bottom: none; }
+  .repo-name { font-size: 0.85rem; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+  .repo-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .repo-status.active { background: var(--green); box-shadow: 0 0 6px rgba(74,222,128,0.4); }
+  .repo-status.indexing { background: var(--yellow); box-shadow: 0 0 6px rgba(250,204,21,0.4); animation: statusPulse 1.5s ease-in-out infinite; }
+  .repo-status.error { background: var(--red); box-shadow: 0 0 6px rgba(248,113,113,0.4); }
+  @keyframes statusPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .repo-meta { font-size: 0.72rem; color: var(--muted); text-align: right; }
+  .repo-meta .nodes { color: var(--accent); font-weight: 600; }
+  .engine-summary { margin-top: 16px; padding: 12px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); display: flex; justify-content: space-around; text-align: center; }
+  .engine-stat .engine-val { font-size: 1.2rem; font-weight: 700; color: var(--accent); }
+  .engine-stat .engine-label { font-size: 0.68rem; color: var(--muted); margin-top: 2px; }
+  .reindex-btn { margin-top: 12px; padding: 8px 16px; font-size: 0.8rem; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--accent); cursor: pointer; font-family: 'Inter', sans-serif; width: 100%; transition: border-color 0.2s, background 0.2s; }
+  .reindex-btn:hover { border-color: var(--accent); background: rgba(34,211,238,0.04); }
+  .reindex-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Billing section */
+  .billing-row { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .billing-row:last-child { border-bottom: none; }
+  .billing-label { font-size: 0.82rem; color: var(--muted); }
+  .billing-value { font-size: 0.85rem; font-weight: 500; }
+  .billing-value.accent { color: var(--accent); }
+  .plan-badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .plan-badge.free { background: rgba(34,211,238,0.1); color: var(--accent); border: 1px solid rgba(34,211,238,0.2); }
+  .plan-badge.payg { background: rgba(167,139,250,0.1); color: #a78bfa; border: 1px solid rgba(167,139,250,0.2); }
+  .plan-badge.enterprise { background: rgba(250,204,21,0.1); color: var(--yellow); border: 1px solid rgba(250,204,21,0.2); }
+  .billing-actions { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+  .billing-btn { padding: 8px 18px; font-size: 0.82rem; border-radius: 6px; cursor: pointer; font-family: 'Inter', sans-serif; font-weight: 500; transition: transform 0.2s, box-shadow 0.2s, opacity 0.2s; text-decoration: none; display: inline-block; }
+  .billing-btn.primary { background: var(--accent); color: var(--bg); border: none; }
+  .billing-btn.primary:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(34,211,238,0.3); }
+  .billing-btn.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+  .billing-btn.secondary:hover { border-color: var(--muted); }
+
+  /* Modal */
+  .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 9999; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+  .modal-overlay.active { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 32px; max-width: 440px; width: 90%; }
+  .modal h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 16px; }
+  .modal-input { width: 100%; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font-family: 'Inter', sans-serif; font-size: 0.9rem; outline: none; transition: border-color 0.2s; margin-bottom: 12px; }
+  .modal-input:focus { border-color: var(--accent); }
+  .modal-input::placeholder { color: #525252; }
+  .modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px; }
+  .modal-btn { padding: 8px 18px; font-size: 0.82rem; border-radius: 6px; cursor: pointer; font-family: 'Inter', sans-serif; font-weight: 500; transition: opacity 0.2s; }
+  .modal-btn.cancel { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .modal-btn.cancel:hover { color: var(--fg); border-color: var(--muted); }
+  .modal-btn.confirm { background: var(--accent); border: none; color: var(--bg); }
+  .modal-btn.confirm:hover { opacity: 0.9; }
+  .modal-btn.danger { background: var(--red); border: none; color: #fff; }
+  .modal-btn.danger:hover { opacity: 0.9; }
+
+  /* Toast notification */
+  .toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: 8px; font-size: 0.82rem; font-weight: 500; z-index: 10000; transform: translateY(100px); opacity: 0; transition: transform 0.3s, opacity 0.3s; }
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast.success { background: rgba(74,222,128,0.15); border: 1px solid rgba(74,222,128,0.3); color: var(--green); }
+  .toast.error { background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.3); color: var(--red); }
+
+  /* Footer */
+  footer { border-top: 1px solid var(--border); padding: 24px; text-align: center; color: var(--muted); font-size: 0.78rem; }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { opacity: 0.8; }
+</style>
+
+<!-- Grain texture overlay -->
+<div class="grain-overlay"></div>
+
+<!-- Nav -->
+<nav>
+  <a href="/" class="brand">savants<span>.cloud</span></a>
+  <div class="nav-right">
+    <span class="org-name" id="org-name"></span>
+    <a href="/billing" class="nav-icon" title="Billing">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+    </a>
+    <button class="nav-icon" title="Settings" onclick="window.location.href='/settings'">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+    </button>
+    <button class="logout-btn" id="btn-logout">Sign out</button>
+  </div>
+</nav>
+
+<!-- Dashboard -->
+<div class="dash-page">
+  <div class="dash-container">
+    <div class="dash-header">
+      <h1 id="greeting">Dashboard</h1>
+      <p id="dash-subtitle">Loading your workspace...</p>
+    </div>
+
+    <div class="dash-grid">
+      <!-- Usage card -->
+      <div class="dash-card" id="card-usage">
+        <div class="card-header">
+          <span class="card-label"><span class="icon">&#9636;</span> Usage</span>
+        </div>
+        <div id="usage-content">
+          <div class="loading-skeleton wide"></div>
+          <div class="loading-skeleton narrow"></div>
+          <div class="loading-skeleton wide"></div>
+        </div>
+      </div>
+
+      <!-- Billing card -->
+      <div class="dash-card" id="card-billing">
+        <div class="card-header">
+          <span class="card-label"><span class="icon">&#9733;</span> Billing</span>
+          <a href="/billing" class="card-action">Manage</a>
+        </div>
+        <div id="billing-content">
+          <div class="loading-skeleton wide"></div>
+          <div class="loading-skeleton narrow"></div>
+        </div>
+      </div>
+
+      <!-- API Keys card -->
+      <div class="dash-card full-width" id="card-keys">
+        <div class="card-header">
+          <span class="card-label"><span class="icon">&#128273;</span> API Keys</span>
+          <button class="card-action" id="btn-create-key">+ New key</button>
+        </div>
+        <div id="keys-content">
+          <div class="loading-skeleton wide"></div>
+          <div class="loading-skeleton narrow"></div>
+        </div>
+      </div>
+
+      <!-- Context Engine card -->
+      <div class="dash-card" id="card-engine">
+        <div class="card-header">
+          <span class="card-label"><span class="icon">&#9881;</span> Context Engine</span>
+        </div>
+        <div id="engine-content">
+          <div class="loading-skeleton wide"></div>
+          <div class="loading-skeleton narrow"></div>
+          <div class="loading-skeleton wide"></div>
+        </div>
+      </div>
+
+      <!-- Team card -->
+      <div class="dash-card" id="card-team">
+        <div class="card-header">
+          <span class="card-label"><span class="icon">&#128101;</span> Team</span>
+          <button class="card-action" id="btn-invite">+ Invite</button>
+        </div>
+        <div id="team-content">
+          <div class="loading-skeleton wide"></div>
+          <div class="loading-skeleton narrow"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    &copy; 2026 Savants &middot; <a href="https://savants.dev">savants.dev</a> &middot; <a href="https://docs.savants.dev">Docs</a>
+  </footer>
+</div>
+
+<!-- Create Key Modal -->
+<div class="modal-overlay" id="modal-create-key">
+  <div class="modal">
+    <h3>Create API Key</h3>
+    <input type="text" class="modal-input" id="new-key-name" placeholder="Key name, e.g. production-ci" />
+    <div class="modal-actions">
+      <button class="modal-btn cancel" onclick="closeModal('modal-create-key')">Cancel</button>
+      <button class="modal-btn confirm" id="btn-confirm-create-key">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Invite Member Modal -->
+<div class="modal-overlay" id="modal-invite">
+  <div class="modal">
+    <h3>Invite team member</h3>
+    <input type="email" class="modal-input" id="invite-email" placeholder="colleague@company.com" />
+    <div class="modal-actions">
+      <button class="modal-btn cancel" onclick="closeModal('modal-invite')">Cancel</button>
+      <button class="modal-btn confirm" id="btn-confirm-invite">Send invite</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Key Modal -->
+<div class="modal-overlay" id="modal-delete-key">
+  <div class="modal">
+    <h3>Delete API key</h3>
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:4px;">Are you sure you want to delete <strong id="delete-key-name"></strong>? This cannot be undone.</p>
+    <div class="modal-actions">
+      <button class="modal-btn cancel" onclick="closeModal('modal-delete-key')">Cancel</button>
+      <button class="modal-btn danger" id="btn-confirm-delete-key">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Key Reveal Modal -->
+<div class="modal-overlay" id="modal-reveal-key">
+  <div class="modal">
+    <h3>API key created</h3>
+    <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px;">Copy this key now. You will not be able to see it again.</p>
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'JetBrains Mono',monospace;font-size:0.8rem;word-break:break-all;color:var(--accent);" id="revealed-key-value"></div>
+    <div class="modal-actions">
+      <button class="modal-btn confirm" id="btn-copy-key">Copy</button>
+      <button class="modal-btn cancel" onclick="closeModal('modal-reveal-key')">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+  const API_BASE = 'https://api.savants.cloud/api/v1';
+
+  // --- Auth ---
+  function getToken() {
+    // Check cookie first, then localStorage
+    const match = document.cookie.match(/(?:^|;\s*)savants_token=([^;]*)/);
+    if (match) return decodeURIComponent(match[1]);
+    return localStorage.getItem('savants_token');
+  }
+
+  function authHeaders() {
+    const token = getToken();
+    return { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+  }
+
+  function requireAuth() {
+    if (!getToken()) {
+      window.location.href = '/cloud';
+      return false;
+    }
+    return true;
+  }
+
+  if (!requireAuth()) { /* redirected */ }
+
+  // --- Toast ---
+  function showToast(msg, type) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast ' + type + ' show';
+    setTimeout(() => { t.classList.remove('show'); }, 3000);
+  }
+
+  // --- Modals ---
+  function openModal(id) { document.getElementById(id).classList.add('active'); }
+  function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+  // Close modal on overlay click
+  document.querySelectorAll('.modal-overlay').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target === el) el.classList.remove('active');
+    });
+  });
+
+  // --- API helpers ---
+  async function apiFetch(path, opts) {
+    const res = await fetch(API_BASE + path, { headers: authHeaders(), ...opts });
+    if (res.status === 401) {
+      localStorage.removeItem('savants_token');
+      document.cookie = 'savants_token=; Max-Age=0; path=/';
+      window.location.href = '/cloud';
+      throw new Error('Unauthorized');
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || body.message || 'Request failed (' + res.status + ')');
+    }
+    return res.json();
+  }
+
+  function renderError(containerId, msg) {
+    document.getElementById(containerId).innerHTML = '<div class="error-msg">' + escapeHtml(msg) + '</div>';
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function formatNumber(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  function timeAgo(dateStr) {
+    if (!dateStr) return 'Never';
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'Just now';
+    if (mins < 60) return mins + 'm ago';
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    const days = Math.floor(hrs / 24);
+    return days + 'd ago';
+  }
+
+  // --- Load Usage ---
+  async function loadUsage() {
+    try {
+      const data = await apiFetch('/usage');
+      const total = data.total_calls || 0;
+      const cost = data.cost_cents != null ? (data.cost_cents / 100).toFixed(2) : '0.00';
+      const limit = data.limit || total;
+      const pct = limit > 0 ? Math.min((total / limit) * 100, 100) : 0;
+
+      const breakdown = data.by_tool || {};
+      const maxCalls = Math.max(...Object.values(breakdown), 1);
+
+      const toolColors = { diagnose: 'diagnose', 'pr-risk': 'pr-risk', query: 'query', reindex: 'reindex' };
+
+      let toolHtml = '';
+      for (const [tool, count] of Object.entries(breakdown).sort((a, b) => b[1] - a[1])) {
+        const cls = toolColors[tool] || 'other';
+        const w = (count / maxCalls) * 100;
+        toolHtml += '<div class="tool-row">' +
+          '<span class="tool-name">' + escapeHtml(tool) + '</span>' +
+          '<div class="tool-bar-track"><div class="tool-bar-fill ' + cls + '" style="width:' + w + '%"></div></div>' +
+          '<span class="tool-count">' + formatNumber(count) + '</span>' +
+          '</div>';
+      }
+
+      document.getElementById('usage-content').innerHTML =
+        '<div class="usage-stats">' +
+          '<div class="usage-stat"><div class="val">' + formatNumber(total) + '</div><div class="label">Calls this month</div></div>' +
+          '<div class="usage-stat"><div class="val">$' + cost + '</div><div class="label">Cost this month</div></div>' +
+        '</div>' +
+        '<div class="usage-bar">' +
+          '<div class="bar-label"><span>Usage</span><span>' + Math.round(pct) + '%</span></div>' +
+          '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div>' +
+        '</div>' +
+        (toolHtml ? '<div class="tool-breakdown">' + toolHtml + '</div>' : '');
+    } catch (e) {
+      renderError('usage-content', e.message);
+    }
+  }
+
+  // --- Load Billing ---
+  async function loadBilling() {
+    try {
+      const data = await apiFetch('/billing');
+      const plan = data.plan || 'free';
+      const badgeCls = plan === 'enterprise' ? 'enterprise' : (plan === 'payg' ? 'payg' : 'free');
+      const planLabel = plan === 'payg' ? 'Pay-As-You-Go' : (plan === 'enterprise' ? 'Enterprise' : 'Free');
+      const cost = data.cost_cents != null ? (data.cost_cents / 100).toFixed(2) : '0.00';
+
+      let html =
+        '<div class="billing-row">' +
+          '<span class="billing-label">Current plan</span>' +
+          '<span class="plan-badge ' + badgeCls + '">' + planLabel + '</span>' +
+        '</div>' +
+        '<div class="billing-row">' +
+          '<span class="billing-label">This month</span>' +
+          '<span class="billing-value accent">$' + cost + '</span>' +
+        '</div>';
+
+      let actionsHtml = '<div class="billing-actions">';
+      if (plan === 'free') {
+        actionsHtml += '<button class="billing-btn primary" onclick="upgradeCheckout()">Upgrade to PAYG</button>';
+      }
+      if (data.stripe_portal_url) {
+        actionsHtml += '<a href="' + escapeHtml(data.stripe_portal_url) + '" target="_blank" class="billing-btn secondary">Stripe Portal</a>';
+      }
+      actionsHtml += '<a href="/billing" class="billing-btn secondary">View details</a>';
+      actionsHtml += '</div>';
+
+      document.getElementById('billing-content').innerHTML = html + actionsHtml;
+    } catch (e) {
+      renderError('billing-content', e.message);
+    }
+  }
+
+  async function upgradeCheckout() {
+    try {
+      const data = await apiFetch('/billing/checkout', { method: 'POST' });
+      if (data.url) window.location.href = data.url;
+    } catch (e) {
+      showToast('Failed to start checkout: ' + e.message, 'error');
+    }
+  }
+
+  // --- Load API Keys ---
+  let keysData = [];
+
+  async function loadKeys() {
+    try {
+      keysData = await apiFetch('/keys');
+      const keys = Array.isArray(keysData) ? keysData : (keysData.keys || []);
+      if (keys.length === 0) {
+        document.getElementById('keys-content').innerHTML =
+          '<p style="color:var(--muted);font-size:0.85rem;">No API keys yet. Create one to get started.</p>';
+        return;
+      }
+
+      let html = '';
+      for (const key of keys) {
+        html += '<div class="api-key-row">' +
+          '<div class="key-info">' +
+            '<span class="key-name">' + escapeHtml(key.name || 'Unnamed') + '</span>' +
+            '<span class="key-meta">Created ' + timeAgo(key.created_at) + (key.last_used_at ? ' - Last used ' + timeAgo(key.last_used_at) : ' - Never used') + '</span>' +
+          '</div>' +
+          '<span class="key-prefix">' + escapeHtml(key.prefix || key.key_prefix || 'sk-...') + '...</span>' +
+          '<div class="key-actions">' +
+            '<button class="key-btn danger" onclick="confirmDeleteKey(\'' + escapeHtml(key.id) + '\', \'' + escapeHtml(key.name || 'Unnamed') + '\')">Delete</button>' +
+          '</div>' +
+        '</div>';
+      }
+      document.getElementById('keys-content').innerHTML = html;
+    } catch (e) {
+      renderError('keys-content', e.message);
+    }
+  }
+
+  // Create key
+  document.getElementById('btn-create-key').addEventListener('click', () => {
+    document.getElementById('new-key-name').value = '';
+    openModal('modal-create-key');
+  });
+
+  document.getElementById('btn-confirm-create-key').addEventListener('click', async () => {
+    const name = document.getElementById('new-key-name').value.trim();
+    if (!name) { showToast('Key name is required', 'error'); return; }
+    try {
+      const data = await apiFetch('/keys', {
+        method: 'POST',
+        body: JSON.stringify({ name })
+      });
+      closeModal('modal-create-key');
+      // Show the revealed key
+      document.getElementById('revealed-key-value').textContent = data.key || data.secret || '';
+      openModal('modal-reveal-key');
+      loadKeys();
+    } catch (e) {
+      showToast('Failed to create key: ' + e.message, 'error');
+    }
+  });
+
+  document.getElementById('btn-copy-key').addEventListener('click', () => {
+    const val = document.getElementById('revealed-key-value').textContent;
+    navigator.clipboard.writeText(val).then(() => showToast('Copied to clipboard', 'success'));
+  });
+
+  // Delete key
+  let deleteKeyId = null;
+  function confirmDeleteKey(id, name) {
+    deleteKeyId = id;
+    document.getElementById('delete-key-name').textContent = name;
+    openModal('modal-delete-key');
+  }
+
+  document.getElementById('btn-confirm-delete-key').addEventListener('click', async () => {
+    if (!deleteKeyId) return;
+    try {
+      await apiFetch('/keys/' + deleteKeyId, { method: 'DELETE' });
+      closeModal('modal-delete-key');
+      showToast('Key deleted', 'success');
+      loadKeys();
+    } catch (e) {
+      showToast('Failed to delete key: ' + e.message, 'error');
+    }
+  });
+
+  // --- Load Team ---
+  async function loadTeam() {
+    try {
+      const data = await apiFetch('/team');
+      const members = Array.isArray(data) ? data : (data.members || []);
+      if (members.length === 0) {
+        document.getElementById('team-content').innerHTML =
+          '<p style="color:var(--muted);font-size:0.85rem;">No team members yet.</p>';
+        return;
+      }
+
+      let html = '';
+      for (const m of members) {
+        const initials = ((m.name || m.email || '?').charAt(0)).toUpperCase();
+        html += '<div class="team-row">' +
+          '<div class="team-avatar">' + initials + '</div>' +
+          '<div class="team-info">' +
+            '<div class="team-name">' + escapeHtml(m.name || m.email) + '</div>' +
+            '<div class="team-email">' + escapeHtml(m.email || '') + '</div>' +
+          '</div>' +
+          '<span class="team-role">' + escapeHtml(m.role || 'member') + '</span>' +
+        '</div>';
+      }
+      document.getElementById('team-content').innerHTML = html;
+    } catch (e) {
+      renderError('team-content', e.message);
+    }
+  }
+
+  // Invite
+  document.getElementById('btn-invite').addEventListener('click', () => {
+    document.getElementById('invite-email').value = '';
+    openModal('modal-invite');
+  });
+
+  document.getElementById('btn-confirm-invite').addEventListener('click', async () => {
+    const email = document.getElementById('invite-email').value.trim();
+    if (!email) { showToast('Email is required', 'error'); return; }
+    try {
+      await apiFetch('/team/invite', {
+        method: 'POST',
+        body: JSON.stringify({ email })
+      });
+      closeModal('modal-invite');
+      showToast('Invite sent to ' + email, 'success');
+      loadTeam();
+    } catch (e) {
+      showToast('Failed to invite: ' + e.message, 'error');
+    }
+  });
+
+  // --- Load Context Engine ---
+  async function loadEngine() {
+    try {
+      const data = await apiFetch('/engine');
+      const repos = data.repos || data.repositories || [];
+      const totalNodes = data.total_nodes || repos.reduce((s, r) => s + (r.node_count || 0), 0);
+      const totalEdges = data.total_edges || 0;
+
+      let html = '';
+      for (const r of repos) {
+        const status = r.status || 'active';
+        html += '<div class="repo-row">' +
+          '<div class="repo-name"><span class="repo-status ' + status + '"></span>' + escapeHtml(r.name || r.repo) + '</div>' +
+          '<div class="repo-meta"><span class="nodes">' + formatNumber(r.node_count || 0) + ' nodes</span><br>' + timeAgo(r.last_indexed_at || r.indexed_at) + '</div>' +
+        '</div>';
+      }
+
+      if (repos.length === 0) {
+        html = '<p style="color:var(--muted);font-size:0.85rem;">No repositories connected. Run <code style="color:var(--accent)">savants reindex</code> locally to get started.</p>';
+      }
+
+      html += '<div class="engine-summary">' +
+        '<div class="engine-stat"><div class="engine-val">' + formatNumber(totalNodes) + '</div><div class="engine-label">Nodes</div></div>' +
+        '<div class="engine-stat"><div class="engine-val">' + formatNumber(totalEdges) + '</div><div class="engine-label">Edges</div></div>' +
+        '<div class="engine-stat"><div class="engine-val">' + (repos.length) + '</div><div class="engine-label">Repos</div></div>' +
+      '</div>';
+
+      html += '<button class="reindex-btn" id="btn-reindex" onclick="triggerReindex()">Reindex all</button>';
+
+      document.getElementById('engine-content').innerHTML = html;
+    } catch (e) {
+      renderError('engine-content', e.message);
+    }
+  }
+
+  async function triggerReindex() {
+    const btn = document.getElementById('btn-reindex');
+    if (btn) { btn.disabled = true; btn.textContent = 'Reindexing...'; }
+    try {
+      await apiFetch('/engine/reindex', { method: 'POST' });
+      showToast('Reindex started', 'success');
+      setTimeout(loadEngine, 3000);
+    } catch (e) {
+      showToast('Reindex failed: ' + e.message, 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Reindex all'; }
+    }
+  }
+
+  // --- Load Org / Profile ---
+  async function loadProfile() {
+    try {
+      const data = await apiFetch('/me');
+      const name = data.name || data.email || 'User';
+      document.getElementById('greeting').textContent = 'Welcome back, ' + name.split(' ')[0];
+      document.getElementById('dash-subtitle').textContent = data.org_name ? data.org_name + ' workspace' : 'Your workspace';
+      document.getElementById('org-name').textContent = data.org_name || '';
+    } catch (e) {
+      document.getElementById('dash-subtitle').textContent = 'Your workspace';
+    }
+  }
+
+  // --- Logout ---
+  document.getElementById('btn-logout').addEventListener('click', () => {
+    localStorage.removeItem('savants_token');
+    document.cookie = 'savants_token=; Max-Age=0; path=/';
+    window.location.href = '/cloud';
+  });
+
+  // --- Init ---
+  loadProfile();
+  loadUsage();
+  loadBilling();
+  loadKeys();
+  loadTeam();
+  loadEngine();
+</script>
+</Base>

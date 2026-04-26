@@ -1,0 +1,438 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Savants Cloud - Billing" description="Manage your Savants Cloud subscription, usage, and payment methods.">
+<style>
+  /* Layout */
+  .billing-page { min-height: 100vh; padding-top: 72px; }
+
+  /* Nav */
+  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; backdrop-filter: blur(12px); background: rgba(10,10,10,0.9); border-bottom: 1px solid var(--border); }
+  nav .brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
+  nav .brand span { color: var(--accent); }
+  nav .nav-right { display: flex; align-items: center; gap: 20px; }
+  nav .back-link { color: var(--muted); text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 6px; transition: color 0.2s; }
+  nav .back-link:hover { color: var(--fg); }
+  .logout-btn { background: none; border: 1px solid var(--border); color: var(--muted); cursor: pointer; padding: 5px 14px; border-radius: 6px; font-size: 0.78rem; font-family: 'Inter', sans-serif; font-weight: 500; transition: color 0.2s, border-color 0.2s; }
+  .logout-btn:hover { color: var(--red); border-color: var(--red); }
+
+  /* Grain overlay */
+  .grain-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9998; opacity: 0.03; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E"); }
+
+  /* Container */
+  .billing-container { max-width: 720px; margin: 0 auto; padding: 32px 24px 80px; }
+  .billing-header { margin-bottom: 32px; }
+  .billing-header h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 4px; }
+  .billing-header p { color: var(--muted); font-size: 0.9rem; }
+
+  /* Cards */
+  .bill-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; margin-bottom: 24px; transition: border-color 0.3s; }
+  .bill-card:hover { border-color: #333; }
+  .bill-card .card-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
+  .bill-card .card-title .icon { font-size: 1rem; }
+
+  /* Loading */
+  .loading-skeleton { background: linear-gradient(90deg, var(--border) 25%, #333 50%, var(--border) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; height: 16px; margin-bottom: 8px; }
+  .loading-skeleton.wide { width: 80%; }
+  .loading-skeleton.narrow { width: 50%; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* Error */
+  .error-msg { color: var(--red); font-size: 0.82rem; padding: 12px; background: rgba(248,113,113,0.06); border: 1px solid rgba(248,113,113,0.15); border-radius: 8px; }
+
+  /* Plan display */
+  .plan-display { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+  .plan-info { display: flex; align-items: center; gap: 14px; }
+  .plan-badge { display: inline-block; padding: 5px 14px; border-radius: 6px; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .plan-badge.free { background: rgba(34,211,238,0.1); color: var(--accent); border: 1px solid rgba(34,211,238,0.2); }
+  .plan-badge.payg { background: rgba(167,139,250,0.1); color: #a78bfa; border: 1px solid rgba(167,139,250,0.2); }
+  .plan-badge.enterprise { background: rgba(250,204,21,0.1); color: var(--yellow); border: 1px solid rgba(250,204,21,0.2); }
+  .plan-name { font-size: 1.1rem; font-weight: 600; }
+  .plan-price { font-size: 0.85rem; color: var(--muted); }
+
+  /* Usage meter */
+  .usage-meter { margin-bottom: 24px; }
+  .meter-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+  .meter-label { font-size: 0.85rem; color: var(--muted); }
+  .meter-value { font-size: 1.4rem; font-weight: 700; color: var(--accent); }
+  .meter-track { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .meter-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), #a78bfa); transition: width 1.5s ease; }
+  .meter-footer { display: flex; justify-content: space-between; margin-top: 6px; font-size: 0.72rem; color: var(--muted); }
+
+  /* Stat row */
+  .stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+  @media (max-width: 480px) { .stat-row { grid-template-columns: 1fr; } }
+  .stat-item { text-align: center; padding: 16px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); }
+  .stat-val { font-size: 1.5rem; font-weight: 800; color: var(--accent); line-height: 1.2; }
+  .stat-label { font-size: 0.7rem; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  /* Buttons */
+  .bill-btn { padding: 10px 22px; font-size: 0.85rem; border-radius: 8px; cursor: pointer; font-family: 'Inter', sans-serif; font-weight: 600; transition: transform 0.2s, box-shadow 0.2s, opacity 0.2s; text-decoration: none; display: inline-block; }
+  .bill-btn.primary { background: var(--accent); color: var(--bg); border: none; }
+  .bill-btn.primary:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(34,211,238,0.3); }
+  .bill-btn.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+  .bill-btn.secondary:hover { border-color: var(--muted); }
+  .btn-row { display: flex; gap: 12px; flex-wrap: wrap; }
+
+  /* Pricing cards inline */
+  .plan-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 20px; }
+  @media (max-width: 640px) { .plan-cards { grid-template-columns: 1fr; } }
+  .plan-card { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; transition: border-color 0.3s, transform 0.3s; }
+  .plan-card:hover { border-color: #404040; transform: translateY(-2px); }
+  .plan-card.current { border-color: var(--accent); }
+  .plan-card .pc-tier { font-size: 0.7rem; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
+  .plan-card.current .pc-tier { color: var(--accent); }
+  .plan-card .pc-price { font-size: 1.6rem; font-weight: 800; margin-bottom: 4px; }
+  .plan-card.current .pc-price { color: var(--accent); }
+  .plan-card .pc-sub { font-size: 0.72rem; color: var(--muted); margin-bottom: 16px; }
+  .plan-card ul { list-style: none; padding: 0; margin: 0 0 16px; flex: 1; }
+  .plan-card ul li { padding: 4px 0; color: var(--muted); font-size: 0.78rem; display: flex; align-items: flex-start; gap: 6px; }
+  .plan-card ul li::before { content: '\2713'; color: var(--green); font-weight: 700; flex-shrink: 0; }
+  .plan-card .pc-btn { display: block; text-align: center; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.8rem; cursor: pointer; font-family: 'Inter', sans-serif; transition: opacity 0.2s, transform 0.2s; border: none; }
+  .plan-card .pc-btn.active { background: var(--accent); color: var(--bg); }
+  .plan-card .pc-btn.active:hover { transform: translateY(-1px); }
+  .plan-card .pc-btn.current-label { background: transparent; border: 1px solid var(--accent); color: var(--accent); cursor: default; }
+  .plan-card .pc-btn.contact { background: transparent; border: 1px solid var(--border); color: var(--fg); }
+  .plan-card .pc-btn.contact:hover { border-color: var(--muted); }
+
+  /* Invoice table */
+  .invoice-table { width: 100%; border-collapse: collapse; }
+  .invoice-table th { text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .invoice-table td { padding: 12px 0; font-size: 0.85rem; border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .invoice-table .amount { font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+  .invoice-table .status-paid { color: var(--green); font-size: 0.75rem; font-weight: 500; }
+  .invoice-table .status-pending { color: var(--yellow); font-size: 0.75rem; font-weight: 500; }
+  .invoice-empty { color: var(--muted); font-size: 0.85rem; padding: 24px 0; text-align: center; }
+
+  /* Toast */
+  .toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: 8px; font-size: 0.82rem; font-weight: 500; z-index: 10000; transform: translateY(100px); opacity: 0; transition: transform 0.3s, opacity 0.3s; }
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast.success { background: rgba(74,222,128,0.15); border: 1px solid rgba(74,222,128,0.3); color: var(--green); }
+  .toast.error { background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.3); color: var(--red); }
+
+  /* Footer */
+  footer { border-top: 1px solid var(--border); padding: 24px; text-align: center; color: var(--muted); font-size: 0.78rem; }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { opacity: 0.8; }
+</style>
+
+<!-- Grain texture overlay -->
+<div class="grain-overlay"></div>
+
+<!-- Nav -->
+<nav>
+  <a href="/" class="brand">savants<span>.cloud</span></a>
+  <div class="nav-right">
+    <a href="/dashboard" class="back-link">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      Dashboard
+    </a>
+    <button class="logout-btn" id="btn-logout">Sign out</button>
+  </div>
+</nav>
+
+<!-- Billing page -->
+<div class="billing-page">
+  <div class="billing-container">
+    <div class="billing-header">
+      <h1>Billing</h1>
+      <p>Manage your plan, usage, and payment methods.</p>
+    </div>
+
+    <!-- Current Plan -->
+    <div class="bill-card" id="card-plan">
+      <div class="card-title"><span class="icon">&#9733;</span> Current Plan</div>
+      <div id="plan-content">
+        <div class="loading-skeleton wide"></div>
+        <div class="loading-skeleton narrow"></div>
+      </div>
+    </div>
+
+    <!-- Usage This Month -->
+    <div class="bill-card" id="card-usage">
+      <div class="card-title"><span class="icon">&#9636;</span> Usage This Month</div>
+      <div id="usage-content">
+        <div class="loading-skeleton wide"></div>
+        <div class="loading-skeleton narrow"></div>
+        <div class="loading-skeleton wide"></div>
+      </div>
+    </div>
+
+    <!-- Plans Comparison -->
+    <div class="bill-card" id="card-plans">
+      <div class="card-title"><span class="icon">&#9670;</span> Plans</div>
+      <div id="plans-content">
+        <div class="loading-skeleton wide"></div>
+      </div>
+    </div>
+
+    <!-- Invoice History -->
+    <div class="bill-card" id="card-invoices">
+      <div class="card-title"><span class="icon">&#128196;</span> Invoice History</div>
+      <div id="invoices-content">
+        <div class="loading-skeleton wide"></div>
+        <div class="loading-skeleton narrow"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    &copy; 2026 Savants &middot; <a href="https://savants.dev">savants.dev</a> &middot; <a href="https://docs.savants.dev">Docs</a>
+  </footer>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+  const API_BASE = 'https://api.savants.cloud/api/v1';
+
+  // --- Auth ---
+  function getToken() {
+    const match = document.cookie.match(/(?:^|;\s*)savants_token=([^;]*)/);
+    if (match) return decodeURIComponent(match[1]);
+    return localStorage.getItem('savants_token');
+  }
+
+  function authHeaders() {
+    const token = getToken();
+    return { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+  }
+
+  function requireAuth() {
+    if (!getToken()) {
+      window.location.href = '/cloud';
+      return false;
+    }
+    return true;
+  }
+
+  if (!requireAuth()) { /* redirected */ }
+
+  // --- Helpers ---
+  function showToast(msg, type) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast ' + type + ' show';
+    setTimeout(() => { t.classList.remove('show'); }, 3000);
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function formatNumber(n) {
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  function renderError(containerId, msg) {
+    document.getElementById(containerId).innerHTML = '<div class="error-msg">' + escapeHtml(msg) + '</div>';
+  }
+
+  async function apiFetch(path, opts) {
+    const res = await fetch(API_BASE + path, { headers: authHeaders(), ...opts });
+    if (res.status === 401) {
+      localStorage.removeItem('savants_token');
+      document.cookie = 'savants_token=; Max-Age=0; path=/';
+      window.location.href = '/cloud';
+      throw new Error('Unauthorized');
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || body.message || 'Request failed (' + res.status + ')');
+    }
+    return res.json();
+  }
+
+  // --- Load Plan ---
+  let currentPlan = 'free';
+  let stripePortalUrl = null;
+
+  async function loadPlan() {
+    try {
+      const data = await apiFetch('/billing');
+      currentPlan = data.plan || 'free';
+      stripePortalUrl = data.stripe_portal_url || null;
+
+      const planLabels = { free: 'Free', payg: 'Pay-As-You-Go', enterprise: 'Enterprise' };
+      const planPrices = { free: '$0 / month', payg: '$99 / cluster / month', enterprise: '$999 / month' };
+
+      let html = '<div class="plan-display">' +
+        '<div class="plan-info">' +
+          '<span class="plan-badge ' + currentPlan + '">' + (planLabels[currentPlan] || currentPlan) + '</span>' +
+          '<div><div class="plan-name">' + (planLabels[currentPlan] || currentPlan) + '</div>' +
+          '<div class="plan-price">' + (planPrices[currentPlan] || '') + '</div></div>' +
+        '</div>' +
+      '</div>';
+
+      let btns = '<div class="btn-row">';
+      if (stripePortalUrl) {
+        btns += '<a href="' + escapeHtml(stripePortalUrl) + '" target="_blank" class="bill-btn secondary">Manage payment methods</a>';
+      }
+      if (currentPlan === 'free') {
+        btns += '<button class="bill-btn primary" onclick="upgradeCheckout()">Upgrade to Pay-As-You-Go</button>';
+      }
+      if (currentPlan === 'payg') {
+        btns += '<a href="mailto:sales@savants.dev?subject=Enterprise%20inquiry" class="bill-btn secondary">Contact for Enterprise</a>';
+      }
+      btns += '</div>';
+
+      document.getElementById('plan-content').innerHTML = html + btns;
+      renderPlans();
+    } catch (e) {
+      renderError('plan-content', e.message);
+    }
+  }
+
+  // --- Upgrade ---
+  async function upgradeCheckout() {
+    try {
+      showToast('Starting checkout...', 'success');
+      const data = await apiFetch('/billing/checkout', { method: 'POST' });
+      if (data.url) window.location.href = data.url;
+    } catch (e) {
+      showToast('Failed to start checkout: ' + e.message, 'error');
+    }
+  }
+
+  // --- Load Usage ---
+  async function loadUsage() {
+    try {
+      const data = await apiFetch('/usage');
+      const total = data.total_calls || 0;
+      const cost = data.cost_cents != null ? (data.cost_cents / 100).toFixed(2) : '0.00';
+      const limit = data.limit || total || 1;
+      const pct = limit > 0 ? Math.min((total / limit) * 100, 100) : 0;
+
+      const breakdown = data.by_tool || {};
+      const diagnose = breakdown.diagnose || 0;
+      const prRisk = breakdown['pr-risk'] || 0;
+      const query = breakdown.query || 0;
+
+      let html = '<div class="stat-row">' +
+        '<div class="stat-item"><div class="stat-val">' + formatNumber(total) + '</div><div class="stat-label">API Calls</div></div>' +
+        '<div class="stat-item"><div class="stat-val">$' + cost + '</div><div class="stat-label">Cost</div></div>' +
+        '<div class="stat-item"><div class="stat-val">' + Object.keys(breakdown).length + '</div><div class="stat-label">Tools used</div></div>' +
+      '</div>';
+
+      html += '<div class="usage-meter">' +
+        '<div class="meter-header">' +
+          '<span class="meter-label">Usage this billing cycle</span>' +
+          '<span class="meter-value">' + formatNumber(total) + '</span>' +
+        '</div>' +
+        '<div class="meter-track"><div class="meter-fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="meter-footer"><span>0</span><span>' + formatNumber(limit) + '</span></div>' +
+      '</div>';
+
+      // Per-tool breakdown
+      if (Object.keys(breakdown).length > 0) {
+        html += '<div style="margin-top:12px;">';
+        const maxCalls = Math.max(...Object.values(breakdown), 1);
+        const toolColors = { diagnose: 'var(--accent)', 'pr-risk': '#a78bfa', query: 'var(--green)', reindex: 'var(--yellow)' };
+
+        for (const [tool, count] of Object.entries(breakdown).sort((a, b) => b[1] - a[1])) {
+          const color = toolColors[tool] || 'var(--muted)';
+          const w = (count / maxCalls) * 100;
+          html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">' +
+            '<span style="font-size:0.78rem;color:var(--muted);min-width:100px;">' + escapeHtml(tool) + '</span>' +
+            '<div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;"><div style="height:100%;width:' + w + '%;background:' + color + ';border-radius:2px;transition:width 1.2s ease;"></div></div>' +
+            '<span style="font-size:0.72rem;color:var(--muted);min-width:40px;text-align:right;font-family:JetBrains Mono,monospace;">' + formatNumber(count) + '</span>' +
+          '</div>';
+        }
+        html += '</div>';
+      }
+
+      document.getElementById('usage-content').innerHTML = html;
+    } catch (e) {
+      renderError('usage-content', e.message);
+    }
+  }
+
+  // --- Render Plans ---
+  function renderPlans() {
+    const plans = [
+      { id: 'free', tier: 'Local', price: '$0', sub: 'Free forever', features: ['Unlimited local queries', 'Full graph locally', 'CLI access', 'Community support'] },
+      { id: 'payg', tier: 'Cloud', price: '$99', sub: 'per cluster / month', features: ['Team sharing', 'Cloud API access', 'Secret scrubbing', 'Multi-repo federation', 'Priority support'] },
+      { id: 'enterprise', tier: 'Enterprise', price: '$999', sub: 'per month', features: ['Everything in Cloud', 'SSO / SAML', 'Dedicated support', 'Custom integrations', 'SLA guarantee'] }
+    ];
+
+    let html = '<div class="plan-cards">';
+    for (const p of plans) {
+      const isCurrent = p.id === currentPlan;
+      html += '<div class="plan-card' + (isCurrent ? ' current' : '') + '">' +
+        '<div class="pc-tier">' + p.tier + '</div>' +
+        '<div class="pc-price">' + p.price + '</div>' +
+        '<div class="pc-sub">' + p.sub + '</div>' +
+        '<ul>' + p.features.map(f => '<li>' + f + '</li>').join('') + '</ul>';
+
+      if (isCurrent) {
+        html += '<button class="pc-btn current-label">Current plan</button>';
+      } else if (p.id === 'payg' && currentPlan === 'free') {
+        html += '<button class="pc-btn active" onclick="upgradeCheckout()">Upgrade</button>';
+      } else if (p.id === 'enterprise') {
+        html += '<a href="mailto:sales@savants.dev?subject=Enterprise%20inquiry" class="pc-btn contact">Contact sales</a>';
+      } else {
+        html += '<button class="pc-btn contact" disabled>-</button>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+
+    document.getElementById('plans-content').innerHTML = html;
+  }
+
+  // --- Load Invoices ---
+  async function loadInvoices() {
+    try {
+      const data = await apiFetch('/billing/invoices');
+      const invoices = Array.isArray(data) ? data : (data.invoices || []);
+
+      if (invoices.length === 0) {
+        document.getElementById('invoices-content').innerHTML =
+          '<div class="invoice-empty">No invoices yet. Invoices will appear here after your first billing cycle.</div>';
+        return;
+      }
+
+      let html = '<table class="invoice-table"><thead><tr>' +
+        '<th>Date</th><th>Description</th><th>Amount</th><th>Status</th><th></th>' +
+      '</tr></thead><tbody>';
+
+      for (const inv of invoices) {
+        const date = new Date(inv.date || inv.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const status = inv.status || 'paid';
+        const statusCls = status === 'paid' ? 'status-paid' : 'status-pending';
+        html += '<tr>' +
+          '<td>' + date + '</td>' +
+          '<td>' + escapeHtml(inv.description || 'Savants Cloud') + '</td>' +
+          '<td class="amount">$' + ((inv.amount_cents || 0) / 100).toFixed(2) + '</td>' +
+          '<td><span class="' + statusCls + '">' + status.charAt(0).toUpperCase() + status.slice(1) + '</span></td>' +
+          '<td>' + (inv.pdf_url ? '<a href="' + escapeHtml(inv.pdf_url) + '" target="_blank" style="color:var(--accent);font-size:0.78rem;text-decoration:none;">PDF</a>' : '') + '</td>' +
+        '</tr>';
+      }
+      html += '</tbody></table>';
+
+      document.getElementById('invoices-content').innerHTML = html;
+    } catch (e) {
+      // If invoices endpoint doesn't exist yet, show placeholder
+      document.getElementById('invoices-content').innerHTML =
+        '<div class="invoice-empty">No invoices yet. Invoices will appear here after your first billing cycle.</div>';
+    }
+  }
+
+  // --- Logout ---
+  document.getElementById('btn-logout').addEventListener('click', () => {
+    localStorage.removeItem('savants_token');
+    document.cookie = 'savants_token=; Max-Age=0; path=/';
+    window.location.href = '/cloud';
+  });
+
+  // --- Init ---
+  loadPlan();
+  loadUsage();
+  loadInvoices();
+</script>
+</Base>
