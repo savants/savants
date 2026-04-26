@@ -37,6 +37,7 @@ tree-sitter-python = "0.21"
 tree-sitter-rust = "0.21"
 walkdir = "2"
 glob = "0.3"
+fastembed = { version = "5", optional = true }
 
 [profile.release]
 opt-level = 3
@@ -44,3 +45,5 @@ strip = true
 panic = "abort"
 lto = true
 codegen-units = 1
+[features]
+embeddings = ["fastembed"]

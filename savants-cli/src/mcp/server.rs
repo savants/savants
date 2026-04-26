@@ -1886,75 +1886,42 @@ impl McpServer {
         let repo = args.get("repo").and_then(|v| v.as_str()).unwrap_or("talent-pipeline");
         let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
 
-        // Split query into search terms
-        let terms: Vec<String> = query.to_lowercase()
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|w| w.len() >= 2)
-            .flat_map(|w| {
-                let mut parts = vec![w.to_string()];
-                // Split camelCase
-                let mut current = String::new();
-                for ch in w.chars() {
-                    if ch.is_uppercase() && !current.is_empty() {
-                        parts.push(current.to_lowercase());
-                        current.clear();
-                    }
-                    current.push(ch);
-                }
-                if !current.is_empty() { parts.push(current.to_lowercase()); }
-                parts
-            })
-            .collect();
+        // Find the repo path
+        let repo_path_candidates = [
+            format!("/home/miguel/git/sourcecoders-ai/{}", repo),
+            format!("/home/miguel/git/bernadinm/{}", repo),
+            format!("/home/miguel/git/{}", repo),
+        ];
+        let repo_path = repo_path_candidates.iter()
+            .find(|p| std::path::Path::new(p).is_dir())
+            .cloned()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
 
-        if terms.is_empty() {
-            return Ok("Query too short.".to_string());
+        // Parse the repo
+        let mut parser = crate::code_parser::CodeParser::new(repo);
+        let parse_result = parser.parse_repo(&repo_path);
+
+        if parse_result.entities.is_empty() {
+            return Ok(format!("No code found in '{}'", repo_path));
         }
 
-        // Build a graph query that searches function names, file paths, and bodies
-        // for ANY of the query terms, then scores by how many terms match
-        let conditions: Vec<String> = terms.iter().map(|t| {
-            let escaped = t.replace('\'', "\\'");
-            format!(
-                "(toLower(f.name) CONTAINS '{}' OR toLower(f.file) CONTAINS '{}' OR toLower(f.body) CONTAINS '{}')",
-                escaped, escaped, escaped
-            )
-        }).collect();
+        // Initialize embedding engine
+        let mut engine = crate::embeddings::EmbeddingEngine::new()
+            .map_err(|e| format!("Embedding engine: {}", e))?;
 
-        let where_clause = conditions.join(" OR ");
+        // Build index and search
+        let index = crate::semantic_search::SemanticIndex::from_parse_result(&parse_result, &mut engine)
+            .map_err(|e| format!("Index: {}", e))?;
+        let results = index.search(&query, &mut engine, limit)
+            .map_err(|e| format!("Search: {}", e))?;
 
-        // Score: count how many terms match in name (30pts), file (20pts), body (5pts)
-        let score_expr: Vec<String> = terms.iter().map(|t| {
-            let e = t.replace('\'', "\\'");
-            format!(
-                "CASE WHEN toLower(f.name) CONTAINS '{}' THEN 30 ELSE 0 END + \
-                 CASE WHEN toLower(f.file) CONTAINS '{}' THEN 20 ELSE 0 END + \
-                 CASE WHEN toLower(f.body) CONTAINS '{}' THEN 5 ELSE 0 END",
-                e, e, e
-            )
-        }).collect();
-        let total_score = score_expr.join(" + ");
-
-        let cypher = format!(
-            "MATCH (f:CodeFunction {{repo: '{}'}}) \
-             WHERE {} \
-             RETURN f.name, f.file, f.line, ({}) AS score \
-             ORDER BY score DESC LIMIT {}",
-            repo, where_clause, total_score, limit
-        );
-
-        let rows = self.query_text(&self.client, &cypher, &[]).unwrap_or_default();
-
-        if rows.is_empty() {
+        if results.is_empty() {
             return Ok(format!("No results for '{}' in {}", query, repo));
         }
 
-        let mut lines = vec![format!("=== Search: '{}' ({} results) ===", query, rows.len())];
-        for row in &rows {
-            let name = row.get(0).map(|v| v.as_str()).unwrap_or("?");
-            let file = row.get(1).map(|v| v.as_str()).unwrap_or("?");
-            let line = row.get(2).map(|v| v.as_i64()).unwrap_or(0);
-            let score = row.get(3).map(|v| v.as_i64()).unwrap_or(0);
-            lines.push(format!("  {}:{} {}() (score: {})", file, line, name, score));
+        let mut lines = vec![format!("=== Semantic search: '{}' ({} results) ===", query, results.len())];
+        for r in &results {
+            lines.push(format!("  {}:{} {}() [{:.3}]", r.file, r.line, r.name, r.score));
         }
         Ok(lines.join("\n"))
     }
