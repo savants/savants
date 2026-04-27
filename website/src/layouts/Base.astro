@@ -84,19 +84,11 @@ const { title, description = "The context engine for your LLM. Savants gives you
     code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
     .container { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
 
-    /* Utility classes for GSAP - visible by default, hidden only when JS is ready */
-    .gs-hidden { opacity: 1; }
-    .gs-up { opacity: 1; transform: none; }
-    .gs-left { opacity: 1; transform: none; }
-    .gs-right { opacity: 1; transform: none; }
-    .gs-scale { opacity: 1; transform: none; }
-
-    /* When GSAP loads, it adds this class to body, enabling the animations */
-    body.gsap-ready .gs-hidden { opacity: 0; }
-    body.gsap-ready .gs-up { opacity: 0; transform: translateY(40px); }
-    body.gsap-ready .gs-left { opacity: 0; transform: translateX(-40px); }
-    body.gsap-ready .gs-right { opacity: 0; transform: translateX(40px); }
-    body.gsap-ready .gs-scale { opacity: 0; transform: scale(0.95); }
+    /* GSAP animation classes - ALWAYS VISIBLE. Animations are enhancement only. */
+    .gs-hidden, .gs-up, .gs-left, .gs-right, .gs-scale {
+      opacity: 1;
+      transform: none;
+    }
   </style>
 </head>
 <body>
