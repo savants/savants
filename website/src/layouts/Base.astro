@@ -64,7 +64,7 @@ const { title, description = "The context engine for your LLM. Savants gives you
   <style is:global>
     :root {
       --bg: #0a0a0a; --fg: #e5e5e5; --muted: #737373;
-      --accent: #22d3ee; --accent-dim: #164e63;
+      --accent: #22d3ee; --accent2: #a78bfa; --accent-dim: #164e63;
       --surface: #141414; --border: #262626;
       --green: #4ade80; --red: #f87171; --yellow: #facc15;
     }
@@ -83,6 +83,14 @@ const { title, description = "The context engine for your LLM. Savants gives you
     }
     code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
     .container { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+
+    /* Film grain - adds organic texture to flat surfaces */
+    body::after {
+      content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 9998; opacity: 0.03;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      background-repeat: repeat; background-size: 256px 256px;
+    }
 
     /* GSAP animation classes - ALWAYS VISIBLE. Animations are enhancement only. */
     .gs-hidden, .gs-up, .gs-left, .gs-right, .gs-scale {

@@ -11,7 +11,8 @@ import Base from '../layouts/Base.astro';
   /* Scroll progress */
   .scroll-progress {
     position: fixed; top: 0; left: 0; width: 0%; height: 2px;
-    background: var(--accent); z-index: 9999; transition: width 0.08s linear;
+    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent));
+    z-index: 9999; transition: width 0.08s linear;
   }
 
   /* Nav */
@@ -29,11 +30,11 @@ import Base from '../layouts/Base.astro';
   nav .links a { color: var(--muted); text-decoration: none; font-size: 0.88rem; transition: color 0.2s; }
   nav .links a:hover { color: var(--fg); }
   nav .nav-cta {
-    padding: 7px 18px; background: var(--accent); color: var(--bg);
+    padding: 7px 18px; background: linear-gradient(135deg, var(--accent), var(--accent2)); color: var(--bg);
     font-weight: 600; border-radius: 8px; text-decoration: none;
     font-size: 0.85rem; transition: transform 0.2s, box-shadow 0.2s;
   }
-  nav .nav-cta:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(34,211,238,0.25); }
+  nav .nav-cta:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(34,211,238,0.3), 0 4px 20px rgba(167,139,250,0.2); }
   nav .hamburger { display: none; background: none; border: none; cursor: pointer; padding: 4px; }
   nav .hamburger svg { width: 24px; height: 24px; stroke: var(--fg); }
 
@@ -46,10 +47,79 @@ import Base from '../layouts/Base.astro';
     position: relative; overflow: hidden; padding: 120px 32px 100px;
   }
 
+  /* Aurora glow orbs - mouse-reactive */
+  .hero-aurora {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 140%; height: 140%; pointer-events: none; z-index: 0;
+    filter: blur(100px); opacity: 0.18;
+    transition: transform 0.3s ease-out;
+  }
+  .aurora-orb {
+    position: absolute; border-radius: 50%;
+  }
+  .aurora-orb-1 {
+    width: 600px; height: 600px; top: 5%; left: 15%;
+    background: radial-gradient(circle, #22d3ee 0%, transparent 70%);
+    animation: auroraFloat1 6s ease-in-out infinite;
+  }
+  .aurora-orb-2 {
+    width: 500px; height: 500px; top: 25%; right: 10%;
+    background: radial-gradient(circle, #a78bfa 0%, transparent 70%);
+    animation: auroraFloat2 7s ease-in-out infinite;
+  }
+  .aurora-orb-3 {
+    width: 450px; height: 450px; bottom: 5%; left: 35%;
+    background: radial-gradient(circle, #22d3ee 0%, transparent 70%);
+    animation: auroraFloat3 9s ease-in-out infinite;
+  }
+  .aurora-orb-4 {
+    width: 350px; height: 350px; top: 40%; left: 5%;
+    background: radial-gradient(circle, #7c3aed 0%, transparent 70%);
+    animation: auroraFloat2 11s ease-in-out infinite reverse;
+  }
+  .aurora-orb-5 {
+    width: 300px; height: 300px; top: 15%; right: 30%;
+    background: radial-gradient(circle, #06b6d4 0%, transparent 70%);
+    animation: auroraFloat1 13s ease-in-out infinite reverse;
+  }
+  @keyframes auroraFloat1 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    25% { transform: translate(50px, -40px) scale(1.08); }
+    50% { transform: translate(20px, 30px) scale(0.95); }
+    75% { transform: translate(-30px, -10px) scale(1.03); }
+  }
+  @keyframes auroraFloat2 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    25% { transform: translate(-40px, 50px) scale(0.92); }
+    50% { transform: translate(30px, -20px) scale(1.06); }
+    75% { transform: translate(-10px, 30px) scale(0.98); }
+  }
+  @keyframes auroraFloat3 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(40px, -50px) scale(1.1); }
+    66% { transform: translate(-30px, 20px) scale(0.93); }
+  }
+
+  /* Constellation canvas */
+  .hero-constellation {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 1;
+  }
+
+  /* Mouse glow */
+  .mouse-glow {
+    position: fixed; width: 400px; height: 400px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(34,211,238,0.06) 0%, transparent 70%);
+    pointer-events: none; z-index: 0; transform: translate(-50%, -50%);
+    transition: opacity 0.3s;
+    opacity: 0;
+  }
+  .mouse-glow.active { opacity: 1; }
+
   /* Dot grid background */
   .dot-grid {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 0; opacity: 0.03;
+    pointer-events: none; z-index: 1; opacity: 0.04;
     background-image: radial-gradient(circle, var(--fg) 1px, transparent 1px);
     background-size: 32px 32px;
     will-change: transform;
@@ -60,9 +130,15 @@ import Base from '../layouts/Base.astro';
   .hero h1 {
     font-size: clamp(3rem, 7vw, 6rem); font-weight: 800;
     letter-spacing: -0.04em; line-height: 1.05; margin-bottom: 28px;
-    background: linear-gradient(135deg, var(--fg) 0%, #a3a3a3 100%);
+    background: linear-gradient(135deg, var(--fg) 0%, #a3a3a3 50%, var(--fg) 100%);
+    background-size: 200% 100%;
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     background-clip: text;
+    animation: shimmer 6s ease-in-out infinite;
+  }
+  @keyframes shimmer {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
   }
 
   .hero .subtitle {
@@ -81,7 +157,7 @@ import Base from '../layouts/Base.astro';
   }
   .install-box:hover {
     border-color: var(--accent); transform: translateY(-2px);
-    box-shadow: 0 8px 32px rgba(34,211,238,0.12);
+    box-shadow: 0 8px 40px rgba(34,211,238,0.18), 0 0 80px -20px rgba(167,139,250,0.12);
   }
   .install-box code { font-size: 1rem; color: var(--accent); letter-spacing: -0.02em; }
   .install-box .copy-icon {
@@ -160,7 +236,8 @@ import Base from '../layouts/Base.astro';
      ============================================================ */
   .numbers {
     width: 100%; padding: 120px 32px; position: relative;
-    background: var(--accent); color: var(--bg); text-align: center;
+    background: linear-gradient(135deg, var(--accent) 0%, #7c3aed 100%);
+    color: var(--bg); text-align: center;
     overflow: hidden;
   }
   .numbers-inner { max-width: 1000px; margin: 0 auto; }
@@ -197,7 +274,11 @@ import Base from '../layouts/Base.astro';
     border-radius: 16px; padding: 40px 32px; position: relative;
     transition: border-color 0.3s, transform 0.3s;
   }
-  .step-card:hover { border-color: rgba(34,211,238,0.3); transform: translateY(-4px); }
+  .step-card:hover {
+    border-color: rgba(34,211,238,0.3); transform: translateY(-4px);
+    box-shadow: 0 0 40px -10px rgba(34,211,238,0.15), 0 0 80px -20px rgba(167,139,250,0.1);
+  }
+  .step-icon { margin-bottom: 16px; opacity: 0.9; }
   .step-num {
     font-size: 0.7rem; font-weight: 700; color: var(--accent);
     text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 20px;
@@ -297,7 +378,10 @@ import Base from '../layouts/Base.astro';
     border-radius: 12px; padding: 24px 28px;
     transition: border-color 0.3s;
   }
-  .cloud-tool:hover { border-color: rgba(34,211,238,0.25); }
+  .cloud-tool:hover {
+    border-color: rgba(34,211,238,0.25);
+    box-shadow: 0 0 40px -10px rgba(34,211,238,0.12), 0 0 60px -15px rgba(167,139,250,0.08);
+  }
   .cloud-tool h4 {
     font-family: 'JetBrains Mono', monospace; font-size: 0.88rem;
     color: var(--accent); margin-bottom: 6px; font-weight: 500;
@@ -354,8 +438,13 @@ import Base from '../layouts/Base.astro';
      SECTION DIVIDER
      ============================================================ */
   .section-divider {
-    width: 100%; height: 1px;
+    width: 100%; height: 1px; position: relative;
     background: linear-gradient(90deg, transparent, var(--border), transparent);
+  }
+  .section-divider::after {
+    content: ''; position: absolute; top: -1px; left: 25%; width: 50%; height: 3px;
+    background: linear-gradient(90deg, transparent, rgba(34,211,238,0.15), rgba(167,139,250,0.15), transparent);
+    filter: blur(2px);
   }
 
   /* ============================================================
@@ -418,7 +507,7 @@ import Base from '../layouts/Base.astro';
 
 <!-- Navigation -->
 <nav id="mainNav">
-  <a href="/" class="brand">savants<span>.</span></a>
+  <a href="/" class="brand">savants</a>
   <div class="links" id="navLinks">
     <a href="/case-study">Case Study</a>
     <a href="https://github.com/bernadinm/savants" target="_blank" rel="noopener">GitHub</a>
@@ -435,7 +524,16 @@ import Base from '../layouts/Base.astro';
 <!-- ============================================================
      SECTION 1: HERO
      ============================================================ -->
+<div class="mouse-glow" id="mouseGlow"></div>
 <section class="hero">
+  <div class="hero-aurora" id="heroAurora">
+    <div class="aurora-orb aurora-orb-1"></div>
+    <div class="aurora-orb aurora-orb-2"></div>
+    <div class="aurora-orb aurora-orb-3"></div>
+    <div class="aurora-orb aurora-orb-4"></div>
+    <div class="aurora-orb aurora-orb-5"></div>
+  </div>
+  <canvas class="hero-constellation" id="constellation"></canvas>
   <div class="dot-grid" id="dotGrid"></div>
   <div class="hero-content">
     <h1 class="gs-up">Find code by describing<br>what it does.</h1>
@@ -539,18 +637,21 @@ import Base from '../layouts/Base.astro';
     <h2 class="gs-up">Three commands. That's it.</h2>
     <div class="how-grid">
       <div class="step-card gs-up" data-stagger="0">
+        <svg class="step-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         <span class="step-num">Step 01</span>
         <h3>Install</h3>
         <p>One line. No dependencies. No API keys. Runs entirely on your machine.</p>
         <code>curl -fsSL savants.sh | sh</code>
       </div>
       <div class="step-card gs-up" data-stagger="1">
+        <svg class="step-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent2)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
         <span class="step-num">Step 02</span>
         <h3>Index</h3>
         <p>Parses every function with tree-sitter, embeds with ONNX. Your code never leaves your machine.</p>
         <code>savants reindex</code>
       </div>
       <div class="step-card gs-up" data-stagger="2">
+        <svg class="step-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
         <span class="step-num">Step 03</span>
         <h3>Ask</h3>
         <p>Your AI agent calls savants instead of grep. Semantic search, call graphs, file skeletons - all local.</p>
@@ -844,5 +945,228 @@ import Base from '../layouts/Base.astro';
   } else {
     waitForGSAP();
   }
+
+  // ------ Mouse glow + aurora reactivity ------
+  const mouseGlow = document.getElementById('mouseGlow');
+  const heroAurora = document.getElementById('heroAurora');
+  let mouseX = 0, mouseY = 0;
+
+  document.addEventListener('mousemove', (e) => {
+    mouseX = e.clientX; mouseY = e.clientY;
+    if (mouseGlow) {
+      mouseGlow.style.left = mouseX + 'px';
+      mouseGlow.style.top = mouseY + 'px';
+      if (!mouseGlow.classList.contains('active')) mouseGlow.classList.add('active');
+    }
+    // Aurora follows mouse slightly
+    if (heroAurora) {
+      const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+      const dx = (mouseX - cx) / cx * 15;
+      const dy = (mouseY - cy) / cy * 15;
+      heroAurora.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    }
+  });
+
+  document.addEventListener('mouseleave', () => {
+    if (mouseGlow) mouseGlow.classList.remove('active');
+  });
+
+  // ------ Constellation particle network + shooting stars ------
+  (function() {
+    const canvas = document.getElementById('constellation');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    let w, h, particles = [], shootingStars = [];
+    const PARTICLE_COUNT = 70;
+    const CONNECT_DIST = 160;
+    const MOUSE_DIST = 220;
+
+    function resize() {
+      const hero = canvas.parentElement;
+      w = canvas.width = hero.offsetWidth;
+      h = canvas.height = hero.offsetHeight;
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    // Create particles with organic drift
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 0.2 + Math.random() * 0.5;
+      particles.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        r: Math.random() * 2 + 0.8,
+        color: Math.random() > 0.5 ? 'rgba(34,211,238,' : 'rgba(167,139,250,',
+        pulse: Math.random() * Math.PI * 2,
+        pulseSpeed: 0.02 + Math.random() * 0.03
+      });
+    }
+
+    // Spawn a shooting star
+    function spawnShootingStar() {
+      const fromLeft = Math.random() > 0.3;
+      const angle = (fromLeft ? -0.3 : -2.8) + Math.random() * 0.4;
+      const speed = 8 + Math.random() * 12;
+      const isCyan = Math.random() > 0.4;
+      shootingStars.push({
+        x: fromLeft ? Math.random() * w * 0.6 : w * 0.4 + Math.random() * w * 0.6,
+        y: -10 + Math.random() * h * 0.3,
+        vx: Math.cos(angle) * speed,
+        vy: -Math.sin(angle) * speed,
+        life: 1,
+        decay: 0.015 + Math.random() * 0.01,
+        length: 60 + Math.random() * 80,
+        width: 1 + Math.random() * 1.5,
+        r: isCyan ? 34 : 167,
+        g: isCyan ? 211 : 139,
+        b: isCyan ? 238 : 250
+      });
+    }
+
+    // Schedule shooting stars at random intervals
+    function scheduleNext() {
+      const delay = 1500 + Math.random() * 4000;
+      setTimeout(() => { spawnShootingStar(); scheduleNext(); }, delay);
+    }
+    scheduleNext();
+    // Start with a couple
+    spawnShootingStar();
+    setTimeout(spawnShootingStar, 800);
+
+    let time = 0;
+
+    function draw() {
+      ctx.clearRect(0, 0, w, h);
+      time++;
+
+      const rect = canvas.getBoundingClientRect();
+      const mx = mouseX - rect.left;
+      const my = mouseY - rect.top;
+
+      // --- Draw shooting stars ---
+      for (let i = shootingStars.length - 1; i >= 0; i--) {
+        const s = shootingStars[i];
+        s.x += s.vx;
+        s.y += s.vy;
+        s.life -= s.decay;
+
+        if (s.life <= 0 || s.x < -100 || s.x > w + 100 || s.y > h + 100) {
+          shootingStars.splice(i, 1);
+          continue;
+        }
+
+        // Trail
+        const tailX = s.x - (s.vx / Math.sqrt(s.vx*s.vx + s.vy*s.vy)) * s.length * s.life;
+        const tailY = s.y - (s.vy / Math.sqrt(s.vx*s.vx + s.vy*s.vy)) * s.length * s.life;
+
+        const grad = ctx.createLinearGradient(s.x, s.y, tailX, tailY);
+        grad.addColorStop(0, `rgba(${s.r},${s.g},${s.b},${s.life * 0.8})`);
+        grad.addColorStop(0.3, `rgba(${s.r},${s.g},${s.b},${s.life * 0.3})`);
+        grad.addColorStop(1, `rgba(${s.r},${s.g},${s.b},0)`);
+
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(tailX, tailY);
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = s.width * s.life;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+
+        // Bright head
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.width * s.life * 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${s.life * 0.6})`;
+        ctx.fill();
+
+        // Head glow
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 6 * s.life, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${s.r},${s.g},${s.b},${s.life * 0.2})`;
+        ctx.fill();
+      }
+
+      // --- Draw constellation particles ---
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+
+        // Pulsing size
+        p.pulse += p.pulseSpeed;
+        const pr = p.r * (0.8 + Math.sin(p.pulse) * 0.3);
+
+        // Gentle organic drift (sine wave wobble)
+        p.vx += Math.sin(time * 0.005 + i) * 0.003;
+        p.vy += Math.cos(time * 0.004 + i * 1.3) * 0.003;
+
+        // Mouse attraction
+        const dmx = mx - p.x, dmy = my - p.y;
+        const dm = Math.sqrt(dmx * dmx + dmy * dmy);
+        if (dm < MOUSE_DIST && dm > 0) {
+          p.vx += dmx / dm * 0.03;
+          p.vy += dmy / dm * 0.03;
+        }
+
+        // Speed limit
+        const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+        if (spd > 1.2) { p.vx *= 1.2 / spd; p.vy *= 1.2 / spd; }
+
+        p.x += p.vx;
+        p.y += p.vy;
+
+        // Damping
+        p.vx *= 0.995;
+        p.vy *= 0.995;
+
+        // Wrap edges
+        if (p.x < -20) p.x = w + 20;
+        if (p.x > w + 20) p.x = -20;
+        if (p.y < -20) p.y = h + 20;
+        if (p.y > h + 20) p.y = -20;
+
+        // Draw particle with glow
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, pr + 3, 0, Math.PI * 2);
+        ctx.fillStyle = p.color + '0.08)';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, pr, 0, Math.PI * 2);
+        ctx.fillStyle = p.color + '0.6)';
+        ctx.fill();
+
+        // Connect nearby particles
+        for (let j = i + 1; j < particles.length; j++) {
+          const q = particles[j];
+          const dx = p.x - q.x, dy = p.y - q.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < CONNECT_DIST) {
+            const alpha = (1 - dist / CONNECT_DIST) * 0.18;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(q.x, q.y);
+            ctx.strokeStyle = p.color + alpha + ')';
+            ctx.lineWidth = 0.6;
+            ctx.stroke();
+          }
+        }
+
+        // Connect to mouse
+        if (dm < MOUSE_DIST) {
+          const alpha = (1 - dm / MOUSE_DIST) * 0.3;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(mx, my);
+          ctx.strokeStyle = 'rgba(34,211,238,' + alpha + ')';
+          ctx.lineWidth = 0.8;
+          ctx.stroke();
+        }
+      }
+
+      requestAnimationFrame(draw);
+    }
+    draw();
+  })();
 </script>
 </Base>
