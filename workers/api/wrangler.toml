@@ -1,0 +1,37 @@
+name = "savants-cloud-api"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+account_id = "4992fd600f9894326a82a0f8573a7c38"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "savants-cloud"
+database_id = "bf5c1140-48ac-4b61-bb5c-6fc2a673eb2d"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "9a24b341dccd4658a962056081c59e22"
+
+[[routes]]
+pattern = "api.savants.cloud/*"
+zone_name = "savants.cloud"
+
+[[routes]]
+pattern = "savants.cloud/auth/*"
+zone_name = "savants.cloud"
+
+[vars]
+ENVIRONMENT = "production"
+
+# Secrets (set via wrangler secret put):
+# JWT_SECRET
+# GOOGLE_CLIENT_ID
+# GOOGLE_CLIENT_SECRET
+# GITHUB_CLIENT_ID
+# GITHUB_CLIENT_SECRET
+# STRIPE_SECRET_KEY
+# STRIPE_WEBHOOK_SECRET
+# STRIPE_PRICE_ID
+# SLACK_BOT_TOKEN
+# GITHUB_APP_TOKEN
+# GRAPH_PROXY_URL
