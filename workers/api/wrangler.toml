@@ -17,7 +17,7 @@ pattern = "api.savants.cloud/*"
 zone_name = "savants.cloud"
 
 [[routes]]
-pattern = "savants.cloud/auth/*"
+pattern = "savants.cloud/*"
 zone_name = "savants.cloud"
 
 [vars]
