@@ -27,6 +27,7 @@ mod mcp;
 mod radar;
 mod sentry;
 mod slack;
+mod update_check;
 mod utils;
 
 pub use utils::find_in_path;
@@ -261,6 +262,9 @@ enum ConfigAction {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // Background update check (non-blocking, cached 24h)
+    update_check::check_background();
 
     match cli.command {
         Commands::Up { repo, tail_lines } => {

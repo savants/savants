@@ -1,32 +1,31 @@
 #!/bin/sh
-# Savants installer
+# Savants installer / updater
 #
 # curl -fsSL savants.sh | sh
-# OR from astra directly (Tailscale):
-# curl -fsSL http://100.95.164.99:30900/savants-releases/install.sh | sh
 #
 # Detects OS/arch, downloads the right binary, installs to ~/.savants/bin/
+# Re-run the same command to update to the latest version.
 
 set -e
 
 SAVANTS_HOME="${SAVANTS_HOME:-$HOME/.savants}"
 BIN_DIR="$SAVANTS_HOME/bin"
 
-# Gitea releases on astra (Tailscale network)
-GITEA_URL="${SAVANTS_DOWNLOAD_URL:-https://git.bernad.in/miguel/savants/releases/download/latest}"
-# MinIO on astra (Tailscale, fast direct access)
-MINIO_URL="http://100.95.164.99:30900/savants-releases/latest"
-# Public fallback (when savants.sh is live)
-PUBLIC_URL="https://savants.dev/releases/latest"
+# R2 CDN (primary - global edge, free egress)
+R2_URL="https://releases.savants.dev"
+# Fallback: GitHub releases
+GH_URL="https://github.com/savants-dev/savants/releases/download"
 
 # Colors
 if [ -t 1 ]; then
-    GREEN='\033[32m'; YELLOW='\033[33m'; RED='\033[31m'; BOLD='\033[1m'; RESET='\033[0m'
+    CYAN='\033[36m'; GREEN='\033[32m'; YELLOW='\033[33m'; RED='\033[31m'
+    BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
 else
-    GREEN=''; YELLOW=''; RED=''; BOLD=''; RESET=''
+    CYAN=''; GREEN=''; YELLOW=''; RED=''; BOLD=''; DIM=''; RESET=''
 fi
 
-info()  { printf "${GREEN}>${RESET} %s\n" "$*"; }
+info()  { printf "${CYAN}>${RESET} %s\n" "$*"; }
+ok()    { printf "${GREEN}>${RESET} %s\n" "$*"; }
 warn()  { printf "${YELLOW}!${RESET} %s\n" "$*"; }
 error() { printf "${RED}x${RESET} %s\n" "$*" >&2; exit 1; }
 
@@ -34,8 +33,8 @@ detect_platform() {
     OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
     ARCH="$(uname -m)"
     case "$OS" in
-        linux)  OS="linux" ;;
-        darwin) OS="apple-darwin" ;;
+        linux)  OS_TAG="unknown-linux-gnu" ;;
+        darwin) OS_TAG="apple-darwin" ;;
         *)      error "Unsupported OS: $OS" ;;
     esac
     case "$ARCH" in
@@ -43,19 +42,13 @@ detect_platform() {
         aarch64|arm64) ARCH="aarch64" ;;
         *)             error "Unsupported arch: $ARCH" ;;
     esac
-
-    if [ "$OS" = "linux" ]; then
-        TARGET="${ARCH}-unknown-linux-gnu"
-    else
-        TARGET="${ARCH}-${OS}"
-    fi
-    info "Platform: ${BOLD}${TARGET}${RESET}"
+    TARGET="${ARCH}-${OS_TAG}"
 }
 
-download() {
+fetch() {
     url="$1"; dest="$2"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL -o "$dest" "$url"
+        curl -fsSL --max-time 30 -o "$dest" "$url"
     elif command -v wget >/dev/null 2>&1; then
         wget -qO "$dest" "$url"
     else
@@ -63,50 +56,78 @@ download() {
     fi
 }
 
+fetch_quiet() {
+    url="$1"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 5 "$url" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$url" 2>/dev/null
+    fi
+}
+
 main() {
-    printf "\n${BOLD}  Savants Installer${RESET}\n\n"
+    printf "\n${BOLD}  savants${RESET} ${DIM}installer${RESET}\n\n"
     detect_platform
-    mkdir -p "$BIN_DIR" "$SAVANTS_HOME/data"
+    info "Platform: ${BOLD}${TARGET}${RESET}"
 
-    FILENAME="savants-${TARGET}"
-    ARCHIVE="${FILENAME}.tar.gz"
-
-    # Try Gitea releases first, then MinIO, then public
-    info "Downloading..."
-    if download "${GITEA_URL}/${ARCHIVE}" "/tmp/${ARCHIVE}" 2>/dev/null; then
-        info "Downloaded from git.bernad.in (Gitea release)"
-    elif download "${MINIO_URL}/${ARCHIVE}" "/tmp/${ARCHIVE}" 2>/dev/null; then
-        info "Downloaded from astra MinIO (local network)"
-    elif download "${PUBLIC_URL}/${ARCHIVE}" "/tmp/${ARCHIVE}" 2>/dev/null; then
-        info "Downloaded from savants.dev"
-    else
-        # Last resort: build from source
-        warn "No pre-built binary available. Building from source..."
-        if ! command -v cargo >/dev/null 2>&1; then
-            info "Installing Rust..."
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            . "$HOME/.cargo/env"
-        fi
-        TMPDIR=$(mktemp -d)
-        git clone https://git.bernad.in/miguel/savants.git "$TMPDIR/savants"
-        cd "$TMPDIR/savants/savants-cli"
-        cargo build --release
-        cp target/release/savants "$BIN_DIR/savants"
-        rm -rf "$TMPDIR"
-        chmod +x "$BIN_DIR/savants"
-        ensure_path
-        print_success
-        return
+    # Check current version (if already installed)
+    CURRENT_VERSION=""
+    if [ -x "$BIN_DIR/savants" ]; then
+        CURRENT_VERSION="$("$BIN_DIR/savants" --version 2>/dev/null | awk '{print $2}')" || true
     fi
 
-    # Extract
-    tar xzf "/tmp/${ARCHIVE}" -C "$BIN_DIR"
-    mv "$BIN_DIR/${FILENAME}" "$BIN_DIR/savants" 2>/dev/null || true
+    # Get latest version from R2
+    LATEST_VERSION="$(fetch_quiet "${R2_URL}/latest/version.txt")" || true
+    LATEST_VERSION="$(echo "$LATEST_VERSION" | tr -d '[:space:]')"
+
+    if [ -n "$CURRENT_VERSION" ] && [ -n "$LATEST_VERSION" ]; then
+        if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+            ok "Already on latest: ${BOLD}v${CURRENT_VERSION}${RESET}"
+            printf "\n"
+            exit 0
+        fi
+        info "Updating: ${BOLD}v${CURRENT_VERSION}${RESET} -> ${BOLD}v${LATEST_VERSION}${RESET}"
+    elif [ -n "$LATEST_VERSION" ]; then
+        info "Installing: ${BOLD}v${LATEST_VERSION}${RESET}"
+    fi
+
+    mkdir -p "$BIN_DIR" "$SAVANTS_HOME/data"
+
+    ARCHIVE="savants-${TARGET}.tar.gz"
+    TMP_FILE="/tmp/${ARCHIVE}"
+
+    # Try R2 first, then GitHub releases
+    info "Downloading..."
+    if fetch "${R2_URL}/latest/${ARCHIVE}" "$TMP_FILE" 2>/dev/null; then
+        ok "Downloaded from CDN"
+    elif [ -n "$LATEST_VERSION" ] && fetch "${GH_URL}/v${LATEST_VERSION}/${ARCHIVE}" "$TMP_FILE" 2>/dev/null; then
+        ok "Downloaded from GitHub"
+    elif fetch "${GH_URL}/latest/${ARCHIVE}" "$TMP_FILE" 2>/dev/null; then
+        ok "Downloaded from GitHub (latest)"
+    else
+        error "Download failed. Check https://github.com/savants-dev/savants/releases"
+    fi
+
+    # Extract and install
+    tar xzf "$TMP_FILE" -C "$BIN_DIR"
+    # Handle both tarball layouts (flat binary or named binary)
+    [ -f "$BIN_DIR/savants-${TARGET}" ] && mv "$BIN_DIR/savants-${TARGET}" "$BIN_DIR/savants"
     chmod +x "$BIN_DIR/savants"
-    rm -f "/tmp/${ARCHIVE}"
+    rm -f "$TMP_FILE"
 
     ensure_path
-    print_success
+
+    # Verify
+    INSTALLED_VERSION="$("$BIN_DIR/savants" --version 2>/dev/null | awk '{print $2}')" || true
+
+    printf "\n${GREEN}${BOLD}  savants v${INSTALLED_VERSION:-?} installed${RESET}\n\n"
+    if [ -n "$CURRENT_VERSION" ]; then
+        printf "  Updated from v${CURRENT_VERSION}\n\n"
+    fi
+    printf "  ${BOLD}savants up${RESET}            auto-detect + index your repo\n"
+    printf "  ${BOLD}savants serve${RESET}         start MCP server for your AI editor\n"
+    printf "  ${BOLD}savants reindex${RESET}       re-index after code changes\n"
+    printf "\n  ${DIM}To update later: curl -fsSL savants.sh | sh${RESET}\n\n"
 }
 
 ensure_path() {
@@ -121,18 +142,9 @@ ensure_path() {
     esac
     if [ -f "$RC" ] && ! grep -q "savants/bin" "$RC" 2>/dev/null; then
         printf '\n# Savants\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$RC"
-        info "Added $BIN_DIR to PATH in $RC"
+        info "Added to PATH in $RC"
     fi
     export PATH="$BIN_DIR:$PATH"
-}
-
-print_success() {
-    printf "\n${GREEN}${BOLD}  Savants installed!${RESET}\n\n"
-    printf "  Get started:\n"
-    printf "    ${BOLD}savants up${RESET}              auto-detect + diagnose\n"
-    printf "    ${BOLD}savants mcp install${RESET}     set up AI integration\n"
-    printf "    ${BOLD}savants daemon start${RESET}    continuous monitoring\n"
-    printf "\n"
 }
 
 main "$@"
