@@ -51,7 +51,6 @@ jobs:
           apt-get update && apt-get install -y python3-pip xz-utils
           pip3 install ziglang --break-system-packages
           cargo install cargo-zigbuild
-          # Download macOS 14 SDK for framework linking
           mkdir -p /opt/macos-sdk
           curl -fsSL https://github.com/joseluisq/macosx-sdks/releases/download/14.5/MacOSX14.5.sdk.tar.xz \
             | tar xJ -C /opt/macos-sdk --strip-components=1
@@ -80,18 +79,28 @@ jobs:
           chmod +x "dist/${FILENAME}"
           cd dist && tar czf "${FILENAME}.tar.gz" "${FILENAME}"
 
-      - name: Upload to MinIO
+      - name: Upload to R2
         env:
-          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
-          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: |
-          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
-          chmod +x /usr/local/bin/mc
-          mc alias set releases http://minio.minio.svc.cluster.local:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
           TAG="${GITHUB_REF_NAME:-latest}"
           FILENAME="savants-${{ matrix.target }}.tar.gz"
-          mc cp "dist/${FILENAME}" "releases/savants-releases/${TAG}/${FILENAME}"
-          mc cp "dist/${FILENAME}" "releases/savants-releases/latest/${FILENAME}"
+          R2_API="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/savants-releases/objects"
+
+          # Upload to versioned path
+          curl -sf -X PUT "${R2_API}/${TAG}/${FILENAME}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/gzip" \
+            --data-binary "@dist/${FILENAME}"
+          echo "Uploaded ${FILENAME} to ${TAG}/"
+
+          # Upload to latest/
+          curl -sf -X PUT "${R2_API}/latest/${FILENAME}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/gzip" \
+            --data-binary "@dist/${FILENAME}"
+          echo "Uploaded ${FILENAME} to latest/"
 
       - name: Create Gitea release and attach binary
         env:
@@ -102,7 +111,6 @@ jobs:
           API="http://gitea-http.gitea.svc.cluster.local:3000/api/v1"
           FILENAME="savants-${{ matrix.target }}.tar.gz"
 
-          # Create release if it doesn't exist (first matrix job creates it, others skip)
           RELEASE_ID=$(curl -s -H "Authorization: token ${GITEA_TOKEN}" \
             "${API}/repos/${REPO}/releases/tags/${TAG}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
 
@@ -110,32 +118,44 @@ jobs:
             RELEASE_ID=$(curl -s -X POST \
               -H "Authorization: token ${GITEA_TOKEN}" \
               -H "Content-Type: application/json" \
-              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Savants ${TAG}\",\"body\":\"Multi-arch release (Linux + macOS, x86_64 + aarch64).\n\nInstall:\n\`\`\`\ncurl -fsSL http://100.95.164.99:30900/savants-releases/install.sh | sh\n\`\`\`\",\"draft\":false,\"prerelease\":false}" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Savants ${TAG}\",\"body\":\"Install:\n\`\`\`\ncurl -fsSL savants.sh | sh\n\`\`\`\",\"draft\":false,\"prerelease\":false}" \
               "${API}/repos/${REPO}/releases" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
             echo "Created release ${TAG} (id: ${RELEASE_ID})"
           else
             echo "Release ${TAG} already exists (id: ${RELEASE_ID})"
           fi
 
-          # Attach binary as release asset
           curl -s -X POST \
             -H "Authorization: token ${GITEA_TOKEN}" \
             -F "attachment=@dist/${FILENAME}" \
             "${API}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${FILENAME}"
           echo "Attached ${FILENAME} to release ${TAG}"
 
-  publish-installer:
-    name: Publish install script to MinIO
+  publish-metadata:
+    name: Update version + install script
     runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - name: Upload install.sh
+      - name: Upload version.txt and install.sh to R2
         env:
-          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
-          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: |
-          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
-          chmod +x /usr/local/bin/mc
-          mc alias set releases http://minio.minio.svc.cluster.local:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
-          mc cp scripts/install.sh "releases/savants-releases/install.sh"
+          TAG="${GITHUB_REF_NAME:-v0.0.0}"
+          VERSION="${TAG#v}"
+          R2_API="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/savants-releases/objects"
+
+          # Update latest/version.txt
+          echo -n "${VERSION}" | curl -sf -X PUT "${R2_API}/latest/version.txt" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: text/plain" \
+            --data-binary "@-"
+          echo "Updated version.txt to ${VERSION}"
+
+          # Upload install.sh
+          curl -sf -X PUT "${R2_API}/install.sh" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: text/plain" \
+            --data-binary @scripts/install.sh
+          echo "Updated install.sh"
