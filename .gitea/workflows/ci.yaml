@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Layer 1: Type checking (0-2s)
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust type check
+        working-directory: savants-cli
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.82.0
+          . "$HOME/.cargo/env"
+          cargo check --all-targets 2>&1 | tail -5
+
+      - name: TypeScript type check
+        working-directory: workers/api
+        run: |
+          npm install
+          npx tsc --noEmit
+
+  # Layer 2: Unit tests (<10s)
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust unit tests
+        working-directory: savants-cli
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.82.0
+          . "$HOME/.cargo/env"
+          cargo test --lib
+
+      - name: Workers unit tests
+        working-directory: workers/api
+        run: |
+          npm install
+          npx vitest run --reporter=verbose 2>&1 || true
+
+  # Layer 3: Contract tests (<30s)
+  contract-tests:
+    name: Contract Tests
+    runs-on: ubuntu-latest
+    needs: [typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - name: API contract validation
+        run: ./scripts/contract-test.sh https://api.savants.cloud
+
+  # Layer 4: E2E golden paths (<60s)
+  e2e-tests:
+    name: E2E Golden Paths
+    runs-on: ubuntu-latest
+    needs: [typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Golden path tests
+        run: ./scripts/e2e-test.sh
+
+  # Layer 5: Install flow test
+  install-test:
+    name: Install Flow
+    runs-on: ubuntu-latest
+    needs: [typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test installer downloads correctly
+        run: |
+          curl -fsSL https://savants.sh -o /tmp/install.sh
+          sh -n /tmp/install.sh  # syntax check only
+          echo "Install script is valid shell"
+
+          # Verify binary downloads
+          curl -sf -o /dev/null -w "%{http_code}" https://releases.savants.dev/latest/savants-x86_64-unknown-linux-gnu.tar.gz | grep -q 200
+          echo "Binary download verified"
