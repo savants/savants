@@ -32,7 +32,7 @@ T=$(date +%s)
 # 3. Rust unit tests (~2s)
 step "3/4" "Rust unit tests"
 T=$(date +%s)
-(cd savants-cli && cargo test --lib 2>/dev/null) && ok "$(($(date +%s) - T))" || err
+(cd savants-cli && cargo test 2>/dev/null) && ok "$(($(date +%s) - T))" || err
 
 # 4. API smoke test (~3s)
 step "4/4" "API smoke"

@@ -1,6 +1,7 @@
 name = "savants-cloud-api"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
 account_id = "4992fd600f9894326a82a0f8573a7c38"
 
 [[d1_databases]]
