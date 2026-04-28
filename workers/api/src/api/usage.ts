@@ -22,6 +22,11 @@ usage.get("/", async (c) => {
   const now = new Date();
   const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
+  const totalTokensOut = breakdown.reduce((sum, r) => sum + (r.total_tokens_out ?? 0), 0);
+  const totalDurationMs = breakdown.reduce((sum, r) => sum + (r.total_duration_ms ?? 0), 0);
+  const estimatedTokensSaved = totalTokensOut * 11; // savants returns ~12x less noise than grep
+  const estimatedTimeSavedMs = totalCalls * 8000; // ~8s saved per call vs manual grep+read
+
   return c.json({
     org_id: auth.orgId,
     plan: org?.plan ?? "free",
@@ -29,6 +34,11 @@ usage.get("/", async (c) => {
     total_calls: totalCalls,
     limit: isPaid ? null : FREE_MONTHLY_CALLS,
     remaining: isPaid ? null : Math.max(0, FREE_MONTHLY_CALLS - totalCalls),
+    value: {
+      tokens_saved: estimatedTokensSaved,
+      time_saved_minutes: Math.round(estimatedTimeSavedMs / 60000),
+      avg_response_ms: totalCalls > 0 ? Math.round(totalDurationMs / totalCalls) : 0,
+    },
     breakdown: breakdown.map((row) => ({
       tool: row.tool_name,
       calls: row.call_count,
