@@ -45,7 +45,8 @@ app.onError((err, c) => {
   return c.json(
     {
       error: "internal_error",
-      message: c.env.ENVIRONMENT === "production" ? "Internal server error" : err.message,
+      message: err.message,
+      trace: c.env.ENVIRONMENT === "production" ? undefined : err.stack,
       status: 500,
     },
     500

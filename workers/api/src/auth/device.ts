@@ -61,7 +61,7 @@ device.post("/token", async (c) => {
       return c.json({ error: "slow_down", message: "Polling too fast" }, 428);
     }
   }
-  await c.env.KV.put(rateLimitKey, Date.now().toString(), { expirationTtl: POLL_INTERVAL + 1 });
+  await c.env.KV.put(rateLimitKey, Date.now().toString(), { expirationTtl: 60 });
 
   const raw = await c.env.KV.get(`device:${device_code}`);
   if (!raw) {
