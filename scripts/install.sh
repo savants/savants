@@ -16,18 +16,18 @@ R2_URL="https://releases.savants.dev"
 # Fallback: GitHub releases
 GH_URL="https://github.com/savants-dev/savants/releases/download"
 
-# Colors
-if [ -t 1 ]; then
-    CYAN='\033[36m'; GREEN='\033[32m'; YELLOW='\033[33m'; RED='\033[31m'
-    BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
+# Colors - use actual escape bytes, not printf-interpreted sequences
+if [ -t 1 ] || [ -t 2 ]; then
+    CYAN=$(printf '\033[36m'); GREEN=$(printf '\033[32m'); YELLOW=$(printf '\033[33m'); RED=$(printf '\033[31m')
+    BOLD=$(printf '\033[1m'); DIM=$(printf '\033[2m'); RESET=$(printf '\033[0m')
 else
     CYAN=''; GREEN=''; YELLOW=''; RED=''; BOLD=''; DIM=''; RESET=''
 fi
 
-info()  { printf "${CYAN}>${RESET} %s\n" "$*"; }
-ok()    { printf "${GREEN}>${RESET} %s\n" "$*"; }
-warn()  { printf "${YELLOW}!${RESET} %s\n" "$*"; }
-error() { printf "${RED}x${RESET} %s\n" "$*" >&2; exit 1; }
+info()  { printf "%s>%s %s\n" "$CYAN" "$RESET" "$*"; }
+ok()    { printf "%s>%s %s\n" "$GREEN" "$RESET" "$*"; }
+warn()  { printf "%s!%s %s\n" "$YELLOW" "$RESET" "$*"; }
+error() { printf "%sx%s %s\n" "$RED" "$RESET" "$*" >&2; exit 1; }
 
 detect_platform() {
     OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -66,7 +66,7 @@ fetch_quiet() {
 }
 
 main() {
-    printf "\n${BOLD}  savants${RESET} ${DIM}installer${RESET}\n\n"
+    printf "\n%s  savants%s %sinstaller%s\n\n" "$BOLD" "$RESET" "$DIM" "$RESET"
     detect_platform
     info "Platform: ${BOLD}${TARGET}${RESET}"
 
@@ -120,14 +120,14 @@ main() {
     # Verify
     INSTALLED_VERSION="$("$BIN_DIR/savants" --version 2>/dev/null | awk '{print $2}')" || true
 
-    printf "\n${GREEN}${BOLD}  savants v${INSTALLED_VERSION:-?} installed${RESET}\n\n"
+    printf "\n%s%s  savants v%s installed%s\n\n" "$GREEN" "$BOLD" "${INSTALLED_VERSION:-?}" "$RESET"
     if [ -n "$CURRENT_VERSION" ]; then
-        printf "  Updated from v${CURRENT_VERSION}\n\n"
+        printf "  Updated from v%s\n\n" "$CURRENT_VERSION"
     fi
-    printf "  ${BOLD}savants up${RESET}            auto-detect + index your repo\n"
-    printf "  ${BOLD}savants serve${RESET}         start MCP server for your AI editor\n"
-    printf "  ${BOLD}savants reindex${RESET}       re-index after code changes\n"
-    printf "\n  ${DIM}To update later: curl -fsSL savants.sh | sh${RESET}\n\n"
+    printf "  %ssavants up%s            auto-detect + index your repo\n" "$BOLD" "$RESET"
+    printf "  %ssavants serve%s         start MCP server for your AI editor\n" "$BOLD" "$RESET"
+    printf "  %ssavants reindex%s       re-index after code changes\n" "$BOLD" "$RESET"
+    printf "\n  %sTo update later: curl -fsSL savants.sh | sh%s\n\n" "$DIM" "$RESET"
 }
 
 ensure_path() {
