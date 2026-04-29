@@ -66,9 +66,9 @@ integrations.post("/sentry", async (c) => {
     project_slugs?: string[];
   }>();
 
-  if (!body.auth_token || !body.org_slug || !body.client_secret) {
+  if (!body.auth_token || !body.org_slug) {
     return c.json(
-      { error: "invalid_request", message: "auth_token, org_slug, and client_secret are required", status: 400 },
+      { error: "invalid_request", message: "auth_token and org_slug are required", status: 400 },
       400
     );
   }

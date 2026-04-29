@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env, AuthContext, ToolDefinition } from "../lib/types";
 import { getMonthlyToolCallCount, logUsageEvent, getOrgById } from "../db/queries";
 import { authMiddleware } from "../auth/middleware";
+import { diagnoseError } from "./diagnosis";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -187,33 +188,55 @@ tools.post("/call", async (c) => {
     );
   }
 
-  // Proxy to astra
   const startTime = Date.now();
   let proxyResult: Record<string, unknown>;
 
-  try {
-    const proxyRes = await fetch(`${c.env.GRAPH_PROXY_URL}/api/v1/tools/call`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Org-Id": auth.orgId,
-        "X-User-Id": auth.userId,
-      },
-      body: JSON.stringify({ tool: body.tool, input: body.input }),
-    });
-
-    if (!proxyRes.ok) {
-      const errText = await proxyRes.text();
-      return c.json(
-        { error: "proxy_error", message: `Upstream error: ${proxyRes.status}`, detail: errText, status: 502 },
-        502
-      );
+  // ── Handle diagnose_error directly (uses all available sources) ──
+  if (body.tool === "diagnose_error" || body.tool === "diagnose") {
+    try {
+      const result = await diagnoseError(c.env, auth.orgId, {
+        error_message: (body.input.error_message as string) || "",
+        file_path: (body.input.file_path as string) || undefined,
+        sentry_event_id: (body.input.sentry_event_id as string) || undefined,
+        sentry_project: (body.input.sentry_project as string) || undefined,
+      });
+      proxyResult = result as unknown as Record<string, unknown>;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Diagnosis failed";
+      return c.json({ error: "diagnosis_error", message, status: 500 }, 500);
     }
+  }
+  // ── Proxy other tools to graph backend if available ──
+  else if (c.env.GRAPH_PROXY_URL) {
+    try {
+      const proxyRes = await fetch(`${c.env.GRAPH_PROXY_URL}/api/v1/tools/call`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Org-Id": auth.orgId,
+          "X-User-Id": auth.userId,
+        },
+        body: JSON.stringify({ tool: body.tool, input: body.input }),
+      });
 
-    proxyResult = await proxyRes.json<Record<string, unknown>>();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown proxy error";
-    return c.json({ error: "proxy_error", message, status: 502 }, 502);
+      if (!proxyRes.ok) {
+        const errText = await proxyRes.text();
+        return c.json(
+          { error: "proxy_error", message: `Upstream error: ${proxyRes.status}`, detail: errText, status: 502 },
+          502
+        );
+      }
+
+      proxyResult = await proxyRes.json<Record<string, unknown>>();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown proxy error";
+      return c.json({ error: "proxy_error", message, status: 502 }, 502);
+    }
+  } else {
+    return c.json(
+      { error: "not_available", message: `Tool '${body.tool}' requires the graph backend. Run 'savants reindex' to index your codebase first.`, status: 503 },
+      503
+    );
   }
 
   const durationMs = Date.now() - startTime;

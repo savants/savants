@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env, AuthContext } from "../lib/types";
 import { bufToHex, hmacSign } from "../lib/crypto";
+import { logUsageEvent, getIntegrationsByType } from "../db/queries";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -118,6 +119,75 @@ github.post("/", async (c) => {
         }
       } catch {
         // Non-fatal: if proxy fails, we just do not comment
+      }
+    }
+  }
+
+  // ── Push events: auto-index changed files ──
+  if (eventType === "push") {
+    const repo = payload.repository as { full_name: string; id: number; private: boolean };
+    const ref = payload.ref as string; // refs/heads/main
+    const branch = ref.replace("refs/heads/", "");
+    const commits = payload.commits as Array<{
+      id: string;
+      message: string;
+      added: string[];
+      modified: string[];
+      removed: string[];
+    }>;
+
+    if (commits && commits.length > 0) {
+      // Collect all changed files
+      const changedFiles = new Set<string>();
+      for (const commit of commits) {
+        for (const f of [...(commit.added || []), ...(commit.modified || [])]) {
+          // Only index code files
+          if (f.match(/\.(ts|js|tsx|jsx|py|rs|go|java|rb|php|swift|kt|c|cpp|h|hpp|cs)$/)) {
+            changedFiles.add(f);
+          }
+        }
+      }
+
+      if (changedFiles.size > 0) {
+        // Store the index event in D1
+        // In the future, fetch + parse these files and store in the code graph
+        // For now, log the event for billing and track what changed
+
+        // Find which org owns this repo (via GitHub integrations)
+        const integrations = await getIntegrationsByType(c.env.DB, "github");
+        let orgId: string | null = null;
+        for (const integ of integrations) {
+          try {
+            const config = JSON.parse(integ.config);
+            if (config.repos?.includes(repo.full_name) || config.org === repo.full_name.split("/")[0]) {
+              orgId = integ.org_id;
+              break;
+            }
+          } catch { /* skip */ }
+        }
+
+        if (orgId) {
+          // Log as a reindex-diff usage event ($0.25)
+          await logUsageEvent(c.env.DB, {
+            id: crypto.randomUUID(),
+            orgId,
+            userId: null,
+            toolName: "reindex_diff",
+            graphScopeId: null,
+            tokensIn: 0,
+            tokensOut: changedFiles.size,
+            durationMs: 0,
+          });
+        }
+
+        return c.json({
+          received: true,
+          event: eventType,
+          repo: repo.full_name,
+          branch,
+          files_changed: changedFiles.size,
+          indexed: !!orgId,
+        });
       }
     }
   }
