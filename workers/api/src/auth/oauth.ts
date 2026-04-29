@@ -8,6 +8,7 @@ type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 const oauth = new Hono<HonoEnv>();
 
 const DASHBOARD_URL = "https://savants.cloud/dashboard";
+const API_ORIGIN = "https://api.savants.cloud";
 
 // GET /auth/google - Redirect to Google OAuth
 oauth.get("/google", async (c) => {
@@ -18,7 +19,7 @@ oauth.get("/google", async (c) => {
 
   const params = new URLSearchParams({
     client_id: c.env.GOOGLE_CLIENT_ID,
-    redirect_uri: `${new URL(c.req.url).origin}/auth/callback/google`,
+    redirect_uri: `${API_ORIGIN}/auth/callback/google`,
     response_type: "code",
     scope: "openid email profile",
     state,
@@ -38,7 +39,7 @@ oauth.get("/github", async (c) => {
 
   const params = new URLSearchParams({
     client_id: c.env.GITHUB_CLIENT_ID,
-    redirect_uri: `${new URL(c.req.url).origin}/auth/callback/github`,
+    redirect_uri: `${API_ORIGIN}/auth/callback/github`,
     scope: "user:email read:user",
     state,
   });
@@ -76,7 +77,7 @@ oauth.get("/callback/google", async (c) => {
       code,
       client_id: c.env.GOOGLE_CLIENT_ID,
       client_secret: c.env.GOOGLE_CLIENT_SECRET,
-      redirect_uri: `${new URL(c.req.url).origin}/auth/callback/google`,
+      redirect_uri: `${API_ORIGIN}/auth/callback/google`,
       grant_type: "authorization_code",
     }),
   });
@@ -110,6 +111,8 @@ oauth.get("/callback/google", async (c) => {
   // If there's a device flow user_code, approve it
   if (userCode) {
     await approveDeviceSession(c.env.KV, userCode, user.id, orgId);
+    const jwt = await signJwt({ sub: user.id, org: orgId, email: user.email }, c.env.JWT_SECRET);
+    return c.redirect(`https://savants.cloud/activate?status=success&token=${jwt}`);
   }
 
   // Issue JWT and redirect
@@ -130,13 +133,17 @@ oauth.get("/callback/github", async (c) => {
 
   let userCode = "";
   let redirectUrl = DASHBOARD_URL;
+  console.log("GitHub callback state:", stateRaw);
   if (stateRaw) {
     try {
-      const parsed = JSON.parse(atob(stateRaw));
+      const decoded = atob(stateRaw);
+      console.log("Decoded state:", decoded);
+      const parsed = JSON.parse(decoded);
       userCode = parsed.user_code ?? "";
       redirectUrl = parsed.redirect ?? DASHBOARD_URL;
-    } catch {
-      // ignore malformed state
+      console.log("User code from state:", userCode);
+    } catch (e) {
+      console.error("State parse error:", e);
     }
   }
 
@@ -151,7 +158,7 @@ oauth.get("/callback/github", async (c) => {
       client_id: c.env.GITHUB_CLIENT_ID,
       client_secret: c.env.GITHUB_CLIENT_SECRET,
       code,
-      redirect_uri: `${new URL(c.req.url).origin}/auth/callback/github`,
+      redirect_uri: `${API_ORIGIN}/auth/callback/github`,
     }),
   });
 
@@ -206,6 +213,9 @@ oauth.get("/callback/github", async (c) => {
 
   if (userCode) {
     await approveDeviceSession(c.env.KV, userCode, user.id, orgId);
+    // Redirect to activate success page so user sees confirmation
+    const jwt = await signJwt({ sub: user.id, org: orgId, email: user.email }, c.env.JWT_SECRET);
+    return c.redirect(`https://savants.cloud/activate?status=success&token=${jwt}`);
   }
 
   const jwt = await signJwt({ sub: user.id, org: orgId, email: user.email }, c.env.JWT_SECRET);

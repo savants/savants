@@ -1,0 +1,71 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Terms of Service - Savants">
+<style>
+  .legal { max-width: 720px; margin: 0 auto; padding: 120px 24px 80px; }
+  .legal h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 8px; }
+  .legal .updated { color: var(--muted); font-size: 0.85rem; margin-bottom: 48px; }
+  .legal h2 { font-size: 1.2rem; font-weight: 700; margin-top: 40px; margin-bottom: 12px; }
+  .legal p, .legal li { color: var(--muted); font-size: 0.95rem; line-height: 1.7; margin-bottom: 16px; }
+  .legal ul { padding-left: 24px; }
+  .legal a { color: var(--accent); text-decoration: none; }
+</style>
+
+<nav style="position:fixed;top:0;left:0;right:0;z-index:100;padding:18px 32px;backdrop-filter:blur(16px);background:rgba(10,10,10,0.92);border-bottom:1px solid var(--border);">
+  <a href="/" style="font-weight:700;font-size:1.1rem;color:var(--fg);text-decoration:none;">savants</a>
+</nav>
+
+<div class="legal">
+  <h1>Terms of Service</h1>
+  <p class="updated">Last updated: April 29, 2026</p>
+
+  <h2>1. The service</h2>
+  <p>Savants provides code intelligence tools for software development. The service includes a free local CLI (open source, FSL-1.1-Apache-2.0) and optional paid cloud tools available at api.savants.cloud.</p>
+
+  <h2>2. Local tools</h2>
+  <p>The local CLI (semantic_search, file_skeleton, callers, where_used, reindex) is free to use without limits. It runs entirely on your machine. No account required.</p>
+
+  <h2>3. Cloud tools</h2>
+  <p>Cloud tools (diagnose_error, pr_risk, diff_impact, radar, unanswered_questions) require an account. You get 10 free cloud calls per month. After that, you are billed per call at the rates listed on <a href="https://savants.dev">savants.dev</a>.</p>
+
+  <h2>4. Billing</h2>
+  <ul>
+    <li>Cloud tools are billed per API call at published rates</li>
+    <li>Payments are processed by Stripe</li>
+    <li>You can cancel at any time - there are no commitments or minimums</li>
+    <li>Refunds are handled on a case-by-case basis</li>
+  </ul>
+
+  <h2>5. Your data</h2>
+  <ul>
+    <li>You own your code. We never claim rights to your source code, diffs, or error logs.</li>
+    <li>Cloud tool queries are processed in real-time and not retained after the response.</li>
+    <li>See our <a href="/privacy">Privacy Policy</a> for details on data handling.</li>
+  </ul>
+
+  <h2>6. Acceptable use</h2>
+  <p>Don't use Savants to:</p>
+  <ul>
+    <li>Resell the cloud tools as a competing service</li>
+    <li>Abuse the free tier with automated bulk queries</li>
+    <li>Attempt to access other users' data</li>
+    <li>Reverse engineer the cloud API to replicate its functionality</li>
+  </ul>
+
+  <h2>7. Availability</h2>
+  <p>We aim for high availability but don't guarantee uptime. The local CLI works offline and is unaffected by cloud outages. Cloud tools may experience occasional downtime for maintenance.</p>
+
+  <h2>8. Limitation of liability</h2>
+  <p>Savants is provided "as is" without warranty. We are not liable for any decisions made based on tool outputs, including code diagnoses, risk scores, or refactoring recommendations. Always review tool output before acting on it.</p>
+
+  <h2>9. Changes</h2>
+  <p>We may update these terms. Continued use after changes constitutes acceptance. Material changes will be communicated via email to registered users.</p>
+
+  <h2>10. License</h2>
+  <p>The Savants CLI is licensed under FSL-1.1-Apache-2.0. The full license text is available in the <a href="https://github.com/savants-dev/savants">GitHub repository</a>. The license converts to Apache 2.0 after two years.</p>
+
+  <h2>11. Contact</h2>
+  <p>Questions? Email <a href="mailto:hello@miguel.engineer">hello@miguel.engineer</a>.</p>
+</div>
+</Base>
