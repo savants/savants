@@ -16,6 +16,7 @@ import slackWebhook from "./webhooks/slack";
 import sentryWebhook from "./webhooks/sentry";
 import integrationsRoutes from "./api/integrations";
 import { sentrySetupPage } from "./pages/sentry-setup";
+import { dashboardPage } from "./pages/dashboard";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -107,9 +108,12 @@ app.get("/integrations/sentry", (c) => {
   return c.html(sentrySetupPage(status, message));
 });
 
-// Dashboard redirect (until we build the dashboard)
-app.get("/dashboard", (c) => c.redirect("https://savants.dev", 302));
-app.get("/dashboard/*", (c) => c.redirect("https://savants.dev", 302));
+// Dashboard pages (server-rendered)
+app.get("/dashboard", (c) => c.html(dashboardPage()));
+app.get("/dashboard/:page", (c) => {
+  const page = c.req.param("page");
+  return c.html(dashboardPage(page));
+});
 app.get("/docs", (c) => c.redirect("https://savants.dev", 302));
 app.get("/docs/*", (c) => c.redirect("https://savants.dev", 302));
 
