@@ -125,6 +125,21 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_tool ON usage_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_usage_events_org_created ON usage_events(org_id, created_at);
 
+CREATE TABLE IF NOT EXISTS integrations (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,  -- 'sentry', 'github', 'slack', 'jira'
+  config TEXT NOT NULL DEFAULT '{}',  -- JSON: org_slug, project_slugs, alert_channel, etc.
+  credentials TEXT NOT NULL DEFAULT '{}',  -- JSON: auth_token, client_secret (encrypted at rest by D1)
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(org_id, type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_integrations_org ON integrations(org_id);
+CREATE INDEX IF NOT EXISTS idx_integrations_type ON integrations(type);
+
 -- Monthly usage aggregation view
 CREATE VIEW IF NOT EXISTS usage_monthly AS
 SELECT

@@ -134,6 +134,29 @@ export interface ToolDefinition {
   };
 }
 
+export interface Integration {
+  id: string;
+  org_id: string;
+  type: string;
+  config: string;
+  credentials: string;
+  enabled: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SentryConfig {
+  org_slug: string;
+  project_slugs?: string[];
+  auto_diagnose: boolean;
+  slack_channel?: string;
+}
+
+export interface SentryCredentials {
+  auth_token: string;
+  client_secret: string;
+}
+
 export interface ApiError {
   error: string;
   message: string;

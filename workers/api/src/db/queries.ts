@@ -1,4 +1,4 @@
-import type { Env, User, Org, Membership, ApiKey, AgentKey, UsageEvent } from "../lib/types";
+import type { Env, User, Org, Membership, ApiKey, AgentKey, UsageEvent, Integration } from "../lib/types";
 
 // ─── Users ───────────────────────────────────────────────────────────────────
 
@@ -240,6 +240,77 @@ export async function getMonthlyToolCallCount(
     .bind(orgId, startOfMonth)
     .first<{ cnt: number }>();
   return row?.cnt ?? 0;
+}
+
+// ─── Integrations ────────────────────────────────────────────────────────────
+
+export async function getIntegration(
+  db: D1Database,
+  orgId: string,
+  type: string
+): Promise<Integration | null> {
+  return db
+    .prepare("SELECT * FROM integrations WHERE org_id = ?1 AND type = ?2")
+    .bind(orgId, type)
+    .first<Integration>();
+}
+
+export async function getIntegrationsByType(
+  db: D1Database,
+  type: string
+): Promise<Integration[]> {
+  const result = await db
+    .prepare("SELECT * FROM integrations WHERE type = ?1 AND enabled = 1")
+    .bind(type)
+    .all();
+  return result.results as unknown as Integration[];
+}
+
+export async function listIntegrations(
+  db: D1Database,
+  orgId: string
+): Promise<Integration[]> {
+  const result = await db
+    .prepare("SELECT * FROM integrations WHERE org_id = ?1 ORDER BY created_at DESC")
+    .bind(orgId)
+    .all();
+  return result.results as unknown as Integration[];
+}
+
+export async function upsertIntegration(
+  db: D1Database,
+  integration: { id: string; orgId: string; type: string; config: string; credentials: string }
+): Promise<Integration> {
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      `INSERT INTO integrations (id, org_id, type, config, credentials, enabled, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)
+       ON CONFLICT(org_id, type) DO UPDATE SET
+         config = excluded.config,
+         credentials = excluded.credentials,
+         enabled = 1,
+         updated_at = ?6`
+    )
+    .bind(integration.id, integration.orgId, integration.type, integration.config, integration.credentials, now)
+    .run();
+
+  const row = await db
+    .prepare("SELECT * FROM integrations WHERE org_id = ?1 AND type = ?2")
+    .bind(integration.orgId, integration.type)
+    .first<Integration>();
+  return row!;
+}
+
+export async function deleteIntegration(
+  db: D1Database,
+  orgId: string,
+  type: string
+): Promise<void> {
+  await db
+    .prepare("DELETE FROM integrations WHERE org_id = ?1 AND type = ?2")
+    .bind(orgId, type)
+    .run();
 }
 
 // ─── Billing Events ─────────────────────────────────────────────────────────

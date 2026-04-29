@@ -13,6 +13,9 @@ import queryRoutes from "./api/query";
 import stripeWebhook from "./webhooks/stripe";
 import githubWebhook from "./webhooks/github";
 import slackWebhook from "./webhooks/slack";
+import sentryWebhook from "./webhooks/sentry";
+import integrationsRoutes from "./api/integrations";
+import { sentrySetupPage } from "./pages/sentry-setup";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -97,6 +100,13 @@ ${code ? `<div class="code">${code}</div>` : ""}
 </div></body></html>`);
 });
 
+// Sentry integration setup page
+app.get("/integrations/sentry", (c) => {
+  const status = new URL(c.req.url).searchParams.get("status") || undefined;
+  const message = new URL(c.req.url).searchParams.get("message") || undefined;
+  return c.html(sentrySetupPage(status, message));
+});
+
 // Dashboard redirect (until we build the dashboard)
 app.get("/dashboard", (c) => c.redirect("https://savants.dev", 302));
 app.get("/dashboard/*", (c) => c.redirect("https://savants.dev", 302));
@@ -117,6 +127,7 @@ app.route("/api/v1/tools", toolsRoutes);
 app.route("/webhooks/stripe", stripeWebhook);
 app.route("/webhooks/github", githubWebhook);
 app.route("/webhooks/slack", slackWebhook);
+app.route("/webhooks/sentry", sentryWebhook);
 
 // ─── Authenticated API routes ────────────────────────────────────────────────
 
@@ -127,6 +138,7 @@ api.route("/usage", usageRoutes);
 api.route("/billing", billingRoutes);
 api.route("/graphs", graphsRoutes);
 api.route("/query", queryRoutes);
+api.route("/integrations", integrationsRoutes);
 
 app.route("/api/v1", api);
 
