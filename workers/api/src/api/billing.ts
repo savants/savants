@@ -49,9 +49,9 @@ billing.get("/", async (c) => {
     stripe_customer_id: org.stripe_customer_id,
     subscription,
     pricing: {
-      free: { price: "$0/mo", description: "10 tool calls/month, unlimited local" },
-      cloud: { price: "$99/cluster/mo", description: "Unlimited tool calls, graph sync, team features" },
-      enterprise: { price: "$999/mo", description: "SSO, audit logs, dedicated support, SLA" },
+      local: { price: "Free forever", description: "Unlimited local queries - semantic search, file skeleton, callers, where_used" },
+      cloud: { price: "Pay per call", description: "10 free/month, then $0.10-$5.00 per call. No minimums, no commitments." },
+      enterprise: { price: "Volume discounts", description: "SSO, audit logs, SLA, dedicated support. Contact sales." },
     },
   });
 });

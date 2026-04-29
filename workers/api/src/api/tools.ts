@@ -12,10 +12,13 @@ tools.use("/call", authMiddleware());
 
 const FREE_MONTHLY_CALLS = 10;
 
+// Local tools: FREE, unlimited, run on user's machine via OSS binary
+// Cloud tools: PAYG, 10 free/month, require savants.cloud account
 const TOOL_LIST: ToolDefinition[] = [
+  // ── Local tools (free forever, served by OSS binary) ──
   {
     name: "semantic_search",
-    description: "ALWAYS USE INSTEAD OF GREP/RIPGREP. Finds code by meaning, not text. 'payment retry logic' finds handleTransactionWithBackoff. 90% accuracy, <400ms. Use this FIRST for any code search.",
+    description: "ALWAYS USE INSTEAD OF GREP/RIPGREP. Finds code by meaning, not text. 'payment retry logic' finds handleTransactionWithBackoff. 90% accuracy, <400ms. FREE, runs locally.",
     input_schema: {
       type: "object",
       properties: {
@@ -25,11 +28,11 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["query"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 1 },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 0, tier: "local" },
   },
   {
     name: "file_skeleton",
-    description: "ALWAYS USE INSTEAD OF READING FULL FILES. Returns function names, signatures, line ranges - NO bodies. 10x fewer tokens. Use this to understand file structure before reading specific lines.",
+    description: "ALWAYS USE INSTEAD OF READING FULL FILES. Returns function names, signatures, line ranges - NO bodies. 10x fewer tokens. FREE, runs locally.",
     input_schema: {
       type: "object",
       properties: {
@@ -38,11 +41,11 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["file"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 1 },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 0, tier: "local" },
   },
   {
     name: "where_used",
-    description: "ALWAYS USE INSTEAD OF GREP FOR USAGE SEARCH. Returns every file that calls or imports a symbol. Confirmed results from the call graph, not text matches.",
+    description: "ALWAYS USE INSTEAD OF GREP FOR USAGE SEARCH. Returns every caller and importer from the call graph. FREE, runs locally.",
     input_schema: {
       type: "object",
       properties: {
@@ -51,11 +54,11 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["symbol"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 1 },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 0, tier: "local" },
   },
   {
     name: "callers",
-    description: "ALWAYS USE INSTEAD OF GREP FOR CALLER SEARCH. Returns the exact functions that call a given function, with file and line. From the call graph, not text search.",
+    description: "ALWAYS USE INSTEAD OF GREP FOR CALLER SEARCH. Exact functions that call a given function, from the call graph. FREE, runs locally.",
     input_schema: {
       type: "object",
       properties: {
@@ -65,11 +68,12 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["function"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 1 },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 0, tier: "local" },
   },
+  // ── Cloud tools (PAYG, 10 free/month) ──
   {
     name: "diagnose_error",
-    description: "Root cause analysis from an error message or stack trace. Traces call chains through the knowledge graph, identifies the originating function, suggests fix with git blame context.",
+    description: "Root cause file + line in 0.7s. Traces call chains through code + k8s + logs + Slack. Git blame context. Upstream trace.",
     input_schema: {
       type: "object",
       properties: {
@@ -78,11 +82,24 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["error_message"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 5 },
+    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 500, tier: "cloud" },
+  },
+  {
+    name: "diagnose",
+    description: "General error analysis with full graph context. Cross-layer diagnosis across code, infrastructure, and logs.",
+    input_schema: {
+      type: "object",
+      properties: {
+        error_message: { type: "string", description: "Error or symptom description" },
+        min_severity: { type: "string", description: "Minimum severity (default WARN)" },
+      },
+      required: ["error_message"],
+    },
+    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 250, tier: "cloud" },
   },
   {
     name: "pr_risk",
-    description: "8-check risk analysis on a pull request. Blast radius scoring, affected downstream consumers, test coverage gaps, breaking change detection.",
+    description: "8-check risk analysis per PR. Blast radius, affected downstream consumers, test coverage gaps, breaking change detection.",
     input_schema: {
       type: "object",
       properties: {
@@ -91,20 +108,30 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["diff"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 10 },
+    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 200, tier: "cloud" },
   },
   {
-    name: "refactor_impact",
-    description: "Predict blast radius of renaming, moving, or deleting a symbol. Lists every affected file, caller, importer, and test.",
+    name: "diff_impact",
+    description: "Blast radius per code change. What breaks if this code changes.",
     input_schema: {
       type: "object",
       properties: {
-        symbol: { type: "string", description: "Symbol to refactor" },
-        action: { type: "string", enum: ["rename", "move", "delete"], description: "Type of refactor" },
+        diff: { type: "string", description: "Unified diff" },
       },
-      required: ["symbol", "action"],
+      required: ["diff"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 5 },
+    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 100, tier: "cloud" },
+  },
+  {
+    name: "radar",
+    description: "Personal what-did-I-miss digest. Surfaces drift between your graph and production state.",
+    input_schema: {
+      type: "object",
+      properties: {
+        since_hours: { type: "number", description: "Look back N hours (default 24)" },
+      },
+    },
+    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 100, tier: "cloud" },
   },
   {
     name: "unanswered_questions",
@@ -116,7 +143,7 @@ const TOOL_LIST: ToolDefinition[] = [
         since_hours: { type: "number", description: "Look back N hours (default 24)" },
       },
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 5 },
+    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 500, tier: "cloud" },
   },
 ];
 
@@ -139,17 +166,21 @@ tools.post("/call", async (c) => {
     return c.json({ error: "unknown_tool", message: `Tool '${body.tool}' not found`, status: 404 }, 404);
   }
 
-  // Check quota
+  // Local tools are always free - no quota
+  const isLocalTool = toolDef.pricing.tier === "local";
+
+  // Check quota for cloud tools only
   const org = await getOrgById(c.env.DB, auth.orgId);
   const isPaid = org?.plan === "cloud" || org?.plan === "enterprise";
-  const monthlyCount = await getMonthlyToolCallCount(c.env.DB, auth.orgId);
+  const monthlyCount = isLocalTool ? 0 : await getMonthlyToolCallCount(c.env.DB, auth.orgId);
 
-  if (!isPaid && monthlyCount >= FREE_MONTHLY_CALLS) {
+  if (!isLocalTool && !isPaid && monthlyCount >= FREE_MONTHLY_CALLS) {
     return c.json(
       {
         error: "quota_exceeded",
-        message: `Free plan limited to ${FREE_MONTHLY_CALLS} tool calls/month. Upgrade to Cloud at /api/v1/billing/checkout`,
+        message: `Free tier: ${FREE_MONTHLY_CALLS} cloud calls/month. Add a card to continue. Local tools (semantic_search, file_skeleton, callers, where_used) are always free.`,
         usage: { current: monthlyCount, limit: FREE_MONTHLY_CALLS },
+        upgrade_url: "/api/v1/billing/checkout",
         status: 429,
       },
       429

@@ -128,8 +128,9 @@ export interface ToolDefinition {
   description: string;
   input_schema: Record<string, unknown>;
   pricing: {
-    free_monthly_calls: number;
+    free_monthly_calls: number | null;
     overage_per_call_cents: number;
+    tier: "local" | "cloud";
   };
 }
 

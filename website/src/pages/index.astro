@@ -387,6 +387,15 @@ import Base from '../layouts/Base.astro';
     color: var(--accent); margin-bottom: 6px; font-weight: 500;
   }
   .cloud-tool p { font-size: 0.85rem; color: var(--muted); }
+  .tool-price {
+    font-family: 'Inter', sans-serif; font-size: 0.75rem; font-weight: 600;
+    color: var(--accent); background: rgba(34,211,238,0.1);
+    padding: 2px 8px; border-radius: 6px; margin-left: 8px;
+  }
+  .cloud-free-note {
+    font-size: 0.9rem; color: var(--muted); margin-top: 32px; margin-bottom: 24px;
+  }
+  .cloud-free-note a { color: var(--accent); text-decoration: none; font-weight: 600; }
 
   .cloud .connect-cmd {
     font-family: 'JetBrains Mono', monospace; font-size: 0.9rem;
@@ -717,27 +726,29 @@ import Base from '../layouts/Base.astro';
 <div class="section-divider"></div>
 <section class="cloud">
   <div class="cloud-inner">
-    <h2 class="gs-up">Free tools handle search and structure.</h2>
-    <p class="cloud-intro gs-up">For production intelligence, connect to the cloud tier:</p>
+    <h2 class="gs-up">Local tools are free. Forever.</h2>
+    <p class="cloud-intro gs-up">Cloud tools add production intelligence. Pay per call, no commitments.</p>
 
     <div class="cloud-tools">
       <div class="cloud-tool gs-up">
-        <h4>diagnose-error</h4>
-        <p>Root cause analysis from stack traces, logs, and your code graph.</p>
+        <h4>diagnose-error <span class="tool-price">$5.00</span></h4>
+        <p>Root cause file + line in 0.7s. Upstream trace, git blame, Slack context.</p>
       </div>
       <div class="cloud-tool gs-up">
-        <h4>pr-risk</h4>
-        <p>Blast radius scoring before you merge. Knows what your PR actually touches.</p>
+        <h4>pr-risk <span class="tool-price">$2.00</span></h4>
+        <p>8-check risk analysis per PR. Blast radius, affected consumers, test gaps.</p>
       </div>
       <div class="cloud-tool gs-up">
-        <h4>blast_radius</h4>
+        <h4>diff-impact <span class="tool-price">$1.00</span></h4>
         <p>Full downstream impact analysis across services and modules.</p>
       </div>
       <div class="cloud-tool gs-up">
-        <h4>radar</h4>
-        <p>Continuous monitoring. Knows when your graph drifts from production.</p>
+        <h4>radar <span class="tool-price">$1.00</span></h4>
+        <p>What-did-I-miss digest. Knows when your graph drifts from production.</p>
       </div>
     </div>
+
+    <p class="cloud-free-note gs-up">10 free cloud calls/month. No card required. <a href="https://savants.cloud/activate" class="cta-link">Start free &rarr;</a></p>
 
     <div class="connect-cmd gs-up">
       <span class="prompt">$</span> savants connect
