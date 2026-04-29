@@ -198,12 +198,28 @@ select option{background:var(--surface);color:var(--fg)}
   .sidebar.open{transform:translateX(0)}
   .content{margin-left:0}
   .topbar{padding:16px 20px}
-  .page-content{padding:20px}
+  .topbar h1{font-size:1.1rem}
+  .page-content{padding:16px}
   .metrics-row{grid-template-columns:1fr 1fr}
   .grid-2{grid-template-columns:1fr}
   .grid-3{grid-template-columns:1fr}
   .integration-grid{grid-template-columns:1fr}
   .mobile-toggle{display:flex!important}
+  /* Tables: stack on mobile */
+  table,thead,tbody,th,td,tr{display:block}
+  thead{display:none}
+  tr{margin-bottom:12px;border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--surface)}
+  td{padding:6px 0;border:none;display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:0.85rem}
+  td:before{content:attr(data-label);font-weight:600;color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;flex-shrink:0}
+  tr:last-child td{border-bottom:none}
+  /* Pricing cards stack */
+  .pricing-grid{grid-template-columns:1fr!important}
+  .plan-card{padding:20px!important}
+  /* Buttons full width */
+  .btn{width:100%;justify-content:center}
+  .topbar-actions{flex-wrap:wrap;gap:8px}
+  /* Modal full screen on mobile */
+  .modal{max-width:100%;width:100%;border-radius:12px;padding:24px;margin:16px}
 }
 .mobile-toggle{display:none;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--fg);cursor:pointer;font-size:1.2rem}
 `;
@@ -885,10 +901,10 @@ export function teamPage(): string {
           : m.role === 'admin' ? '<span class="badge badge-violet">Admin</span>'
           : '<span class="badge badge-gray">Member</span>';
         return '<tr>' +
-          '<td><div style="display:flex;align-items:center;gap:10px"><div class="user-avatar">' + initials + '</div><span style="font-weight:500">' + (m.name || 'Unnamed') + '</span></div></td>' +
-          '<td class="mono" style="color:var(--muted)">' + (m.email || '-') + '</td>' +
-          '<td>' + roleBadge + '</td>' +
-          '<td style="color:var(--muted)">' + new Date(m.created_at * 1000).toLocaleDateString() + '</td>' +
+          '<td data-label="Member"><div style="display:flex;align-items:center;gap:10px"><div class="user-avatar">' + initials + '</div><span style="font-weight:500">' + (m.name || 'Unnamed') + '</span></div></td>' +
+          '<td data-label="Email" class="mono" style="color:var(--muted)">' + (m.email || '-') + '</td>' +
+          '<td data-label="Role">' + roleBadge + '</td>' +
+          '<td data-label="Joined" style="color:var(--muted)">' + new Date(m.created_at * 1000).toLocaleDateString() + '</td>' +
           '</tr>';
       }).join('');
     });
@@ -1184,22 +1200,22 @@ export function billingPage(): string {
           <div class="card-title">Plans</div>
         </div>
         <div class="grid-3" id="plan-cards">
-          <div class="plan-card" id="plan-free">
-            <div class="plan-name">Free</div>
-            <div class="plan-price">$0</div>
-            <div class="plan-desc">Unlimited local queries. 10 free cloud calls/month. Perfect for trying Savants.</div>
+          <div class="plan-card" id="plan-local">
+            <div class="plan-name">Local</div>
+            <div class="plan-price">Free<span style="font-size:0.7rem;color:var(--muted)"> forever</span></div>
+            <div class="plan-desc">Unlimited local queries. semantic_search, file_skeleton, callers, where_used. No account needed.</div>
           </div>
           <div class="plan-card" id="plan-cloud">
             <div class="plan-name">Cloud</div>
-            <div class="plan-price">$99<span style="font-size:0.7rem;color:var(--muted)">/cluster/mo</span></div>
-            <div class="plan-desc">Unlimited cloud calls. Priority support. Team collaboration. Full API access.</div>
-            <button class="btn btn-primary btn-sm" style="margin-top:16px;width:100%;justify-content:center" id="upgrade-btn">Upgrade</button>
+            <div class="plan-price">Pay per call</div>
+            <div class="plan-desc">10 free/month, then per call. diagnose_error $5, pr_risk $2, diff_impact $1, radar $1. No minimums.</div>
+            <button class="btn btn-primary btn-sm" style="margin-top:16px;width:100%;justify-content:center" id="upgrade-btn">Add Payment Method</button>
           </div>
           <div class="plan-card" id="plan-enterprise">
             <div class="plan-name">Enterprise</div>
-            <div class="plan-price">$999<span style="font-size:0.7rem;color:var(--muted)">/mo</span></div>
-            <div class="plan-desc">SSO, audit logs, SLA, dedicated support, custom integrations. Contact sales.</div>
-            <a href="mailto:sales@savants.dev" class="btn btn-secondary btn-sm" style="margin-top:16px;width:100%;justify-content:center;text-decoration:none">Contact Sales</a>
+            <div class="plan-price">Volume discounts</div>
+            <div class="plan-desc">SSO, audit logs, SLA, dedicated support. Contact sales for volume pricing.</div>
+            <a href="mailto:hello@miguel.engineer" class="btn btn-secondary btn-sm" style="margin-top:16px;width:100%;justify-content:center;text-decoration:none">Contact Sales</a>
           </div>
         </div>
       </div>
