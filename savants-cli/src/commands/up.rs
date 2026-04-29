@@ -7,20 +7,18 @@ pub async fn run(repo: Option<String>, _tail_lines: u32) {
     println!("{}", "Starting Savants...".bold());
     println!();
 
-    // 1. Ensure embedded graph engine is running
+    // 1. Ensure embedded context engine is running
     let embedded = EmbeddedEngine::new();
     match embedded.ensure_running() {
-        Ok(true) => println!("  {} Context: {}", "●".green(), "started".green()),
-        Ok(false) => println!("  {} Context: {}", "●".green(), "connected".green()),
+        Ok(true) => println!("  {} Context engine: {}", "●".green(), "ready".green()),
+        Ok(false) => println!("  {} Context engine: {}", "●".green(), "ready".green()),
         Err(_e) => {
             // No local Redis available - check if cloud is configured
             if std::env::var("SAVANTS_CLOUD_URL").is_ok() {
                 println!("  {} Context: {} (cloud mode)", "●".green(), "api.savants.cloud".cyan());
             } else {
-                println!("  {} Context: {}", "●".yellow(), "no local engine".yellow());
-                println!("    Run {} to use the cloud context engine.", "savants connect".cyan());
-                println!("    Or install Redis locally for offline use.");
-                // Don't exit - let them connect to cloud
+                println!("  {} Context: {}", "●".yellow(), "local only".yellow());
+                println!("    Run {} for cloud features.", "savants connect".cyan());
             }
         }
     }
@@ -124,7 +122,7 @@ pub async fn run(repo: Option<String>, _tail_lines: u32) {
                         Err(e) => println!("  {}: K8s client: {}", "Error".red(), e),
                     }
                 }
-                Err(e) => println!("  {}: graph: {}", "Error".red(), e),
+                Err(e) => println!("  {}: context engine: {}", "Error".red(), e),
             }
         }
         #[cfg(not(feature = "k8s"))]

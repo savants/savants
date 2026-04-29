@@ -435,7 +435,7 @@ async fn main() {
                 }
                 None => {
                     let state = config::State::load();
-                    println!("Context: {}:{}/{}", state.graph_host(), state.graph_port(), state.graph_name());
+                    println!("Context engine: {}:{}", state.graph_host(), state.graph_port());
                     if state.is_cloud_authenticated() {
                         println!("Cloud:  {} (org: {})", "connected".green(), state.cloud_org.as_deref().unwrap_or("?"));
                     } else {

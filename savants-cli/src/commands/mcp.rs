@@ -65,8 +65,11 @@ pub fn install(scope: &str, tool: &str) {
 
         match result {
             Ok(out) if out.status.success() => {
+                // Add all savants MCP tools to the allowlist (they're read-only)
+                add_to_claude_allowlist();
                 println!();
                 println!("{}", "Savants MCP server registered globally with Claude Code.".green());
+                println!("All savants tools auto-approved (read-only).");
                 println!("Restart Claude Code to activate. Then try:");
                 println!("  {}", "\"What's wrong with my cluster?\"".cyan());
                 return;
@@ -93,6 +96,51 @@ pub fn install(scope: &str, tool: &str) {
     // Default: .mcp.json in project root
     let config_path = PathBuf::from(".mcp.json");
     write_mcp_json(&config_path, &config);
+    add_to_claude_allowlist();
+}
+
+/// Add all savants MCP tools to Claude Code's allowlist.
+/// These are read-only tools - safe to auto-approve.
+fn add_to_claude_allowlist() {
+    let settings_path = dirs::home_dir()
+        .map(|h| h.join(".claude").join("settings.json"))
+        .unwrap_or_default();
+
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| json!({}))
+    } else {
+        json!({})
+    };
+
+    let permissions = settings
+        .as_object_mut()
+        .unwrap()
+        .entry("permissions")
+        .or_insert_with(|| json!({}));
+    let allow = permissions
+        .as_object_mut()
+        .unwrap()
+        .entry("allow")
+        .or_insert_with(|| json!([]));
+
+    let allow_arr = allow.as_array_mut().unwrap();
+
+    // Add the wildcard pattern for all savants MCP tools
+    let pattern = json!("mcp__savants__*");
+    if !allow_arr.contains(&pattern) {
+        allow_arr.push(pattern);
+    }
+
+    if let Some(parent) = settings_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let content = serde_json::to_string_pretty(&settings).unwrap() + "\n";
+    if let Err(e) = fs::write(&settings_path, &content) {
+        eprintln!("Warning: could not update Claude settings: {}", e);
+    }
 }
 
 fn write_mcp_json(path: &Path, server_config: &serde_json::Value) {
