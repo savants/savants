@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env, AuthContext } from "../lib/types";
 import { bufToHex, hmacSign } from "../lib/crypto";
 import { updateOrgPlan, logBillingEvent, getOrgByStripeSubscription } from "../db/queries";
+import { addCredits, CREDIT_PACKAGES } from "../api/credits";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -69,14 +70,35 @@ stripe.post("/", async (c) => {
     case "checkout.session.completed": {
       const session = event.data.object as {
         customer: string;
-        subscription: string;
-        metadata: { org_id: string };
+        subscription?: string;
+        mode: string;
+        metadata: { org_id: string; package?: string; credits?: string };
       };
 
       const orgId = session.metadata?.org_id;
       if (!orgId) break;
 
-      await updateOrgPlan(c.env.DB, orgId, "cloud", session.customer, session.subscription);
+      // Credit package purchase (one-time payment)
+      if (session.mode === "payment" && session.metadata?.package) {
+        const pkgName = session.metadata.package as keyof typeof CREDIT_PACKAGES;
+        const pkg = CREDIT_PACKAGES[pkgName];
+        const totalCredits = parseInt(session.metadata.credits || "0") || (pkg ? pkg.credits + pkg.bonus : 0);
+
+        if (totalCredits > 0) {
+          await addCredits(
+            c.env.DB,
+            orgId,
+            totalCredits,
+            `Purchased ${pkg?.name || pkgName} package (${totalCredits} credits)`,
+            event.id
+          );
+        }
+      }
+
+      // Subscription (monthly plan)
+      if (session.subscription) {
+        await updateOrgPlan(c.env.DB, orgId, "cloud", session.customer, session.subscription);
+      }
 
       await logBillingEvent(c.env.DB, {
         id: crypto.randomUUID(),
@@ -85,7 +107,12 @@ stripe.post("/", async (c) => {
         stripeEventId: event.id,
         amountCents: null,
         currency: "usd",
-        metadata: JSON.stringify({ customer: session.customer, subscription: session.subscription }),
+        metadata: JSON.stringify({
+          customer: session.customer,
+          subscription: session.subscription,
+          package: session.metadata?.package,
+          credits: session.metadata?.credits,
+        }),
       });
 
       break;

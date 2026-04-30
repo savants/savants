@@ -1003,7 +1003,7 @@ export function integrationsPage(): string {
           </div>
           <p style="font-size:0.8rem;color:var(--muted);line-height:1.5">Analyze pull requests for blast radius, suggest reviewers, and surface risky changes before they ship.</p>
           <div id="github-action">
-            <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center" disabled>Connect GitHub</button>
+            <a href="/auth/github" class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;text-decoration:none">Connect GitHub</a>
           </div>
         </div>
 
@@ -1019,7 +1019,7 @@ export function integrationsPage(): string {
           </div>
           <p style="font-size:0.8rem;color:var(--muted);line-height:1.5">Receive root cause analyses and architecture insights directly in your Slack channels.</p>
           <div id="slack-action">
-            <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center" disabled>Connect Slack</button>
+            <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center" onclick="alert('Run savants connect slack from the CLI to connect Slack.')">Connect Slack</button>
           </div>
         </div>
 

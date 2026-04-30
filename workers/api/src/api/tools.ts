@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import type { Env, AuthContext, ToolDefinition } from "../lib/types";
-import { getMonthlyToolCallCount, logUsageEvent, getOrgById } from "../db/queries";
+import { logUsageEvent, getOrgById } from "../db/queries";
 import { authMiddleware } from "../auth/middleware";
 import { diagnoseError } from "./diagnosis";
+import { deductCredits, TOOL_CREDITS } from "./credits";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -10,8 +11,6 @@ const tools = new Hono<HonoEnv>();
 
 // POST /call requires auth
 tools.use("/call", authMiddleware());
-
-const FREE_MONTHLY_CALLS = 10;
 
 // Local tools: FREE, unlimited, run on user's machine via OSS binary
 // Cloud tools: PAYG, 10 free/month, require savants.cloud account
@@ -83,7 +82,7 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["error_message"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 500, tier: "cloud" },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 500, tier: "cloud" },
   },
   {
     name: "diagnose",
@@ -96,7 +95,7 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["error_message"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 250, tier: "cloud" },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 250, tier: "cloud" },
   },
   {
     name: "pr_risk",
@@ -109,7 +108,7 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["diff"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 200, tier: "cloud" },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 200, tier: "cloud" },
   },
   {
     name: "diff_impact",
@@ -121,7 +120,7 @@ const TOOL_LIST: ToolDefinition[] = [
       },
       required: ["diff"],
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 100, tier: "cloud" },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 100, tier: "cloud" },
   },
   {
     name: "radar",
@@ -132,7 +131,7 @@ const TOOL_LIST: ToolDefinition[] = [
         since_hours: { type: "number", description: "Look back N hours (default 24)" },
       },
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 100, tier: "cloud" },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 100, tier: "cloud" },
   },
   {
     name: "unanswered_questions",
@@ -144,7 +143,7 @@ const TOOL_LIST: ToolDefinition[] = [
         since_hours: { type: "number", description: "Look back N hours (default 24)" },
       },
     },
-    pricing: { free_monthly_calls: FREE_MONTHLY_CALLS, overage_per_call_cents: 500, tier: "cloud" },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 500, tier: "cloud" },
   },
 ];
 
@@ -167,26 +166,27 @@ tools.post("/call", async (c) => {
     return c.json({ error: "unknown_tool", message: `Tool '${body.tool}' not found`, status: 404 }, 404);
   }
 
-  // Local tools are always free - no quota
-  const isLocalTool = toolDef.pricing.tier === "local";
+  // Deduct credits (local tools cost 0 credits, always pass)
+  const creditResult = await deductCredits(c.env.DB, auth.orgId, body.tool);
 
-  // Check quota for cloud tools only
-  const org = await getOrgById(c.env.DB, auth.orgId);
-  const isPaid = org?.plan === "cloud" || org?.plan === "enterprise";
-  const monthlyCount = isLocalTool ? 0 : await getMonthlyToolCallCount(c.env.DB, auth.orgId);
-
-  if (!isLocalTool && !isPaid && monthlyCount >= FREE_MONTHLY_CALLS) {
+  if (!creditResult.ok) {
     return c.json(
       {
-        error: "quota_exceeded",
-        message: `Free tier: ${FREE_MONTHLY_CALLS} cloud calls/month. Add a card to continue. Local tools (semantic_search, file_skeleton, callers, where_used) are always free.`,
-        usage: { current: monthlyCount, limit: FREE_MONTHLY_CALLS },
-        upgrade_url: "/api/v1/billing/checkout",
-        status: 429,
+        error: "insufficient_credits",
+        message: creditResult.message,
+        credits: {
+          balance: creditResult.balance,
+          cost: creditResult.cost,
+          tool: body.tool,
+        },
+        purchase_url: "/api/v1/credits/purchase",
+        status: 402,
       },
-      429
+      402
     );
   }
+
+  const org = await getOrgById(c.env.DB, auth.orgId);
 
   const startTime = Date.now();
   let proxyResult: Record<string, unknown>;
@@ -253,27 +253,15 @@ tools.post("/call", async (c) => {
     durationMs,
   });
 
-  // Calculate value metrics (estimated tokens saved vs grep/read approach)
-  const tokensIn = (proxyResult.tokens_in as number) ?? 0;
-  const tokensOut = (proxyResult.tokens_out as number) ?? 0;
-  const estimatedGrepTokens = tokensOut * 12; // grep returns ~12x more noise
-  const tokensSaved = Math.max(0, estimatedGrepTokens - tokensOut);
-
   return c.json({
     tool: body.tool,
     result: proxyResult,
     performance: {
       duration_ms: durationMs,
-      tokens_in: tokensIn,
-      tokens_out: tokensOut,
-      tokens_saved_vs_grep: tokensSaved,
-      cost_cents: isPaid ? (toolDef.pricing.overage_per_call_cents ?? 0) : 0,
     },
-    usage: {
-      calls_this_month: monthlyCount + 1,
-      limit: isPaid ? null : FREE_MONTHLY_CALLS,
-      remaining: isPaid ? null : Math.max(0, FREE_MONTHLY_CALLS - monthlyCount - 1),
-      plan: org?.plan ?? "free",
+    credits: {
+      cost: creditResult.cost,
+      balance: creditResult.balance,
     },
   });
 });
