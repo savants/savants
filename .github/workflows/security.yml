@@ -1,0 +1,64 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1' # Weekly Monday 6am UTC
+
+jobs:
+  # Rust dependency audit
+  cargo-audit:
+    name: Rust Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Audit dependencies
+        working-directory: savants-cli
+        run: cargo audit
+
+  # Node dependency audit
+  npm-audit:
+    name: Node Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit Workers API dependencies
+        working-directory: workers/api
+        run: |
+          npm install
+          npm audit --audit-level=high || true
+
+  # Secret scanning
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check for secrets in code
+        run: |
+          # Check for common secret patterns
+          FOUND=0
+          for pattern in \
+            'sk_live_[a-zA-Z0-9]{20,}' \
+            'sk_test_[a-zA-Z0-9]{20,}' \
+            'whsec_[a-zA-Z0-9]{20,}' \
+            'GOCSPX-[a-zA-Z0-9]{20,}' \
+            'ghp_[a-zA-Z0-9]{36}' \
+            'sntryu_[a-zA-Z0-9]{40,}'; do
+            if grep -rn "$pattern" --include="*.ts" --include="*.rs" --include="*.sh" --include="*.toml" --include="*.json" . 2>/dev/null | grep -v node_modules | grep -v target | grep -v '.git/'; then
+              echo "WARNING: Possible secret found matching pattern: $pattern"
+              FOUND=1
+            fi
+          done
+          if [ "$FOUND" -eq 1 ]; then
+            echo "::error::Potential secrets detected in code. Review findings above."
+            exit 1
+          fi
+          echo "No secrets found in code."
