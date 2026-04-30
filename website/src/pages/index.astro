@@ -460,6 +460,13 @@ import Base from '../layouts/Base.astro';
      RESPONSIVE
      ============================================================ */
   @media (max-width: 768px) {
+    /* Kill expensive effects on mobile to prevent jitter */
+    .hero-aurora { display: none !important; }
+    .hero-constellation { display: none !important; }
+    .mouse-glow { display: none !important; }
+    .dot-grid { opacity: 0.02 !important; }
+    nav { backdrop-filter: none; background: rgba(10,10,10,0.97); }
+
     .hero { min-height: auto; padding: 100px 24px 64px; }
     .hero h1 { font-size: clamp(2.2rem, 8vw, 3.2rem); margin-bottom: 20px; }
     .hero .subtitle { margin-bottom: 36px; }
@@ -520,8 +527,7 @@ import Base from '../layouts/Base.astro';
   <div class="links" id="navLinks">
     <a href="/case-study">Case Study</a>
     <a href="https://github.com/savants-dev/savants" target="_blank" rel="noopener">GitHub</a>
-    <a href="/docs">Docs</a>
-    <a href="/cloud" class="nav-cta">Get Started</a>
+    <a href="https://savants.cloud/activate" class="nav-cta">Get Started</a>
   </div>
   <button class="hamburger" id="hamburgerBtn" aria-label="Menu">
     <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round">
