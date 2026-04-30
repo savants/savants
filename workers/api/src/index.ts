@@ -22,6 +22,7 @@ import auditRoutes from "./api/audit";
 import transfersRoutes from "./api/transfers";
 import docsRoutes from "./api/docs";
 import docsUploadRoutes from "./api/docs-upload";
+import docsIndexerRoutes from "./api/docs-indexer";
 import { sentrySetupPage } from "./pages/sentry-setup";
 import { githubSetupPage } from "./pages/github-setup";
 import { dashboardPage } from "./pages/dashboard";
@@ -165,6 +166,7 @@ api.route("/graph", graphRoutes);
 api.route("/audit", auditRoutes);
 api.route("/transfers", transfersRoutes);
 api.route("/docs", docsUploadRoutes);
+api.route("/docs", docsIndexerRoutes);
 
 app.route("/api/v1", api);
 

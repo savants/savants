@@ -13,6 +13,7 @@ export interface Env {
   SLACK_BOT_TOKEN: string;
   GITHUB_APP_TOKEN: string;
   GRAPH_PROXY_URL: string;
+  CF_API_TOKEN: string;
 }
 
 export interface AuthContext {
