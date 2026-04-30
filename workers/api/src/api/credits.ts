@@ -177,15 +177,17 @@ export async function deductCredits(
     return { ok: true, balance: -1, cost: 0 };
   }
 
-  // Get current balance
+  // Get current balance and org plan
   const row = await db
-    .prepare("SELECT balance, auto_topup_enabled, auto_topup_package FROM credit_balances WHERE org_id = ?1")
+    .prepare("SELECT cb.balance, cb.auto_topup_enabled, cb.auto_topup_package, o.plan FROM credit_balances cb JOIN orgs o ON o.id = cb.org_id WHERE cb.org_id = ?1")
     .bind(orgId)
-    .first<{ balance: number; auto_topup_enabled: number; auto_topup_package: string }>();
+    .first<{ balance: number; auto_topup_enabled: number; auto_topup_package: string; plan: string }>();
 
   const currentBalance = row?.balance ?? 0;
+  const isEnterprise = row?.plan === "enterprise";
 
-  if (currentBalance < cost) {
+  // Enterprise plans never get blocked - balance can go negative, billed monthly
+  if (!isEnterprise && currentBalance < cost) {
     return {
       ok: false,
       balance: currentBalance,
