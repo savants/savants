@@ -196,7 +196,7 @@ tools.post("/call", async (c) => {
   if (body.tool === "diagnose_error" || body.tool === "diagnose") {
     try {
       const result = await diagnoseError(c.env, auth.orgId, {
-        error_message: (body.input.error_message as string) || "",
+        error_message: (body.input.error_message as string) || (body.input.error as string) || (body.input.query as string) || "",
         file_path: (body.input.file_path as string) || undefined,
         sentry_event_id: (body.input.sentry_event_id as string) || undefined,
         sentry_project: (body.input.sentry_project as string) || undefined,
@@ -206,6 +206,15 @@ tools.post("/call", async (c) => {
       const message = err instanceof Error ? err.message : "Diagnosis failed";
       return c.json({ error: "diagnosis_error", message, status: 500 }, 500);
     }
+  }
+  // ── Tools that need code graph (not yet implemented as standalone) ──
+  else if (["pr_risk", "diff_impact", "radar", "unanswered_questions"].includes(body.tool)) {
+    proxyResult = {
+      tool: body.tool,
+      status: "needs_graph",
+      message: `${body.tool} requires the code graph to be ingested. Run 'savants reindex' in your repo, then the graph will be available for analysis.`,
+      hint: "Use semantic_search, callers, where_used, and file_skeleton (local tools) for code analysis. Use diagnose_error for error diagnosis with Sentry.",
+    };
   }
   // ── Proxy other tools to graph backend if available ──
   else if (c.env.GRAPH_PROXY_URL) {
