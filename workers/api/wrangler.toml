@@ -25,14 +25,26 @@ zone_name = "savants.cloud"
 ENVIRONMENT = "production"
 
 # Secrets (set via wrangler secret put):
-# JWT_SECRET
-# GOOGLE_CLIENT_ID
-# GOOGLE_CLIENT_SECRET
-# GITHUB_CLIENT_ID
-# GITHUB_CLIENT_SECRET
-# STRIPE_SECRET_KEY
-# STRIPE_WEBHOOK_SECRET
-# STRIPE_PRICE_ID
-# SLACK_BOT_TOKEN
-# GITHUB_APP_TOKEN
-# GRAPH_PROXY_URL
+# JWT_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+# GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET
+# STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_ID
+# SLACK_BOT_TOKEN, GITHUB_APP_TOKEN, GRAPH_PROXY_URL
+
+# ─── Staging environment ──────────────────────────────────────────────────────
+# Deploy: wrangler deploy --env staging
+# Migrate: ./scripts/migrate.sh --staging
+
+[env.staging]
+name = "savants-cloud-api-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "savants-cloud-staging"
+database_id = ""
+
+[[env.staging.kv_namespaces]]
+binding = "KV"
+id = ""
+
+[env.staging.vars]
+ENVIRONMENT = "staging"

@@ -4,8 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:migrate": "wrangler d1 execute savants-cloud --file=src/db/schema.sql",
+    "deploy": "./scripts/migrate.sh && wrangler deploy",
+    "deploy:staging": "./scripts/migrate.sh --staging && wrangler deploy --env staging",
+    "db:migrate": "./scripts/migrate.sh",
+    "db:migrate:staging": "./scripts/migrate.sh --staging",
+    "db:migrate:dry-run": "./scripts/migrate.sh --dry-run",
+    "db:status": "./scripts/migrate.sh --status",
     "test": "vitest run",
     "test:watch": "vitest"
   },
