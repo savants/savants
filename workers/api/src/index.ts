@@ -22,6 +22,7 @@ import auditRoutes from "./api/audit";
 import transfersRoutes from "./api/transfers";
 import docsRoutes from "./api/docs";
 import docsUploadRoutes from "./api/docs-upload";
+import docsSearchRoutes from "./api/docs-search";
 import docsIndexerRoutes from "./api/docs-indexer";
 import { sentrySetupPage } from "./pages/sentry-setup";
 import { githubSetupPage } from "./pages/github-setup";
@@ -307,6 +308,7 @@ app.route("/auth", oauthRoutes);
 
 app.route("/api/v1/tools", toolsRoutes);
 app.route("/api/v1/docs", docsRoutes);
+app.route("/api/v1/docs", docsSearchRoutes);
 
 // ─── Webhook routes (verified by their own signature checks) ─────────────────
 
