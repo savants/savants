@@ -319,12 +319,13 @@ const ICONS = {
   team: '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
   integrations: '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
   billing: '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>',
+  docs: '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
   settings: '<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
 };
 
 // ─── Layout ──────────────────────────────────────────────────────────────────
 
-type NavPage = "overview" | "keys" | "team" | "integrations" | "billing" | "settings";
+type NavPage = "overview" | "keys" | "team" | "integrations" | "docs" | "billing" | "settings";
 
 function layout(activePage: NavPage, pageTitle: string, pageContent: string): string {
   const navItems: Array<{ id: NavPage; label: string; href: string; icon: string }> = [
@@ -332,6 +333,7 @@ function layout(activePage: NavPage, pageTitle: string, pageContent: string): st
     { id: "keys", label: "API Keys", href: "/dashboard/keys", icon: ICONS.keys },
     { id: "team", label: "Team", href: "/dashboard/team", icon: ICONS.team },
     { id: "integrations", label: "Integrations", href: "/dashboard/integrations", icon: ICONS.integrations },
+    { id: "docs", label: "Docs", href: "/dashboard/docs", icon: ICONS.docs },
     { id: "billing", label: "Billing", href: "/dashboard/billing", icon: ICONS.billing },
     { id: "settings", label: "Settings", href: "/dashboard/settings", icon: ICONS.settings },
   ];
@@ -1503,6 +1505,161 @@ export function settingsPage(): string {
   return layout("settings", "Settings", content) + js + closeHtml();
 }
 
+// ─── Docs Page ───────────────────────────────────────────────────────────────
+
+export function docsPage(): string {
+  const content = `
+      <div id="alert-box" class="alert"></div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px">
+        <div>
+          <div class="card-subtitle">Search and manage documentation sources. Certified docs are free. Upload private docs for your team.</div>
+        </div>
+      </div>
+
+      <!-- Search -->
+      <div class="card" style="margin-bottom:24px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <select id="doc-provider" class="form-select" style="width:180px">
+            <option value="">All sources</option>
+          </select>
+          <input type="text" id="doc-search" class="form-input" placeholder="Search documentation..." style="flex:1;min-width:200px">
+          <button class="btn btn-primary" id="search-btn">Search</button>
+        </div>
+        <div id="search-results" style="margin-top:16px"></div>
+      </div>
+
+      <!-- Certified Sources -->
+      <div class="card" style="margin-bottom:24px">
+        <div class="card-title">Certified Documentation</div>
+        <div class="card-subtitle" style="margin-bottom:16px">Pre-indexed by Savants. Free to query. Updated automatically.</div>
+        <div class="integration-grid" id="certified-docs">
+          <div class="skeleton skeleton-row"></div>
+          <div class="skeleton skeleton-row"></div>
+        </div>
+      </div>
+
+      <!-- Private Docs -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div>
+            <div class="card-title">Private Documentation</div>
+            <div class="card-subtitle">Your team's internal docs. Only visible to org members.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="upload-btn">Upload Docs</button>
+        </div>
+        <div id="private-docs">
+          <div class="empty-state" style="padding:24px 0">
+            <h3>No private docs yet</h3>
+            <p>Upload markdown files or an OpenAPI spec to make them queryable.</p>
+            <code style="display:block;margin-top:12px;color:var(--accent)">savants docs upload ./docs --project my-project</code>
+          </div>
+        </div>
+      </div>
+  `;
+
+  const js = `
+<script>
+(function(){
+  if (!getToken()) return;
+
+  // Load certified docs
+  fetch('https://api.savants.cloud/api/v1/docs').then(r=>r.json()).then(function(d) {
+    var grid = document.getElementById('certified-docs');
+    var select = document.getElementById('doc-provider');
+    var providers = d.providers || [];
+
+    grid.innerHTML = providers.map(function(p) {
+      var statusClass = p.status === 'available' ? 'badge-green' : p.status === 'planned' ? 'badge-gray' : 'badge-cyan';
+      var statusText = p.status === 'available' ? 'Indexed' : p.status === 'planned' ? 'Coming soon' : p.status;
+      return '<div class="integration-card">' +
+        '<div style="display:flex;justify-content:space-between;align-items:start">' +
+        '<div><div class="integration-name">' + p.name + '</div>' +
+        '<div style="color:var(--muted);font-size:0.8rem;margin-top:4px">' + p.description + '</div></div>' +
+        '<span class="badge ' + statusClass + '">' + statusText + '</span>' +
+        '</div>' +
+        '<div style="margin-top:8px;font-size:0.8rem;color:var(--muted)">' +
+        (p.versions > 0 ? p.versions + ' version(s) · Latest: ' + p.latest_version : '') +
+        '</div></div>';
+    }).join('');
+
+    // Populate search dropdown
+    providers.forEach(function(p) {
+      var opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.name;
+      select.appendChild(opt);
+    });
+  });
+
+  // Search
+  document.getElementById('search-btn').addEventListener('click', doSearch);
+  document.getElementById('doc-search').addEventListener('keyup', function(e) {
+    if (e.key === 'Enter') doSearch();
+  });
+
+  function doSearch() {
+    var provider = document.getElementById('doc-provider').value;
+    var query = document.getElementById('doc-search').value.trim();
+    if (!query) return;
+
+    var resultsDiv = document.getElementById('search-results');
+    resultsDiv.innerHTML = '<div style="color:var(--muted)">Searching...</div>';
+
+    if (!provider) {
+      resultsDiv.innerHTML = '<div style="color:var(--muted)">Select a documentation source first.</div>';
+      return;
+    }
+
+    fetch('https://api.savants.cloud/api/v1/docs/' + provider + '/search?q=' + encodeURIComponent(query))
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.total === 0) {
+          resultsDiv.innerHTML = '<div style="color:var(--muted);padding:16px 0">No results for "' + query + '" in ' + provider + ' docs.</div>';
+          return;
+        }
+        resultsDiv.innerHTML = d.results.map(function(r, i) {
+          var section = r.matched_section;
+          return '<div style="padding:12px 0;border-bottom:1px solid var(--border)">' +
+            '<div style="font-weight:500">' + (i+1) + '. ' + r.title + '</div>' +
+            (r.url ? '<a href="' + r.url + '" target="_blank" style="font-size:0.8rem;color:var(--accent)">' + r.url + '</a>' : '') +
+            (section ? '<div style="color:var(--muted);font-size:0.85rem;margin-top:4px">' + (section.content || '').slice(0,200) + '</div>' : '') +
+            '</div>';
+        }).join('');
+      });
+  }
+
+  // Load private docs
+  apiFetch('/api/v1/projects').then(function(r) {
+    if (!r.ok || !r.data.projects || r.data.projects.length === 0) return;
+    var projectId = r.data.projects[0].id;
+
+    fetch('https://api.savants.cloud/api/v1/docs/private?project_id=' + projectId, {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      var docs = d.docs || [];
+      if (docs.length === 0) return;
+
+      var div = document.getElementById('private-docs');
+      div.innerHTML = docs.map(function(doc) {
+        var cfg = doc.config || {};
+        return '<div style="padding:12px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">' +
+          '<div>' +
+          '<div style="font-weight:500">' + (cfg.name || 'Untitled') + '</div>' +
+          '<div style="color:var(--muted);font-size:0.8rem">' + (doc.node_count || 0) + ' sections · ' + (cfg.format || 'markdown') + '</div>' +
+          '</div>' +
+          '<span class="badge badge-green">Indexed</span>' +
+          '</div>';
+      }).join('');
+    });
+  });
+})();
+</script>
+`;
+
+  return layout("docs", "Documentation", content) + js + closeHtml();
+}
+
 // ─── Page Router ─────────────────────────────────────────────────────────────
 
 export function dashboardPage(page?: string): string {
@@ -1513,6 +1670,8 @@ export function dashboardPage(page?: string): string {
       return teamPage();
     case "integrations":
       return integrationsPage();
+    case "docs":
+      return docsPage();
     case "billing":
       return billingPage();
     case "settings":

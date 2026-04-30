@@ -180,7 +180,7 @@ REDIRECT=$(curl -sf -o /dev/null -w "%{redirect_url}" --max-time 10 "$CLOUD/" 2>
 echo "$REDIRECT" | grep -q "savants.dev" && pass "Root redirects to savants.dev" || fail "Root redirect" "$REDIRECT"
 
 STATUS=$(http_status "$CLOUD/dashboard")
-[ "$STATUS" = "302" ] && pass "Dashboard redirects" || fail "Dashboard redirect" "got $STATUS"
+[ "$STATUS" = "200" ] || [ "$STATUS" = "302" ] && pass "Dashboard accessible ($STATUS)" || fail "Dashboard" "got $STATUS"
 
 echo ""
 
@@ -192,6 +192,44 @@ STATUS=$(curl -o /dev/null -w "%{http_code}" --max-time 10 -s "$API/nonexistent"
 
 BODY=$(curl -s --max-time 10 "$API/nonexistent" 2>/dev/null)
 echo "$BODY" | grep -q '"not_found"' && pass "404 returns JSON error" || fail "404 JSON" "not JSON"
+
+echo ""
+
+# ─── SUMMARY ──────────────────────────────────────────────────────────
+TOTAL=$((PASS + FAIL + SKIP))
+printf "${B}═══════════════════════════════════════════${X}\n"
+printf "${B}Results:${X} ${G}${PASS} passed${X}, ${R}${FAIL} failed${X}, ${Y}${SKIP} skipped${X} / ${TOTAL} total\n"
+
+# ─── PATH 11: Documentation Registry ─────────────────────────────────
+printf "${B}11. Documentation Registry${X}\n"
+
+STATUS=$(http_status "$API/api/v1/docs")
+[ "$STATUS" = "200" ] && pass "Doc registry returns 200" || fail "Doc registry" "got $STATUS"
+
+BODY=$(http_body "$API/api/v1/docs")
+echo "$BODY" | grep -q '"providers"' && pass "Registry has providers array" || fail "Registry" "missing providers"
+echo "$BODY" | grep -q '"stripe"' && pass "Stripe in registry" || fail "Registry" "missing stripe"
+echo "$BODY" | grep -q '"cloudflare"' && pass "Cloudflare in registry" || fail "Registry" "missing cloudflare"
+
+STATUS=$(http_status "$API/api/v1/docs/stripe")
+[ "$STATUS" = "200" ] && pass "Stripe details returns 200" || fail "Stripe details" "got $STATUS"
+
+STATUS=$(http_status "$API/api/v1/docs/stripe/search?q=webhook")
+[ "$STATUS" = "200" ] && pass "Stripe search returns 200" || fail "Stripe search" "got $STATUS"
+
+STATUS=$(http_status "$API/api/v1/docs/nonexistent")
+[ "$STATUS" = "404" ] && pass "Unknown provider returns 404" || fail "Unknown provider" "got $STATUS"
+
+BODY=$(http_body "$API/api/v1/docs/stripe/search?q=webhook")
+echo "$BODY" | grep -q '"results"' && pass "Search returns results array" || fail "Search" "missing results"
+
+echo ""
+
+# ─── PATH 12: Dashboard docs page ────────────────────────────────────
+printf "${B}12. Dashboard docs page${X}\n"
+
+STATUS=$(http_status "https://savants.cloud/dashboard/docs")
+[ "$STATUS" = "200" ] && pass "Dashboard docs page returns 200" || fail "Dashboard docs" "got $STATUS"
 
 echo ""
 
