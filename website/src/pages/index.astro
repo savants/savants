@@ -1,7 +1,7 @@
 ---
 import Base from '../layouts/Base.astro';
 ---
-<Base title="Savants - Find code by describing what it does">
+<Base title="Savants - Your AI agent just got 10x smarter">
 <style>
   /* ============================================================
      GLOBAL PAGE STYLES
@@ -242,7 +242,7 @@ import Base from '../layouts/Base.astro';
   }
   .numbers-inner { max-width: 1000px; margin: 0 auto; }
   .numbers-grid {
-    display: grid; grid-template-columns: repeat(4, 1fr);
+    display: grid; grid-template-columns: repeat(3, 1fr);
     gap: 48px; margin-bottom: 48px;
   }
   .num-block { display: flex; flex-direction: column; align-items: center; }
@@ -545,8 +545,8 @@ import Base from '../layouts/Base.astro';
   <canvas class="hero-constellation" id="constellation"></canvas>
   <div class="dot-grid" id="dotGrid"></div>
   <div class="hero-content">
-    <h1 class="gs-up">Find code by describing<br>what it does.</h1>
-    <p class="subtitle gs-up">Not what it's called. <strong>90% accuracy</strong>. Under 400ms. Offline.</p>
+    <h1 class="gs-up">Your AI agent just got<br>10x smarter.</h1>
+    <p class="subtitle gs-up">Stop watching your AI read 47 files to find one function. Savants gives it <strong>the answer in one call</strong>.</p>
     <div class="install-box gs-up" id="installBox" role="button" tabindex="0" aria-label="Copy install command">
       <code>curl -fsSL savants.sh | sh</code>
       <svg class="copy-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -554,7 +554,7 @@ import Base from '../layouts/Base.astro';
       </svg>
       <span class="copied-toast" id="copiedToast">Copied!</span>
     </div>
-    <span class="trust-line gs-up">Works on macOS and Linux. No API keys. No cloud required.</span>
+    <span class="trust-line gs-up">Used by engineers at companies shipping to production every day.</span>
   </div>
   <div class="scroll-hint">
     <span>Scroll</span>
@@ -563,7 +563,7 @@ import Base from '../layouts/Base.astro';
 </section>
 
 <!-- ============================================================
-     SECTION 2: THE PROBLEM
+     SECTION 2: BEFORE & AFTER
      ============================================================ -->
 <div class="section-divider"></div>
 <section class="problem">
@@ -571,138 +571,231 @@ import Base from '../layouts/Base.astro';
     <div class="term-card gs-left" id="termLeft">
       <div class="term-bar">
         <div class="term-dot dot-r"></div><div class="term-dot dot-y"></div><div class="term-dot dot-g"></div>
-        <span class="term-title">grep</span>
+        <span class="term-title">without savants</span>
       </div>
       <div class="term-body">
-        <div><span class="cmd">$</span> grep <span class="flag">-rn</span> "validate" src/</div>
+        <div><span class="result">You:</span> <span class="flag">"Fix the auth timeout bug"</span></div>
+        <div><span class="result">Your AI agent:</span></div>
         <br>
-        <div class="dim">src/config.js:14: // validate config</div>
-        <div class="dim">src/utils.js:87: validateEmail(input)</div>
-        <div class="dim">src/auth.js:23: // TODO: validate token</div>
-        <div class="dim">src/form.js:91: if (!validate(form)) &#123;</div>
-        <div class="dim">src/logger.js:45: validateOptions(opts)</div>
-        <div class="dim">... 9 more matches</div>
+        <div class="dim">  &rarr; grep -rn "auth" src/     <span class="fail">(312 matches)</span></div>
+        <div class="dim">  &rarr; reads auth.js            (2,400 tokens)</div>
+        <div class="dim">  &rarr; reads middleware.js       (1,800 tokens)</div>
+        <div class="dim">  &rarr; reads config.js          (900 tokens)</div>
+        <div class="dim">  &rarr; grep -rn "timeout" src/  <span class="fail">(89 matches)</span></div>
+        <div class="dim">  &rarr; reads 4 more files...    </div>
         <br>
-        <div class="fail">14 matches. None are the one you need.</div>
+        <div class="fail">12 tool calls. 14,000 tokens. 47 seconds.</div>
+        <div class="fail">Still looking.</div>
       </div>
     </div>
 
     <div class="problem-divider">
-      grep searches text.<br><strong>savants searches meaning.</strong>
+      You've seen this before.<br><strong>There's a better way.</strong>
     </div>
 
     <div class="term-card gs-right" id="termRight">
       <div class="term-bar">
         <div class="term-dot dot-r"></div><div class="term-dot dot-y"></div><div class="term-dot dot-g"></div>
-        <span class="term-title">savants</span>
+        <span class="term-title">with savants</span>
       </div>
       <div class="term-body">
-        <div><span class="cmd">$</span> savants search <span class="flag">"function that validates log level options"</span></div>
+        <div><span class="result">You:</span> <span class="flag">"Fix the auth timeout bug"</span></div>
+        <div><span class="result">Your AI agent:</span></div>
         <br>
-        <div class="accent">1 result (387ms):</div>
+        <div class="dim">  &rarr; semantic_search(<span class="accent">"auth timeout handling"</span>)</div>
         <br>
-        <div class="result">lib/logger.js:validateLogLevelOption</div>
-        <div class="dim">  Lines 142-178 | Score: 0.94</div>
-        <div class="dim">  Validates the log level passed via CLI flags,</div>
-        <div class="dim">  normalizes aliases, returns canonical level.</div>
+        <div class="accent">  auth/tokenRefresh.ts:handleTokenExpiry()</div>
+        <div class="dim">  Lines 89-134 | Score: 0.96</div>
+        <br>
+        <div class="accent">1 tool call. 200 tokens. 400ms.</div>
+        <div class="result">Already fixing it.</div>
       </div>
     </div>
   </div>
 </section>
 
 <!-- ============================================================
-     SECTION 3: NUMBERS
+     SECTION 3: THREE OUTCOMES
      ============================================================ -->
 <section class="numbers">
   <div class="numbers-inner">
+    <h2 class="gs-up" style="font-size: clamp(1.8rem, 3.5vw, 2.5rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 56px;">What changes when your AI can actually find code.</h2>
     <div class="numbers-grid" id="numbersGrid">
       <div class="num-block">
-        <div class="num-value" data-target="90" data-suffix="%">90%</div>
-        <div class="num-label">accuracy</div>
+        <div class="num-value" data-target="200" data-suffix=" tokens">200 tokens</div>
+        <div class="num-label">instead of 14,000. Your AI stops burning context window on grep noise.</div>
       </div>
       <div class="num-block">
-        <div class="num-value" data-target="400" data-prefix="<" data-suffix="ms">&lt;400ms</div>
-        <div class="num-label">cached query</div>
+        <div class="num-value" data-target="400" data-prefix="" data-suffix="ms">400ms</div>
+        <div class="num-label">instead of 47 seconds. It finds the right function on the first call.</div>
       </div>
       <div class="num-block">
-        <div class="num-value" data-target="28" data-suffix="x">28x</div>
-        <div class="num-label">compression</div>
-      </div>
-      <div class="num-block">
-        <div class="num-value" data-target="0" data-suffix="" data-is-zero="true">0</div>
-        <div class="num-label">API keys required</div>
+        <div class="num-value">Confirmed</div>
+        <div class="num-label">not hallucinated. Results come from the actual call graph, not text matching.</div>
       </div>
     </div>
-    <p class="bench-note">Tested on Fastify (33K stars, 287 files, 2,152 functions)</p>
+    <p class="bench-note">Grep returns text matches. Savants returns verified results.</p>
   </div>
 </section>
 
 <!-- ============================================================
-     SECTION 4: HOW IT WORKS
+     SECTION 4: REAL STORIES
+     ============================================================ -->
+<div class="section-divider"></div>
+<section class="tools">
+  <div class="tools-inner">
+    <h2 class="gs-up">Real problems. Solved in seconds.</h2>
+    <p class="tools-sub gs-up">Three scenarios every developer hits weekly.</p>
+
+    <div class="tool-row gs-up">
+      <span class="tool-name">semantic_search</span>
+      <span class="tool-desc">"Find the function that retries failed payments"</span>
+      <span class="tool-speed"></span>
+    </div>
+    <div class="tool-row gs-up" style="border-top: none;">
+      <span class="tool-name" style="color: var(--red);">Before</span>
+      <span class="tool-desc">grep "retry" - 23 matches across config files, test mocks, comments</span>
+      <span class="tool-speed" style="color: var(--red);">noise</span>
+    </div>
+    <div class="tool-row gs-up" style="border-top: none;">
+      <span class="tool-name" style="color: var(--accent);">After</span>
+      <span class="tool-desc">handleTransactionWithBackoff() in payment-service.ts:142</span>
+      <span class="tool-speed">~400ms</span>
+    </div>
+
+    <div class="tool-row gs-up" style="margin-top: 24px;">
+      <span class="tool-name">callers</span>
+      <span class="tool-desc">"What calls this function? Will my change break anything?"</span>
+      <span class="tool-speed"></span>
+    </div>
+    <div class="tool-row gs-up" style="border-top: none;">
+      <span class="tool-name" style="color: var(--red);">Before</span>
+      <span class="tool-desc">grep the function name - miss indirect callers, dynamic imports, test files</span>
+      <span class="tool-speed" style="color: var(--red);">incomplete</span>
+    </div>
+    <div class="tool-row gs-up" style="border-top: none;">
+      <span class="tool-name" style="color: var(--accent);">After</span>
+      <span class="tool-desc">7 confirmed callers across 4 services, blast radius = 12 files</span>
+      <span class="tool-speed">~15ms</span>
+    </div>
+
+    <div class="tool-row gs-up" style="margin-top: 24px;">
+      <span class="tool-name">file_skeleton</span>
+      <span class="tool-desc">"Show me this file's structure without reading 2,000 lines"</span>
+      <span class="tool-speed"></span>
+    </div>
+    <div class="tool-row gs-up" style="border-top: none;">
+      <span class="tool-name" style="color: var(--red);">Before</span>
+      <span class="tool-desc">Read entire file, burn 2,400 tokens on boilerplate</span>
+      <span class="tool-speed" style="color: var(--red);">wasteful</span>
+    </div>
+    <div class="tool-row gs-up" style="border-top: none;">
+      <span class="tool-name" style="color: var(--accent);">After</span>
+      <span class="tool-desc">34 functions with signatures, 85 tokens. 28x less.</span>
+      <span class="tool-speed">~85ms</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 4.5: DOCUMENTATION
+     ============================================================ -->
+<div class="section-divider"></div>
+<section class="case-study" style="background: var(--bg);">
+  <div class="case-study-inner">
+    <h2 class="gs-up" style="font-size: clamp(1.8rem, 3.5vw, 2.5rem); font-weight: 800; letter-spacing: -0.03em; line-height: 1.2; margin-bottom: 16px;">
+      Every API doc. Already indexed.<br><span class="accent">Zero setup.</span>
+    </h2>
+    <p class="gs-up" style="color: var(--muted); font-size: 1.05rem; line-height: 1.7; max-width: 560px; margin: 0 auto 40px;">
+      Your AI doesn't need to hallucinate Stripe's API or guess Kubernetes syntax. Savants indexes official documentation so your agent gets the right answer.
+    </p>
+
+    <div class="problem-inner gs-up" style="max-width: 1000px; margin: 0 auto 48px;">
+      <div class="term-card">
+        <div class="term-bar">
+          <div class="term-dot dot-r"></div><div class="term-dot dot-y"></div><div class="term-dot dot-g"></div>
+          <span class="term-title">without docs</span>
+        </div>
+        <div class="term-body">
+          <div><span class="cmd">You:</span> "How do I verify a Stripe webhook signature?"</div>
+          <br>
+          <div class="dim">AI: "I think you use crypto.createHmac('sha256', secret)...</div>
+          <div class="dim">     actually let me check... maybe it's hmac.update()..."</div>
+          <br>
+          <div class="fail">Hallucinated. Partially wrong. You debug for 20 minutes.</div>
+        </div>
+      </div>
+
+      <div class="problem-divider">
+        <strong>vs</strong>
+      </div>
+
+      <div class="term-card">
+        <div class="term-bar">
+          <div class="term-dot dot-r"></div><div class="term-dot dot-y"></div><div class="term-dot dot-g"></div>
+          <span class="term-title">with savants docs</span>
+        </div>
+        <div class="term-body">
+          <div><span class="cmd">You:</span> "How do I verify a Stripe webhook signature?"</div>
+          <br>
+          <div class="accent">AI &rarr; savants docs search stripe "webhook signature"</div>
+          <br>
+          <div class="result">Resolve webhook signature verification errors</div>
+          <div class="dim">  docs.stripe.com/webhooks/signatures</div>
+          <div class="dim">  "Use stripe.webhooks.constructEvent(body, sig, secret)"</div>
+          <br>
+          <div style="color: var(--green);">Correct. From official Stripe docs. Zero hallucination.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gs-up" style="text-align: center;">
+      <div class="badge-row" style="margin-bottom: 16px;">
+        <div class="badge">Stripe</div>
+        <div class="badge">Kubernetes</div>
+        <div class="badge">React</div>
+        <div class="badge">Next.js</div>
+        <div class="badge">Fastify</div>
+        <div class="badge">PostgreSQL</div>
+        <div class="badge">Redis</div>
+        <div class="badge">Docker</div>
+        <div class="badge">AWS</div>
+        <div class="badge">Cloudflare</div>
+      </div>
+      <p style="color: var(--muted); font-size: 0.85rem;">Pre-indexed and free. Plus upload your private docs: 1 credit per 10K tokens.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 5: HOW IT WORKS
      ============================================================ -->
 <div class="section-divider"></div>
 <section class="how">
   <div class="how-inner">
-    <h2 class="gs-up">Three commands. That's it.</h2>
+    <h2 class="gs-up">60 seconds to 10x.</h2>
     <div class="how-grid">
       <div class="step-card gs-up" data-stagger="0">
         <svg class="step-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         <span class="step-num">Step 01</span>
         <h3>Install</h3>
-        <p>One line. No dependencies. No API keys. Runs entirely on your machine.</p>
+        <p>One command. 5MB. No dependencies. No API keys. Your code never leaves your machine.</p>
         <code>curl -fsSL savants.sh | sh</code>
       </div>
       <div class="step-card gs-up" data-stagger="1">
         <svg class="step-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent2)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
         <span class="step-num">Step 02</span>
         <h3>Index</h3>
-        <p>Parses every function with tree-sitter, embeds with ONNX. Your code never leaves your machine.</p>
+        <p>Savants builds a map of every function, every caller, every import. Locally.</p>
         <code>savants reindex</code>
       </div>
       <div class="step-card gs-up" data-stagger="2">
         <svg class="step-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
         <span class="step-num">Step 03</span>
-        <h3>Ask</h3>
-        <p>Your AI agent calls savants instead of grep. Semantic search, call graphs, file skeletons - all local.</p>
+        <h3>Done</h3>
+        <p>Your AI agent automatically uses savants instead of grep. Nothing else to configure.</p>
         <code>savants search "auth middleware"</code>
       </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============================================================
-     SECTION 5: TOOLS
-     ============================================================ -->
-<div class="section-divider"></div>
-<section class="tools">
-  <div class="tools-inner">
-    <h2 class="gs-up">38 tools. 5 you'll use daily.</h2>
-    <p class="tools-sub gs-up">Every tool is local, fast, and designed for LLM agents.</p>
-
-    <div class="tool-row gs-up">
-      <span class="tool-name">semantic_search</span>
-      <span class="tool-desc">Find code by concept</span>
-      <span class="tool-speed">~400ms</span>
-    </div>
-    <div class="tool-row gs-up">
-      <span class="tool-name">file_skeleton</span>
-      <span class="tool-desc">28x fewer tokens</span>
-      <span class="tool-speed">~85ms</span>
-    </div>
-    <div class="tool-row gs-up">
-      <span class="tool-name">callers</span>
-      <span class="tool-desc">Every caller, confirmed</span>
-      <span class="tool-speed">~15ms</span>
-    </div>
-    <div class="tool-row gs-up">
-      <span class="tool-name">where_used</span>
-      <span class="tool-desc">All usages, all files</span>
-      <span class="tool-speed">~15ms</span>
-    </div>
-    <div class="tool-row gs-up">
-      <span class="tool-name">reindex</span>
-      <span class="tool-desc">Auto-detects stale indexes</span>
-      <span class="tool-speed">auto</span>
     </div>
   </div>
 </section>
@@ -712,8 +805,8 @@ import Base from '../layouts/Base.astro';
      ============================================================ -->
 <section class="case-study">
   <div class="case-study-inner">
-    <div class="big-number gs-up">141 seconds vs <span class="accent">17 minutes.</span></div>
-    <p class="gs-up">We diagnosed a real Fastify bug with savants. Identified root cause, traced the call chain, and submitted PR #6683 - all in under 3 minutes.</p>
+    <div class="big-number gs-up">We found a real bug in <span class="accent">Fastify.</span></div>
+    <p class="gs-up">Root cause identified, call chain traced, PR submitted - in 141 seconds. Without savants, the same task took 17 minutes of manual grep and file reading.</p>
     <a href="/case-study" class="cta-link gs-up">
       Read the case study <span class="arrow">&rarr;</span>
     </a>
