@@ -89,24 +89,79 @@ export async function diagnoseError(
     // Sentry unavailable - continue without it
   }
 
-  // ── Source 3: Code graph enrichment (if proxy available) ──
-  if (env.GRAPH_PROXY_URL && parsed.function) {
+  // ── Source 3: Code graph from D1 (if function/file found) ──
+  if (parsed.function || parsed.file) {
     try {
-      const proxyRes = await fetch(`${env.GRAPH_PROXY_URL}/api/v1/tools/call`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Org-Id": orgId },
-        body: JSON.stringify({
-          tool: "callers",
-          input: { function: parsed.function },
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (proxyRes.ok) {
-        graphData = await proxyRes.json();
+      // Find the function node in the graph
+      let nodeQuery = "SELECT * FROM graph_nodes WHERE 1=1";
+      const nodeParams: unknown[] = [];
+
+      if (parsed.function) {
+        nodeQuery += ` AND name = ?${nodeParams.length + 1}`;
+        nodeParams.push(parsed.function);
+      }
+      if (parsed.file) {
+        // Match file path (could be full path like /app/server/... or relative)
+        const fileName = parsed.file.split("/").pop() || parsed.file;
+        nodeQuery += ` AND file_path LIKE ?${nodeParams.length + 1}`;
+        nodeParams.push(`%${fileName}`);
+      }
+      nodeQuery += " LIMIT 1";
+
+      const node = await env.DB.prepare(nodeQuery).bind(...nodeParams).first<{
+        id: string; name: string; type: string; file_path: string; line_start: number; project_id: string;
+      }>();
+
+      if (node) {
         sources.push("code_graph");
+
+        // Get callers (who calls this function?)
+        const callers = await env.DB.prepare(`
+          SELECT n.name, n.type, n.file_path, n.line_start
+          FROM graph_edges e
+          JOIN graph_nodes n ON n.id = e.source_node
+          WHERE e.target_node = ?1 AND e.type = 'CALLS'
+          ORDER BY n.name LIMIT 10
+        `).bind(node.id).all();
+
+        // Get recent events on this node
+        const events = await env.DB.prepare(`
+          SELECT type, title, severity, occurred_at
+          FROM graph_events
+          WHERE node_id = ?1
+          ORDER BY occurred_at DESC LIMIT 5
+        `).bind(node.id).all();
+
+        // Get what this function calls (downstream)
+        const callees = await env.DB.prepare(`
+          SELECT n.name, n.type, n.file_path
+          FROM graph_edges e
+          JOIN graph_nodes n ON n.id = e.target_node
+          WHERE e.source_node = ?1 AND e.type = 'CALLS'
+          ORDER BY n.name LIMIT 10
+        `).bind(node.id).all();
+
+        graphData = {
+          node: {
+            name: node.name,
+            type: node.type,
+            file: node.file_path,
+            line: node.line_start,
+          },
+          callers: (callers.results as unknown as any[]).map((r) =>
+            `${r.name}() at ${r.file_path || "?"}:${r.line_start || "?"}`
+          ),
+          callees: (callees.results as unknown as any[]).map((r) =>
+            `${r.name}() at ${r.file_path || "?"}`
+          ),
+          recent_events: (events.results as unknown as any[]).map((r) =>
+            `[${r.severity}] ${r.title}`
+          ),
+          blast_radius: (callers.results?.length || 0) + (callees.results?.length || 0),
+        };
       }
     } catch {
-      // Graph unavailable - continue without it
+      // Graph query failed - continue without it
     }
   }
 
@@ -282,19 +337,28 @@ function buildDiagnosis(
   }
 
   // ── Enrich from code graph ──
-  if (graphData?.result) {
+  if (graphData?.node) {
     confidence += 0.15;
+
+    // Use graph data for more precise file/line
+    if (graphData.node.file) file = graphData.node.file;
+    if (graphData.node.line) line = graphData.node.line;
+    if (graphData.node.name) fn = graphData.node.name;
+
     graphContext = {
-      callers: [],
-      importers: [],
-      blast_radius: 0,
+      callers: graphData.callers || [],
+      importers: graphData.callees || [],
+      blast_radius: graphData.blast_radius || 0,
     };
-    // Parse graph result if available
-    const result = graphData.result;
-    if (typeof result === "string") {
-      const callerLines = result.split("\n").filter((l: string) => l.includes("("));
-      graphContext.callers = callerLines.slice(0, 10);
-      graphContext.blast_radius = callerLines.length;
+
+    // Add callers to the call chain
+    if (graphData.callers?.length > 0 && callChain.length === 0) {
+      callChain = graphData.callers;
+    }
+
+    // Add recent events to the diagnosis
+    if (graphData.recent_events?.length > 0) {
+      rootCause += `\n\nRecent events on this function: ${graphData.recent_events.join(", ")}`;
     }
   }
 
