@@ -41,7 +41,7 @@ oauth.get("/github", async (c) => {
   const params = new URLSearchParams({
     client_id: c.env.GITHUB_CLIENT_ID,
     redirect_uri: `${API_ORIGIN}/auth/callback/github`,
-    scope: "user:email read:user",
+    scope: "user:email read:user read:org repo",
     state,
   });
 

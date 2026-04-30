@@ -1003,7 +1003,7 @@ export function integrationsPage(): string {
           </div>
           <p style="font-size:0.8rem;color:var(--muted);line-height:1.5">Analyze pull requests for blast radius, suggest reviewers, and surface risky changes before they ship.</p>
           <div id="github-action">
-            <a href="/auth/github" class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;text-decoration:none">Connect GitHub</a>
+            <a href="/auth/github?redirect=https://savants.cloud/integrations/github" class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;text-decoration:none">Connect GitHub</a>
           </div>
         </div>
 

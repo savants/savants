@@ -20,6 +20,7 @@ import projectsRoutes from "./api/projects";
 import graphRoutes from "./api/graph";
 import auditRoutes from "./api/audit";
 import { sentrySetupPage } from "./pages/sentry-setup";
+import { githubSetupPage } from "./pages/github-setup";
 import { dashboardPage } from "./pages/dashboard";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
@@ -103,6 +104,13 @@ ${code ? `<div class="code">${code}</div>` : ""}
 <div><a class="btn" href="/auth/google${code ? "?user_code=" + code : ""}">Sign in with Google</a></div>
 <div><a class="btn" href="/auth/github${code ? "?user_code=" + code : ""}">Sign in with GitHub</a></div>
 </div></body></html>`);
+});
+
+// GitHub integration setup page
+app.get("/integrations/github", (c) => {
+  const status = new URL(c.req.url).searchParams.get("status") || undefined;
+  const message = new URL(c.req.url).searchParams.get("message") || undefined;
+  return c.html(githubSetupPage(status, message));
 });
 
 // Sentry integration setup page
