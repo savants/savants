@@ -4,6 +4,7 @@ import { logUsageEvent, getOrgById } from "../db/queries";
 import { authMiddleware } from "../auth/middleware";
 import { diagnoseError } from "./diagnosis";
 import { deductCredits, TOOL_CREDITS } from "./credits";
+import { audit, requestMeta } from "../lib/audit";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -240,6 +241,15 @@ tools.post("/call", async (c) => {
   }
 
   const durationMs = Date.now() - startTime;
+
+  // Audit: tool call
+  const meta = requestMeta(c.req.raw);
+  await audit(c.env.DB, {
+    orgId: auth.orgId, actorId: auth.userId,
+    action: "tool.call", resourceType: "tool", resourceId: body.tool,
+    metadata: { credits_cost: creditResult.cost, duration_ms: durationMs },
+    ...meta,
+  });
 
   // Log usage
   await logUsageEvent(c.env.DB, {

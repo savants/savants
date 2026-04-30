@@ -18,6 +18,7 @@ import integrationsRoutes from "./api/integrations";
 import creditsRoutes from "./api/credits";
 import projectsRoutes from "./api/projects";
 import graphRoutes from "./api/graph";
+import auditRoutes from "./api/audit";
 import { sentrySetupPage } from "./pages/sentry-setup";
 import { dashboardPage } from "./pages/dashboard";
 
@@ -149,6 +150,7 @@ api.route("/integrations", integrationsRoutes);
 api.route("/credits", creditsRoutes);
 api.route("/projects", projectsRoutes);
 api.route("/graph", graphRoutes);
+api.route("/audit", auditRoutes);
 
 app.route("/api/v1", api);
 

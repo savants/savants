@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env, AuthContext } from "../lib/types";
 import { upsertUser, createOrg, addMembership } from "../db/queries";
 import { signJwt } from "./jwt";
+import { audit, requestMeta } from "../lib/audit";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -209,6 +210,15 @@ oauth.get("/callback/github", async (c) => {
     avatar_url: ghUser.avatar_url,
     provider: "github",
     provider_id: ghUser.id.toString(),
+  });
+
+  // Audit: login event
+  const meta = requestMeta(c.req.raw);
+  await audit(c.env.DB, {
+    orgId, actorId: user.id, actorEmail: email,
+    action: "auth.login", resourceType: "user", resourceId: user.id,
+    metadata: { provider: "github", login: ghUser.login },
+    ...meta,
   });
 
   // Store GitHub token as an integration (for repo access later)
