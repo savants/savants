@@ -653,52 +653,55 @@ import Base from '../layouts/Base.astro';
     <h2 class="gs-up">Real problems. Solved in seconds.</h2>
     <p class="tools-sub gs-up">Three scenarios every developer hits weekly.</p>
 
-    <div class="tool-row gs-up">
-      <span class="tool-name">semantic_search</span>
-      <span class="tool-desc">"Find the function that retries failed payments"</span>
-      <span class="tool-speed"></span>
-    </div>
-    <div class="tool-row gs-up" style="border-top: none;">
-      <span class="tool-name" style="color: var(--red);">Before</span>
-      <span class="tool-desc">grep "retry" - 23 matches across config files, test mocks, comments</span>
-      <span class="tool-speed" style="color: var(--red);">noise</span>
-    </div>
-    <div class="tool-row gs-up" style="border-top: none;">
-      <span class="tool-name" style="color: var(--accent);">After</span>
-      <span class="tool-desc">handleTransactionWithBackoff() in payment-service.ts:142</span>
-      <span class="tool-speed">~400ms</span>
-    </div>
-
-    <div class="tool-row gs-up" style="margin-top: 24px;">
-      <span class="tool-name">callers</span>
-      <span class="tool-desc">"What calls this function? Will my change break anything?"</span>
-      <span class="tool-speed"></span>
-    </div>
-    <div class="tool-row gs-up" style="border-top: none;">
-      <span class="tool-name" style="color: var(--red);">Before</span>
-      <span class="tool-desc">grep the function name - miss indirect callers, dynamic imports, test files</span>
-      <span class="tool-speed" style="color: var(--red);">incomplete</span>
-    </div>
-    <div class="tool-row gs-up" style="border-top: none;">
-      <span class="tool-name" style="color: var(--accent);">After</span>
-      <span class="tool-desc">7 confirmed callers across 4 services, blast radius = 12 files</span>
-      <span class="tool-speed">~15ms</span>
+    <div class="gs-up" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+        <span class="tool-name" style="font-size:1rem;">semantic_search</span>
+        <span style="color:var(--muted);font-size:0.85rem;">"Find the function that retries failed payments"</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="background:rgba(248,113,113,0.05);border:1px solid rgba(248,113,113,0.15);border-radius:10px;padding:14px;">
+          <div style="font-size:0.7rem;font-weight:600;color:var(--red);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">&#10007; Without savants</div>
+          <div style="font-size:0.85rem;color:var(--muted);">grep "retry" → 23 matches across config files, test mocks, comments</div>
+        </div>
+        <div style="background:rgba(34,211,238,0.05);border:1px solid rgba(34,211,238,0.15);border-radius:10px;padding:14px;">
+          <div style="font-size:0.7rem;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">&#10003; With savants <span style="float:right;font-family:'JetBrains Mono',monospace;opacity:0.6;">~400ms</span></div>
+          <div style="font-size:0.85rem;color:var(--fg);">handleTransactionWithBackoff() in payment-service.ts:142</div>
+        </div>
+      </div>
     </div>
 
-    <div class="tool-row gs-up" style="margin-top: 24px;">
-      <span class="tool-name">file_skeleton</span>
-      <span class="tool-desc">"Show me this file's structure without reading 2,000 lines"</span>
-      <span class="tool-speed"></span>
+    <div class="gs-up" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+        <span class="tool-name" style="font-size:1rem;">callers</span>
+        <span style="color:var(--muted);font-size:0.85rem;">"What calls this function? Will my change break anything?"</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="background:rgba(248,113,113,0.05);border:1px solid rgba(248,113,113,0.15);border-radius:10px;padding:14px;">
+          <div style="font-size:0.7rem;font-weight:600;color:var(--red);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">&#10007; Without savants</div>
+          <div style="font-size:0.85rem;color:var(--muted);">grep the function name - miss indirect callers, dynamic imports</div>
+        </div>
+        <div style="background:rgba(34,211,238,0.05);border:1px solid rgba(34,211,238,0.15);border-radius:10px;padding:14px;">
+          <div style="font-size:0.7rem;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">&#10003; With savants <span style="float:right;font-family:'JetBrains Mono',monospace;opacity:0.6;">~15ms</span></div>
+          <div style="font-size:0.85rem;color:var(--fg);">7 confirmed callers across 4 services, blast radius = 12 files</div>
+        </div>
+      </div>
     </div>
-    <div class="tool-row gs-up" style="border-top: none;">
-      <span class="tool-name" style="color: var(--red);">Before</span>
-      <span class="tool-desc">Read entire file, burn 2,400 tokens on boilerplate</span>
-      <span class="tool-speed" style="color: var(--red);">wasteful</span>
-    </div>
-    <div class="tool-row gs-up" style="border-top: none;">
-      <span class="tool-name" style="color: var(--accent);">After</span>
-      <span class="tool-desc">34 functions with signatures, 85 tokens. 28x less.</span>
-      <span class="tool-speed">~85ms</span>
+
+    <div class="gs-up" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+        <span class="tool-name" style="font-size:1rem;">file_skeleton</span>
+        <span style="color:var(--muted);font-size:0.85rem;">"Show me this file's structure without reading 2,000 lines"</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="background:rgba(248,113,113,0.05);border:1px solid rgba(248,113,113,0.15);border-radius:10px;padding:14px;">
+          <div style="font-size:0.7rem;font-weight:600;color:var(--red);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">&#10007; Without savants</div>
+          <div style="font-size:0.85rem;color:var(--muted);">Read entire file, burn 2,400 tokens on boilerplate</div>
+        </div>
+        <div style="background:rgba(34,211,238,0.05);border:1px solid rgba(34,211,238,0.15);border-radius:10px;padding:14px;">
+          <div style="font-size:0.7rem;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">&#10003; With savants <span style="float:right;font-family:'JetBrains Mono',monospace;opacity:0.6;">~85ms</span></div>
+          <div style="font-size:0.85rem;color:var(--fg);">34 functions with signatures, 85 tokens. 28x less.</div>
+        </div>
+      </div>
     </div>
   </div>
 </section>
