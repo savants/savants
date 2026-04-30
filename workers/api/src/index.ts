@@ -19,6 +19,7 @@ import creditsRoutes from "./api/credits";
 import projectsRoutes from "./api/projects";
 import graphRoutes from "./api/graph";
 import auditRoutes from "./api/audit";
+import transfersRoutes from "./api/transfers";
 import { sentrySetupPage } from "./pages/sentry-setup";
 import { githubSetupPage } from "./pages/github-setup";
 import { dashboardPage } from "./pages/dashboard";
@@ -159,6 +160,7 @@ api.route("/credits", creditsRoutes);
 api.route("/projects", projectsRoutes);
 api.route("/graph", graphRoutes);
 api.route("/audit", auditRoutes);
+api.route("/transfers", transfersRoutes);
 
 app.route("/api/v1", api);
 
