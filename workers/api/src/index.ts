@@ -20,6 +20,7 @@ import projectsRoutes from "./api/projects";
 import graphRoutes from "./api/graph";
 import auditRoutes from "./api/audit";
 import transfersRoutes from "./api/transfers";
+import docsRoutes from "./api/docs";
 import { sentrySetupPage } from "./pages/sentry-setup";
 import { githubSetupPage } from "./pages/github-setup";
 import { dashboardPage } from "./pages/dashboard";
@@ -138,6 +139,7 @@ app.route("/auth", oauthRoutes);
 // ─── Public API routes ──────────────────────────────────────────────────────
 
 app.route("/api/v1/tools", toolsRoutes);
+app.route("/api/v1/docs", docsRoutes);
 
 // ─── Webhook routes (verified by their own signature checks) ─────────────────
 
