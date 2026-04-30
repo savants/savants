@@ -16,6 +16,7 @@ import slackWebhook from "./webhooks/slack";
 import sentryWebhook from "./webhooks/sentry";
 import integrationsRoutes from "./api/integrations";
 import creditsRoutes from "./api/credits";
+import projectsRoutes from "./api/projects";
 import { sentrySetupPage } from "./pages/sentry-setup";
 import { dashboardPage } from "./pages/dashboard";
 
@@ -145,6 +146,7 @@ api.route("/graphs", graphsRoutes);
 api.route("/query", queryRoutes);
 api.route("/integrations", integrationsRoutes);
 api.route("/credits", creditsRoutes);
+api.route("/projects", projectsRoutes);
 
 app.route("/api/v1", api);
 

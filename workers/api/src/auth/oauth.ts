@@ -211,6 +211,21 @@ oauth.get("/callback/github", async (c) => {
     provider_id: ghUser.id.toString(),
   });
 
+  // Store GitHub token as an integration (for repo access later)
+  await c.env.DB
+    .prepare(
+      `INSERT INTO integrations (id, org_id, type, config, credentials, enabled)
+       VALUES (?1, ?2, 'github', ?3, ?4, 1)
+       ON CONFLICT(org_id, type) DO UPDATE SET credentials = ?4, updated_at = unixepoch()`
+    )
+    .bind(
+      crypto.randomUUID(),
+      orgId,
+      JSON.stringify({ login: ghUser.login, avatar_url: ghUser.avatar_url }),
+      JSON.stringify({ access_token: tokens.access_token })
+    )
+    .run();
+
   if (userCode) {
     await approveDeviceSession(c.env.KV, userCode, user.id, orgId);
     // Redirect to activate success page so user sees confirmation
