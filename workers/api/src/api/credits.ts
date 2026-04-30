@@ -15,6 +15,9 @@ export const TOOL_CREDITS: Record<string, number> = {
   radar: 10,
   reindex_diff: 3,
   reindex_full: 20,
+  // Docs
+  doc_upload: 1, // per 10K tokens (calculated dynamically, this is the minimum)
+  doc_crawl: 2,  // per 10K tokens (crawling costs more)
   // Local tools are free
   semantic_search: 0,
   file_skeleton: 0,
