@@ -81,7 +81,8 @@ docs.get("/:provider", async (c) => {
   return c.json(entry);
 });
 
-// GET /api/v1/docs/:provider/search - Search a doc source
+// GET /api/v1/docs/:provider/search - Search a doc source (free, public)
+// Rate limiting handled at Cloudflare edge (WAF → Rate Limiting Rules), not in app
 docs.get("/:provider/search", async (c) => {
   const provider = c.req.param("provider");
   const query = c.req.query("q") || "";
