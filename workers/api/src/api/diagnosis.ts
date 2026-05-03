@@ -39,6 +39,14 @@ interface DiagnosisResult {
     importers: string[];
     blast_radius: number;
   };
+  tickets?: Array<{
+    id: string;
+    title: string;
+    status?: string;
+    assignee?: string;
+    url?: string;
+    priority?: string | number;
+  }>;
 }
 
 export async function diagnoseError(
@@ -88,6 +96,74 @@ export async function diagnoseError(
   } catch {
     // Sentry unavailable - continue without it
   }
+
+  // ── Source 2b: Linear ticket search ──
+  let ticketData: any = null;
+  try {
+    const linearIntegration = await getIntegration(env.DB, orgId, "linear");
+    if (linearIntegration) {
+      const creds = JSON.parse(linearIntegration.credentials || "{}");
+      if (creds.api_key) {
+        const searchTerms = input.error_message.slice(0, 80);
+        const res = await fetch("https://api.linear.app/graphql", {
+          method: "POST",
+          headers: { Authorization: creds.api_key, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query: `query { issueSearch(query: "${searchTerms.replace(/"/g, '\\"')}", first: 3) { nodes { id identifier title state { name } assignee { name } url priority } } }`,
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (res.ok) {
+          const data = await res.json<any>();
+          const issues = data?.data?.issueSearch?.nodes || [];
+          if (issues.length > 0) {
+            sources.push("linear");
+            ticketData = issues.map((i: any) => ({
+              id: i.identifier,
+              title: i.title,
+              status: i.state?.name,
+              assignee: i.assignee?.name,
+              url: i.url,
+              priority: i.priority,
+            }));
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // ── Source 2c: Jira ticket search ──
+  try {
+    const jiraIntegration = await getIntegration(env.DB, orgId, "jira");
+    if (jiraIntegration && !ticketData) {
+      const creds = JSON.parse(jiraIntegration.credentials || "{}");
+      const config = JSON.parse(jiraIntegration.config || "{}");
+      if (creds.email && creds.api_token && config.domain) {
+        const auth64 = btoa(`${creds.email}:${creds.api_token}`);
+        const jql = encodeURIComponent(`text ~ "${input.error_message.slice(0, 60).replace(/"/g, '\\"')}" ORDER BY updated DESC`);
+        const res = await fetch(
+          `https://${config.domain}/rest/api/3/search?jql=${jql}&maxResults=3&fields=summary,status,assignee,priority`,
+          {
+            headers: { Authorization: `Basic ${auth64}` },
+            signal: AbortSignal.timeout(5000),
+          }
+        );
+        if (res.ok) {
+          const data = await res.json<any>();
+          if (data.issues?.length > 0) {
+            sources.push("jira");
+            ticketData = data.issues.map((i: any) => ({
+              id: i.key,
+              title: i.fields?.summary,
+              status: i.fields?.status?.name,
+              assignee: i.fields?.assignee?.displayName,
+              priority: i.fields?.priority?.name,
+            }));
+          }
+        }
+      }
+    }
+  } catch {}
 
   // ── Source 3: Code graph from D1 (if function/file found) ──
   if (parsed.function || parsed.file) {
@@ -166,7 +242,7 @@ export async function diagnoseError(
   }
 
   // ── Build diagnosis from all available sources ──
-  return buildDiagnosis(parsed, sentryData, graphData, sources);
+  return buildDiagnosis(parsed, sentryData, graphData, ticketData, sources);
 }
 
 function parseErrorMessage(msg: string): {
@@ -250,15 +326,85 @@ async function searchSentryEvents(
   org: string,
   errorMessage: string
 ): Promise<any | null> {
-  // Search across all projects for matching recent events
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+
+  // Step 1: Search issues by error message (this is what Sentry MCP does)
+  try {
+    // Clean the error message for search - use key phrases
+    const searchTerms = errorMessage
+      .replace(/['"]/g, "")
+      .split(/\s+/)
+      .filter(w => w.length > 3)
+      .slice(0, 8)
+      .join(" ");
+
+    const query = encodeURIComponent(`is:unresolved ${searchTerms}`);
+    const issuesRes = await fetch(
+      `https://sentry.io/api/0/organizations/${org}/issues/?query=${query}&per_page=5&sort=date`,
+      { headers, signal: AbortSignal.timeout(8000) }
+    );
+
+    if (issuesRes.ok) {
+      const issues = (await issuesRes.json()) as any[];
+      if (issues.length > 0) {
+        const issue = issues[0];
+
+        // Step 2: Get the latest event for this issue (has stack trace, breadcrumbs)
+        try {
+          const eventRes = await fetch(
+            `https://sentry.io/api/0/organizations/${org}/issues/${issue.id}/events/latest/`,
+            { headers, signal: AbortSignal.timeout(5000) }
+          );
+
+          if (eventRes.ok) {
+            const event = (await eventRes.json()) as any;
+            return {
+              issue_id: issue.id,
+              title: issue.title,
+              culprit: issue.culprit,
+              first_seen: issue.firstSeen,
+              last_seen: issue.lastSeen,
+              count: issue.count,
+              level: issue.level,
+              // From the event
+              event_id: event.eventID,
+              tags: event.tags?.map((t: any) => `${t.key}=${t.value}`) || [],
+              breadcrumbs: event.entries
+                ?.find((e: any) => e.type === "breadcrumbs")
+                ?.data?.values?.slice(-10)
+                ?.map((b: any) => `[${b.category}] ${b.message || b.data?.url || ""}`)
+                || [],
+              stack_trace: event.entries
+                ?.find((e: any) => e.type === "exception")
+                ?.data?.values?.[0]?.stacktrace?.frames?.slice(-5)
+                ?.map((f: any) => `${f.filename}:${f.lineNo} in ${f.function}`)
+                || [],
+              platform: event.platform,
+              release: event.release?.version || event.tags?.find((t: any) => t.key === "release")?.value,
+            };
+          }
+        } catch {
+          // Return issue data without event details
+          return {
+            issue_id: issue.id,
+            title: issue.title,
+            culprit: issue.culprit,
+            count: issue.count,
+            last_seen: issue.lastSeen,
+          };
+        }
+      }
+    }
+  } catch {
+    // Search failed
+  }
+
+  // Fallback: try discover events endpoint
   try {
     const query = encodeURIComponent(errorMessage.slice(0, 100));
     const res = await fetch(
       `https://sentry.io/api/0/organizations/${org}/events/?query=${query}&per_page=1&full=true`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(5000),
-      }
+      { headers, signal: AbortSignal.timeout(5000) }
     );
     if (!res.ok) return null;
     const events = (await res.json()) as any[];
@@ -272,6 +418,7 @@ function buildDiagnosis(
   parsed: ReturnType<typeof parseErrorMessage>,
   sentryData: any | null,
   graphData: any | null,
+  ticketData: any | null,
   sources: string[]
 ): DiagnosisResult {
   let rootCause = "";
@@ -400,6 +547,40 @@ function buildDiagnosis(
     }
   }
 
+  // ── Enrich from tickets (Linear/Jira) ──
+  if (ticketData && ticketData.length > 0) {
+    confidence += 0.05;
+    const ticket = ticketData[0];
+    rootCause += `\n\nTracked: ${ticket.id} "${ticket.title}" (${ticket.status}${ticket.assignee ? ", assigned to " + ticket.assignee : ""})`;
+  }
+
+  // ── Enrich from Sentry search results (new format with stack_trace/breadcrumbs) ──
+  if (sentryData?.stack_trace?.length > 0 && !sentryContext) {
+    confidence += 0.15;
+    sentryContext = {
+      breadcrumbs: sentryData.breadcrumbs || [],
+      tags: {},
+      user: null,
+    };
+    // Use Sentry stack trace for file/line
+    const topFrame = sentryData.stack_trace[sentryData.stack_trace.length - 1];
+    if (topFrame) {
+      const match = topFrame.match(/(.+):(\d+) in (.+)/);
+      if (match) {
+        file = file || match[1];
+        line = line || parseInt(match[2]);
+        fn = fn || match[3];
+      }
+    }
+    callChain = callChain.length > 0 ? callChain : sentryData.stack_trace;
+    if (sentryData.count) {
+      rootCause += `\n\nSentry: ${sentryData.count} occurrences. First seen: ${sentryData.first_seen}. Last seen: ${sentryData.last_seen}.`;
+    }
+    if (sentryData.release) {
+      rootCause += ` Release: ${sentryData.release}.`;
+    }
+  }
+
   return {
     root_cause: rootCause,
     file,
@@ -412,5 +593,6 @@ function buildDiagnosis(
     sources_used: sources,
     sentry_context: sentryContext,
     graph_context: graphContext,
+    tickets: ticketData || undefined,
   };
 }

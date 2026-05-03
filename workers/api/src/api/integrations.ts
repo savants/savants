@@ -235,4 +235,187 @@ integrations.post("/sentry/test", async (c) => {
   });
 });
 
+// ── Generic integration CRUD (works for any type) ──
+
+// POST /api/v1/integrations/:type - create/update any integration
+integrations.post("/:type", async (c) => {
+  const auth = c.get("auth");
+  const integrationType = c.req.param("type");
+  const body = await c.req.json<Record<string, unknown>>();
+
+  const validTypes = ["slack", "github", "linear", "jira", "gotify", "pagerduty", "opsgenie", "webhook"];
+  if (!validTypes.includes(integrationType)) {
+    return c.json({ error: "invalid_type", message: `Supported: ${validTypes.join(", ")}` }, 400);
+  }
+
+  // Extract config vs credentials based on type
+  let config: Record<string, unknown> = {};
+  let credentials: Record<string, unknown> = {};
+
+  switch (integrationType) {
+    case "slack":
+      if (!body.bot_token) return c.json({ error: "bot_token required" }, 400);
+      credentials = { bot_token: body.bot_token };
+      config = { channels: body.channels || [], team_name: body.team_name || "" };
+      // Validate token
+      try {
+        const res = await fetch("https://slack.com/api/auth.test", {
+          headers: { Authorization: `Bearer ${body.bot_token}` },
+        });
+        const data = await res.json<{ ok: boolean; team?: string; error?: string }>();
+        if (!data.ok) return c.json({ error: "slack_auth_failed", message: data.error }, 400);
+        config.team_name = data.team || "";
+      } catch (e) {
+        return c.json({ error: "slack_unreachable" }, 502);
+      }
+      break;
+
+    case "github":
+      if (!body.token) return c.json({ error: "token required" }, 400);
+      credentials = { token: body.token };
+      config = { org: body.org || "", repos: body.repos || [] };
+      break;
+
+    case "linear":
+      if (!body.api_key) return c.json({ error: "api_key required" }, 400);
+      credentials = { api_key: body.api_key };
+      config = { team_id: body.team_id || "" };
+      // Validate
+      try {
+        const res = await fetch("https://api.linear.app/graphql", {
+          method: "POST",
+          headers: { Authorization: body.api_key as string, "Content-Type": "application/json" },
+          body: JSON.stringify({ query: "{ viewer { id name } }" }),
+        });
+        const data = await res.json<{ data?: { viewer?: { name: string } } }>();
+        if (!data.data?.viewer) return c.json({ error: "linear_auth_failed" }, 400);
+        config.user_name = data.data.viewer.name;
+      } catch {
+        return c.json({ error: "linear_unreachable" }, 502);
+      }
+      break;
+
+    case "jira":
+      if (!body.email || !body.api_token || !body.domain) return c.json({ error: "email, api_token, domain required" }, 400);
+      credentials = { email: body.email, api_token: body.api_token };
+      config = { domain: body.domain, project_key: body.project_key || "" };
+      break;
+
+    case "gotify":
+      if (!body.url || !body.token) return c.json({ error: "url and token required" }, 400);
+      config = { url: body.url, token: body.token };
+      break;
+
+    case "pagerduty":
+      if (!body.routing_key) return c.json({ error: "routing_key required" }, 400);
+      config = { routing_key: body.routing_key, service_name: body.service_name || "" };
+      break;
+
+    case "opsgenie":
+      if (!body.api_key) return c.json({ error: "api_key required" }, 400);
+      credentials = { api_key: body.api_key };
+      config = { team: body.team || "" };
+      break;
+
+    case "webhook":
+      if (!body.url) return c.json({ error: "url required" }, 400);
+      config = { url: body.url, headers: body.headers || {} };
+      break;
+  }
+
+  const integration = await upsertIntegration(c.env.DB, {
+    id: crypto.randomUUID(),
+    orgId: auth.orgId,
+    type: integrationType,
+    config: JSON.stringify({ ...config, ...credentials }),
+    credentials: JSON.stringify(credentials),
+  });
+
+  return c.json({
+    id: integration.id,
+    type: integrationType,
+    config,
+    enabled: true,
+  });
+});
+
+// DELETE /api/v1/integrations/:type
+integrations.delete("/:type", async (c) => {
+  const auth = c.get("auth");
+  const integrationType = c.req.param("type");
+
+  // Don't match "sentry" - that has its own handler above
+  if (integrationType === "sentry") return c.notFound();
+
+  const existing = await getIntegration(c.env.DB, auth.orgId, integrationType);
+  if (!existing) return c.json({ error: "not_found" }, 404);
+
+  await deleteIntegration(c.env.DB, auth.orgId, integrationType);
+  return c.json({ deleted: true, type: integrationType });
+});
+
+// POST /api/v1/integrations/:type/test - test any integration
+integrations.post("/:type/test", async (c) => {
+  const auth = c.get("auth");
+  const integrationType = c.req.param("type");
+
+  const row = await getIntegration(c.env.DB, auth.orgId, integrationType);
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  const config = JSON.parse(row.config || "{}");
+  const creds = JSON.parse(row.credentials || "{}");
+  let ok = false;
+  let detail = "";
+
+  switch (integrationType) {
+    case "slack": {
+      try {
+        const res = await fetch("https://slack.com/api/auth.test", {
+          headers: { Authorization: `Bearer ${creds.bot_token}` },
+        });
+        const data = await res.json<{ ok: boolean; team?: string }>();
+        ok = !!data.ok;
+        detail = data.team || "";
+      } catch { ok = false; }
+      break;
+    }
+    case "github": {
+      try {
+        const res = await fetch("https://api.github.com/user", {
+          headers: { Authorization: `Bearer ${creds.token}`, "User-Agent": "savants" },
+        });
+        ok = res.ok;
+      } catch { ok = false; }
+      break;
+    }
+    case "linear": {
+      try {
+        const res = await fetch("https://api.linear.app/graphql", {
+          method: "POST",
+          headers: { Authorization: creds.api_key, "Content-Type": "application/json" },
+          body: JSON.stringify({ query: "{ viewer { id } }" }),
+        });
+        const data = await res.json<{ data?: unknown }>();
+        ok = !!data.data;
+      } catch { ok = false; }
+      break;
+    }
+    case "jira": {
+      try {
+        const auth64 = btoa(`${creds.email}:${creds.api_token}`);
+        const res = await fetch(`https://${config.domain}/rest/api/3/myself`, {
+          headers: { Authorization: `Basic ${auth64}` },
+        });
+        ok = res.ok;
+      } catch { ok = false; }
+      break;
+    }
+    default:
+      ok = true;
+      detail = "No validation available for this type";
+  }
+
+  return c.json({ ok, type: integrationType, detail });
+});
+
 export default integrations;
