@@ -501,10 +501,17 @@ const TOOL_LIST: ToolDefinition[] = [
   },
 ];
 
-// Helper: resolve a project ID from an org (uses first project if not specified)
-async function resolveProjectId(db: Env["DB"], orgId: string): Promise<string | null> {
+// Helper: resolve project by repo name, then fall back to most recent
+async function resolveProjectId(db: Env["DB"], orgId: string, repoName?: string): Promise<string | null> {
+  if (repoName) {
+    const slug = repoName.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const byName = await db.prepare(
+      "SELECT id FROM projects WHERE org_id = ?1 AND (slug = ?2 OR name = ?3) LIMIT 1"
+    ).bind(orgId, slug, repoName).first<{ id: string }>();
+    if (byName) return byName.id;
+  }
   const row = await db.prepare(
-    "SELECT id FROM projects WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 1"
+    "SELECT id FROM projects WHERE org_id = ?1 ORDER BY updated_at DESC LIMIT 1"
   ).bind(orgId).first<{ id: string }>();
   return row?.id ?? null;
 }
@@ -571,8 +578,9 @@ tools.post("/call", async (c) => {
   // ── Code analysis tools (D1-backed) ──
   else if (GRAPH_TOOL_NAMES.includes(body.tool)) {
     try {
-      // Resolve project ID from org's first project (or input.project_id)
-      const projectId = (body.input.project_id as string) || await resolveProjectId(c.env.DB, auth.orgId);
+      // Resolve project by repo name or project_id
+      const repoName = (body.input.repo as string) || (body.input.repo_name as string);
+      const projectId = (body.input.project_id as string) || await resolveProjectId(c.env.DB, auth.orgId, repoName);
       if (!projectId) {
         return c.json({
           error: "no_project",
