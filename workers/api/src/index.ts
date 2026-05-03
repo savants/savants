@@ -336,6 +336,16 @@ api.route("/transfers", transfersRoutes);
 api.route("/docs", docsUploadRoutes);
 api.route("/docs", docsIndexerRoutes);
 
+// Telemetry - no auth, anonymous, registered before auth middleware
+app.post("/api/v1/telemetry", async (c) => {
+  const body = await c.req.json<{ d: string; t: string; ms: number; os?: string; arch?: string; v?: string }>();
+  if (!body.d || !body.t) return c.json({ ok: false }, 400);
+  await c.env.DB.prepare(
+    "INSERT INTO telemetry_events (device_id, tool, duration_ms, os, arch, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+  ).bind(body.d, body.t, body.ms || 0, body.os || null, body.arch || null, body.v || null).run();
+  return c.json({ ok: true });
+});
+
 app.route("/api/v1", api);
 
 // ─── 404 fallback ────────────────────────────────────────────────────────────
