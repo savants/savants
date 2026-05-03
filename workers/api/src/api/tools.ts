@@ -457,6 +457,48 @@ const TOOL_LIST: ToolDefinition[] = [
     },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 500, tier: "cloud" },
   },
+  // ── Agent-backed infrastructure tools (queries remote agents) ──
+  {
+    name: "host_health",
+    description: "Remote system health: CPU, memory, load, disk, failed services. Queries a savants agent running on the target machine. Use for production server health checks.",
+    input_schema: {
+      type: "object",
+      properties: {
+        agent: { type: "string", description: "Agent name or ID (optional - uses first online agent)" },
+      },
+    },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 30, tier: "cloud" },
+  },
+  {
+    name: "pod_status",
+    description: "Remote Kubernetes pod status from a savants agent with kubectl access. Structured output with namespace, status, restarts.",
+    input_schema: {
+      type: "object",
+      properties: {
+        agent: { type: "string", description: "Agent name or ID (optional)" },
+        namespace: { type: "string", description: "Namespace filter (optional)" },
+        name: { type: "string", description: "Pod name substring filter (optional)" },
+        status: { type: "string", description: "Status filter: Running, CrashLoopBackOff, etc. (optional)" },
+      },
+    },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 30, tier: "cloud" },
+  },
+  {
+    name: "pod_logs",
+    description: "Remote pod logs from a savants agent. Classified by severity (INFO/WARN/ERROR). Use when debugging why a pod is crashing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        agent: { type: "string", description: "Agent name or ID (optional)" },
+        pod: { type: "string", description: "Pod name or substring" },
+        namespace: { type: "string", description: "Namespace (default: default)" },
+        lines: { type: "integer", description: "Number of lines (default: 100)" },
+        min_severity: { type: "string", description: "Minimum: INFO, WARN, ERROR (default: WARN)" },
+      },
+      required: ["pod"],
+    },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 30, tier: "cloud" },
+  },
 ];
 
 // Helper: resolve a project ID from an org (uses first project if not specified)
@@ -542,6 +584,61 @@ tools.post("/call", async (c) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Analysis failed";
       return c.json({ error: "graph_tool_error", message, status: 500 }, 500);
+    }
+  }
+  // ── Agent-backed infra tools (route to remote agent) ──
+  else if (["host_health", "pod_status", "pod_logs"].includes(body.tool)) {
+    try {
+      const agentName = (body.input.agent as string) || undefined;
+
+      // Find an online agent
+      let agentId: string | undefined;
+      if (agentName) {
+        const agent = await c.env.DB.prepare(
+          "SELECT id FROM agents WHERE org_id = ?1 AND (name = ?2 OR id = ?2) AND status = 'online' LIMIT 1"
+        ).bind(auth.orgId, agentName).first<{ id: string }>();
+        agentId = agent?.id;
+      } else {
+        const agent = await c.env.DB.prepare(
+          "SELECT id FROM agents WHERE org_id = ?1 AND status = 'online' ORDER BY last_heartbeat DESC LIMIT 1"
+        ).bind(auth.orgId).first<{ id: string }>();
+        agentId = agent?.id;
+      }
+
+      if (!agentId) {
+        proxyResult = {
+          tool: body.tool,
+          status: "no_agent",
+          message: "No online agents. Install savants on your server and run: savants agent start",
+        };
+      } else {
+        // Create query and wait for agent to respond
+        const queryId = crypto.randomUUID();
+        await c.env.DB.prepare(
+          "INSERT INTO agent_queries (id, org_id, agent_id, tool, input, status) VALUES (?1, ?2, ?3, ?4, ?5, 'pending')"
+        ).bind(queryId, auth.orgId, agentId, body.tool, JSON.stringify(body.input || {})).run();
+
+        // Long-poll for result (up to 30s)
+        let result: { result: string; status: string } | null = null;
+        const deadline = Date.now() + 30000;
+        while (Date.now() < deadline) {
+          result = await c.env.DB.prepare(
+            "SELECT result, status FROM agent_queries WHERE id = ?1 AND status = 'completed'"
+          ).bind(queryId).first();
+          if (result) break;
+          await new Promise(r => setTimeout(r, 500));
+        }
+
+        if (result) {
+          proxyResult = JSON.parse(result.result || "{}");
+        } else {
+          await c.env.DB.prepare("UPDATE agent_queries SET status = 'timeout' WHERE id = ?1").bind(queryId).run();
+          proxyResult = { tool: body.tool, status: "timeout", message: "Agent did not respond within 30s" };
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Agent query failed";
+      return c.json({ error: "agent_error", message, status: 500 }, 500);
     }
   }
   // ── Tools that need more context (pr_risk needs diff parsing, radar needs integrations) ──

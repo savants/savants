@@ -24,6 +24,7 @@ import docsRoutes from "./api/docs";
 import docsUploadRoutes from "./api/docs-upload";
 import docsSearchRoutes from "./api/docs-search";
 import docsIndexerRoutes from "./api/docs-indexer";
+import agentsRoutes from "./api/agents";
 import { sentrySetupPage } from "./pages/sentry-setup";
 import { githubSetupPage } from "./pages/github-setup";
 import { dashboardPage } from "./pages/dashboard";
@@ -335,6 +336,7 @@ api.route("/audit", auditRoutes);
 api.route("/transfers", transfersRoutes);
 api.route("/docs", docsUploadRoutes);
 api.route("/docs", docsIndexerRoutes);
+api.route("/agents", agentsRoutes);
 
 // Telemetry - no auth, anonymous, registered before auth middleware
 app.post("/api/v1/telemetry", async (c) => {
