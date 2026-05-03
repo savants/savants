@@ -9,6 +9,14 @@ use std::collections::HashMap;
 
 const POLL_INTERVAL_SECS: u64 = 5;
 const HEARTBEAT_INTERVAL_SECS: u64 = 60;
+const WATCH_INTERVAL_SECS: u64 = 60; // Health check every 60s
+
+// Thresholds - no config needed, sensible defaults
+const MEMORY_WARN_PCT: f64 = 85.0;
+const MEMORY_CRIT_PCT: f64 = 95.0;
+const DISK_WARN_PCT: u32 = 85;
+const DISK_CRIT_PCT: u32 = 95;
+const LOAD_WARN_MULTIPLIER: f64 = 2.0; // load > 2x CPU count
 
 pub async fn start(name: Option<String>) {
     let state = crate::config::State::load();
@@ -85,9 +93,47 @@ pub async fn start(name: Option<String>) {
     println!("  Polling for queries...\n");
 
     let mut last_heartbeat = std::time::Instant::now();
+    let mut last_watch = std::time::Instant::now() - std::time::Duration::from_secs(WATCH_INTERVAL_SECS); // trigger immediately
+    let mut known_issues: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Main poll loop
+    // Main loop: poll for queries + proactive health watch
     loop {
+        // Proactive health watch
+        if last_watch.elapsed().as_secs() >= WATCH_INTERVAL_SECS {
+            let findings = watch_health();
+            for finding in &findings {
+                // Only notify once per issue (until it clears)
+                if !known_issues.contains(&finding.key) {
+                    known_issues.insert(finding.key.clone());
+                    println!("[watch] {} - {}", finding.severity, finding.message);
+
+                    // Send to cloud for notification routing
+                    let _ = client
+                        .post(format!("{}/api/v1/agents/notify", cloud_url))
+                        .header("Authorization", format!("Bearer {}", token))
+                        .json(&serde_json::json!({
+                            "agent_id": agent_id,
+                            "agent_name": agent_name,
+                            "severity": finding.severity,
+                            "category": finding.category,
+                            "title": finding.title,
+                            "message": finding.message,
+                            "key": finding.key,
+                            "metadata": finding.metadata,
+                        }))
+                        .send()
+                        .await;
+                }
+            }
+
+            // Clear resolved issues
+            let active_keys: std::collections::HashSet<String> =
+                findings.iter().map(|f| f.key.clone()).collect();
+            known_issues.retain(|k| active_keys.contains(k));
+
+            last_watch = std::time::Instant::now();
+        }
+
         // Heartbeat
         if last_heartbeat.elapsed().as_secs() >= HEARTBEAT_INTERVAL_SECS {
             let _ = client
@@ -380,6 +426,185 @@ fn pod_logs(input: &serde_json::Value) -> serde_json::Value {
         "min_severity": min_severity,
         "logs": filtered.into_iter().take(50).collect::<Vec<_>>(),
     })
+}
+
+// ── Proactive health watch ──
+
+struct Finding {
+    key: String,       // Dedup key (e.g. "memory_high")
+    severity: String,  // "warning" or "critical"
+    category: String,  // "memory", "disk", "load", "service", "pod"
+    title: String,
+    message: String,
+    metadata: serde_json::Value,
+}
+
+fn watch_health() -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // Memory
+    if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+        let mut total = 0u64;
+        let mut avail = 0u64;
+        for line in meminfo.lines() {
+            if let Some(val) = line.strip_prefix("MemTotal:") {
+                total = val.trim().split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            } else if let Some(val) = line.strip_prefix("MemAvailable:") {
+                avail = val.trim().split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            }
+        }
+        if total > 0 {
+            let pct = (total - avail) as f64 / total as f64 * 100.0;
+            if pct >= MEMORY_CRIT_PCT {
+                findings.push(Finding {
+                    key: "memory_critical".into(),
+                    severity: "critical".into(),
+                    category: "memory".into(),
+                    title: format!("Memory critical: {:.0}%", pct),
+                    message: format!("Memory at {:.0}% ({} / {} MB). Risk of OOM.", pct, (total - avail) / 1024, total / 1024),
+                    metadata: serde_json::json!({"percent": pct, "used_mb": (total - avail) / 1024, "total_mb": total / 1024}),
+                });
+            } else if pct >= MEMORY_WARN_PCT {
+                findings.push(Finding {
+                    key: "memory_high".into(),
+                    severity: "warning".into(),
+                    category: "memory".into(),
+                    title: format!("Memory high: {:.0}%", pct),
+                    message: format!("Memory at {:.0}% ({} / {} MB).", pct, (total - avail) / 1024, total / 1024),
+                    metadata: serde_json::json!({"percent": pct}),
+                });
+            }
+        }
+    }
+
+    // Load
+    if let Ok(load) = std::fs::read_to_string("/proc/loadavg") {
+        let load_1m: f64 = load.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
+            let cores = cpuinfo.lines().filter(|l| l.starts_with("processor")).count() as f64;
+            if cores > 0.0 && load_1m > cores * LOAD_WARN_MULTIPLIER {
+                findings.push(Finding {
+                    key: "load_high".into(),
+                    severity: "warning".into(),
+                    category: "load".into(),
+                    title: format!("Load high: {:.1} ({:.0} cores)", load_1m, cores),
+                    message: format!("1-min load {:.1} exceeds {}x CPU count ({:.0}).", load_1m, LOAD_WARN_MULTIPLIER, cores),
+                    metadata: serde_json::json!({"load_1m": load_1m, "cores": cores}),
+                });
+            }
+        }
+    }
+
+    // Disk
+    if let Ok(out) = std::process::Command::new("df")
+        .args(["--output=target,pcent", "-x", "tmpfs", "-x", "devtmpfs"])
+        .output()
+    {
+        if out.status.success() {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            for line in raw.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let mount = parts[0];
+                    let pct: u32 = parts[1].trim_end_matches('%').parse().unwrap_or(0);
+                    if pct >= DISK_CRIT_PCT {
+                        findings.push(Finding {
+                            key: format!("disk_critical_{}", mount),
+                            severity: "critical".into(),
+                            category: "disk".into(),
+                            title: format!("Disk critical: {} at {}%", mount, pct),
+                            message: format!("Disk {} is {}% full. Risk of data loss.", mount, pct),
+                            metadata: serde_json::json!({"mount": mount, "percent": pct}),
+                        });
+                    } else if pct >= DISK_WARN_PCT {
+                        findings.push(Finding {
+                            key: format!("disk_high_{}", mount),
+                            severity: "warning".into(),
+                            category: "disk".into(),
+                            title: format!("Disk high: {} at {}%", mount, pct),
+                            message: format!("Disk {} is {}% full.", mount, pct),
+                            metadata: serde_json::json!({"mount": mount, "percent": pct}),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Failed systemd services
+    if let Ok(out) = std::process::Command::new("systemctl")
+        .args(["--failed", "--no-pager", "--plain", "--no-legend"])
+        .output()
+    {
+        if out.status.success() {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let failed: Vec<String> = raw.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.split_whitespace().next().unwrap_or(l).to_string())
+                .collect();
+            for svc in &failed {
+                findings.push(Finding {
+                    key: format!("service_failed_{}", svc),
+                    severity: "warning".into(),
+                    category: "service".into(),
+                    title: format!("Service failed: {}", svc),
+                    message: format!("systemd unit {} has failed.", svc),
+                    metadata: serde_json::json!({"service": svc}),
+                });
+            }
+        }
+    }
+
+    // K8s: pods not running
+    if which("kubectl") {
+        if let Ok(out) = std::process::Command::new("kubectl")
+            .args(["get", "pods", "--all-namespaces", "-o", "json"])
+            .output()
+        {
+            if out.status.success() {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    if let Some(items) = json["items"].as_array() {
+                        for item in items {
+                            let name = item["metadata"]["name"].as_str().unwrap_or("?");
+                            let ns = item["metadata"]["namespace"].as_str().unwrap_or("?");
+                            let phase = item["status"]["phase"].as_str().unwrap_or("Unknown");
+
+                            // Check container statuses for CrashLoopBackOff
+                            let mut bad_status = None;
+                            if let Some(containers) = item["status"]["containerStatuses"].as_array() {
+                                for c in containers {
+                                    if let Some(reason) = c["state"]["waiting"]["reason"].as_str() {
+                                        if reason == "CrashLoopBackOff" || reason == "ErrImagePull" || reason == "ImagePullBackOff" {
+                                            bad_status = Some(reason.to_string());
+                                        }
+                                    }
+                                }
+                                let restarts: u64 = containers.iter()
+                                    .map(|c| c["restartCount"].as_u64().unwrap_or(0))
+                                    .sum();
+                                if restarts > 10 {
+                                    bad_status.get_or_insert_with(|| format!("{} restarts", restarts));
+                                }
+                            }
+
+                            if let Some(status) = bad_status {
+                                findings.push(Finding {
+                                    key: format!("pod_{}_{}", ns, name),
+                                    severity: "critical".into(),
+                                    category: "pod".into(),
+                                    title: format!("Pod {}/{}: {}", ns, name, status),
+                                    message: format!("Pod {}/{} is {}. Phase: {}.", ns, name, status, phase),
+                                    metadata: serde_json::json!({"pod": name, "namespace": ns, "status": status}),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    findings
 }
 
 fn which(cmd: &str) -> bool {

@@ -179,4 +179,136 @@ agents.post("/query", async (c) => {
   }, 504);
 });
 
+// GET /agents/events - Recent agent findings (for dashboard/API consumers)
+agents.get("/events", async (c) => {
+  const auth = c.get("auth");
+  const limit = parseInt(c.req.query("limit") || "20");
+  const since = c.req.query("since"); // unix timestamp
+
+  let query = `
+    SELECT id, action, resource_id, metadata, created_at
+    FROM audit_log
+    WHERE org_id = ?1 AND action = 'agent.notify'
+    ORDER BY created_at DESC LIMIT ?2
+  `;
+  const params: unknown[] = [auth.orgId, limit];
+
+  if (since) {
+    query = `
+      SELECT id, action, resource_id, metadata, created_at
+      FROM audit_log
+      WHERE org_id = ?1 AND action = 'agent.notify' AND created_at > ?3
+      ORDER BY created_at DESC LIMIT ?2
+    `;
+    params.push(parseInt(since));
+  }
+
+  const result = await c.env.DB.prepare(query).bind(...params).all();
+
+  const events = (result.results as any[]).map(r => {
+    const meta = JSON.parse(r.metadata || "{}");
+    return {
+      id: r.id,
+      severity: meta.severity,
+      category: meta.category,
+      title: meta.title,
+      message: meta.message,
+      agent: meta.agent_name,
+      timestamp: r.created_at,
+    };
+  });
+
+  return c.json({ events });
+});
+
+// POST /agents/notify - Agent sends a finding, cloud routes to notification channels
+agents.post("/notify", async (c) => {
+  const auth = c.get("auth");
+  const body = await c.req.json<{
+    agent_id: string;
+    agent_name: string;
+    severity: string;
+    category: string;
+    title: string;
+    message: string;
+    key: string;
+    metadata?: Record<string, unknown>;
+  }>();
+
+  const now = Math.floor(Date.now() / 1000);
+
+  // Store as audit log entry (no project FK needed)
+  await c.env.DB.prepare(`
+    INSERT INTO audit_log (id, org_id, actor_id, action, resource_type, resource_id, metadata, ip, user_agent, created_at)
+    VALUES (?1, ?2, ?3, 'agent.notify', 'agent', ?4, ?5, '', '', ?6)
+  `).bind(
+    crypto.randomUUID(),
+    auth.orgId,
+    body.agent_id,
+    body.agent_id,
+    JSON.stringify({ severity: body.severity, category: body.category, title: body.title, message: body.message, key: body.key, agent_name: body.agent_name, ...body.metadata }),
+    now,
+  ).run();
+
+  // Route to notification channels
+  const integrations = await c.env.DB.prepare(
+    "SELECT type, config FROM integrations WHERE org_id = ?1 AND type IN ('slack', 'gotify', 'pagerduty', 'webhook')"
+  ).bind(auth.orgId).all();
+
+  const notifications: Promise<void>[] = [];
+
+  for (const integration of integrations.results as any[]) {
+    const config = JSON.parse(integration.config || "{}");
+
+    if (integration.type === "gotify" && config.url && config.token) {
+      notifications.push(
+        fetch(`${config.url}/message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Gotify-Key": config.token },
+          body: JSON.stringify({
+            title: `[${body.severity}] ${body.title}`,
+            message: `${body.message}\n\nAgent: ${body.agent_name}\nCategory: ${body.category}`,
+            priority: body.severity === "critical" ? 8 : 4,
+          }),
+        }).then(() => {})
+      );
+    }
+
+    if (integration.type === "slack" && config.webhook_url) {
+      const emoji = body.severity === "critical" ? ":rotating_light:" : ":warning:";
+      notifications.push(
+        fetch(config.webhook_url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: `${emoji} *${body.title}*\n${body.message}\n_Agent: ${body.agent_name}_`,
+          }),
+        }).then(() => {})
+      );
+    }
+
+    if (integration.type === "webhook" && config.url) {
+      notifications.push(
+        fetch(config.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(config.headers || {}) },
+          body: JSON.stringify({
+            severity: body.severity,
+            category: body.category,
+            title: body.title,
+            message: body.message,
+            agent: body.agent_name,
+            metadata: body.metadata,
+            timestamp: now,
+          }),
+        }).then(() => {})
+      );
+    }
+  }
+
+  await Promise.allSettled(notifications);
+
+  return c.json({ ok: true, notified: integrations.results.length });
+});
+
 export default agents;
