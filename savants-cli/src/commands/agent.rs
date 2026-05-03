@@ -9,7 +9,8 @@ use std::collections::HashMap;
 
 const POLL_INTERVAL_SECS: u64 = 5;
 const HEARTBEAT_INTERVAL_SECS: u64 = 60;
-const WATCH_INTERVAL_SECS: u64 = 60; // Health check every 60s
+const WATCH_INTERVAL_SECS: u64 = 60;
+const GIT_WATCH_INTERVAL_SECS: u64 = 10; // Check for pushes every 10s
 
 // Thresholds - no config needed, sensible defaults
 const MEMORY_WARN_PCT: f64 = 85.0;
@@ -100,10 +101,26 @@ pub async fn start(name: Option<String>) {
         }
     };
 
+    // Discover git repos to watch
+    let repos = discover_git_repos();
+    if !repos.is_empty() {
+        println!("  Watching {} repos:", repos.len());
+        for r in &repos {
+            println!("    {}", r.display());
+        }
+    }
+    let mut repo_heads: HashMap<String, String> = HashMap::new();
+    for repo in &repos {
+        if let Some(head) = git_head(repo) {
+            repo_heads.insert(repo.to_string_lossy().to_string(), head);
+        }
+    }
+
     println!("  Polling for queries...\n");
 
     let mut last_heartbeat = std::time::Instant::now();
-    let mut last_watch = std::time::Instant::now() - std::time::Duration::from_secs(WATCH_INTERVAL_SECS); // trigger immediately
+    let mut last_watch = std::time::Instant::now() - std::time::Duration::from_secs(WATCH_INTERVAL_SECS);
+    let mut last_git_watch = std::time::Instant::now();
     let mut known_issues: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Main loop: poll for queries + proactive health watch
@@ -142,6 +159,84 @@ pub async fn start(name: Option<String>) {
             known_issues.retain(|k| active_keys.contains(k));
 
             last_watch = std::time::Instant::now();
+        }
+
+        // Git watch: detect pushes, reindex, upload to D1
+        if last_git_watch.elapsed().as_secs() >= GIT_WATCH_INTERVAL_SECS {
+            for repo in &repos {
+                let repo_str = repo.to_string_lossy().to_string();
+                let current_head = git_head(repo).unwrap_or_default();
+                let previous_head = repo_heads.get(&repo_str).cloned().unwrap_or_default();
+
+                if !current_head.is_empty() && current_head != previous_head {
+                    let repo_name = repo.file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    println!("[git] {} changed: {} -> {}", repo_name, &previous_head[..7.min(previous_head.len())], &current_head[..7.min(current_head.len())]);
+
+                    // Parse the repo
+                    let mut parser = crate::code_parser::CodeParser::new(&repo_name);
+                    let result = parser.parse_repo(&repo_str);
+                    println!("[git] {} parsed: {} files, {} entities, {} calls", repo_name, result.files, result.entities.len(), result.call_sites.len());
+
+                    // Upload to cloud D1
+                    let upload = client
+                        .post(format!("{}/api/v1/ingest/parse-result", cloud_url))
+                        .header("Authorization", format!("Bearer {}", token))
+                        .json(&serde_json::json!({
+                            "repo": repo_name,
+                            "files": result.files,
+                            "entities": result.entities,
+                            "call_sites": result.call_sites,
+                        }))
+                        .send()
+                        .await;
+
+                    match upload {
+                        Ok(resp) if resp.status().is_success() => {
+                            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                            println!("[git] {} uploaded: {} nodes, {} edges",
+                                repo_name,
+                                body["nodes"].as_u64().unwrap_or(0),
+                                body["edges"].as_u64().unwrap_or(0),
+                            );
+                        }
+                        Ok(resp) => {
+                            let text = resp.text().await.unwrap_or_default();
+                            eprintln!("[git] {} upload failed: {}", repo_name, text);
+                        }
+                        Err(e) => {
+                            eprintln!("[git] {} upload error: {}", repo_name, e);
+                        }
+                    }
+
+                    // Track deploy: check if this commit is being deployed to k8s
+                    if which("kubectl") {
+                        if let Some(deploy_info) = detect_deploy(&repo_name, &current_head) {
+                            println!("[deploy] {} -> {}", repo_name, deploy_info);
+                            let _ = client
+                                .post(format!("{}/api/v1/agents/notify", cloud_url))
+                                .header("Authorization", format!("Bearer {}", token))
+                                .json(&serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "agent_name": agent_name,
+                                    "severity": "info",
+                                    "category": "deploy",
+                                    "title": format!("Deploy: {} @ {}", repo_name, &current_head[..7]),
+                                    "message": deploy_info,
+                                    "key": format!("deploy_{}_{}", repo_name, &current_head[..7]),
+                                    "metadata": serde_json::json!({"repo": repo_name, "commit": current_head}),
+                                }))
+                                .send()
+                                .await;
+                        }
+                    }
+
+                    repo_heads.insert(repo_str, current_head);
+                }
+            }
+            last_git_watch = std::time::Instant::now();
         }
 
         // Heartbeat
@@ -1189,6 +1284,93 @@ fn get_process_cpu(pid: u32) -> Option<f64> {
     if seconds <= 0.0 { return None; }
 
     Some((total_time as f64 / hz as f64) / seconds * 100.0)
+}
+
+// ── Git watch helpers ──
+
+fn discover_git_repos() -> Vec<std::path::PathBuf> {
+    let mut repos = Vec::new();
+
+    // Check common locations
+    let home = dirs::home_dir().unwrap_or_default();
+    let search_dirs = vec![
+        home.join("git"),
+        home.join("projects"),
+        home.join("src"),
+        home.join("repos"),
+        std::path::PathBuf::from("/opt"),
+        std::path::PathBuf::from("/srv"),
+    ];
+
+    for dir in search_dirs {
+        if !dir.exists() { continue; }
+        // Check top-level dirs for .git
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.join(".git").exists() {
+                    repos.push(path.clone());
+                }
+                // One level deeper (for org/repo structure like ~/git/bernadinm/savants)
+                if path.is_dir() {
+                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                        for sub in sub_entries.flatten() {
+                            if sub.path().join(".git").exists() {
+                                repos.push(sub.path());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    repos.sort();
+    repos.dedup();
+    repos
+}
+
+fn git_head(repo: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["-C", &repo.to_string_lossy(), "rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn detect_deploy(repo_name: &str, commit: &str) -> Option<String> {
+    // Check if any k8s deployment has an image tag matching this commit
+    let output = std::process::Command::new("kubectl")
+        .args(["get", "deployments", "--all-namespaces", "-o", "json"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() { return None; }
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let items = json["items"].as_array()?;
+    let short_commit = &commit[..7.min(commit.len())];
+
+    for item in items {
+        let name = item["metadata"]["name"].as_str().unwrap_or("?");
+        let ns = item["metadata"]["namespace"].as_str().unwrap_or("?");
+
+        if let Some(containers) = item["spec"]["template"]["spec"]["containers"].as_array() {
+            for c in containers {
+                let image = c["image"].as_str().unwrap_or("");
+                // Match by commit SHA in image tag or by repo name
+                if image.contains(short_commit) || (image.to_lowercase().contains(&repo_name.to_lowercase()) && image.contains(':')) {
+                    return Some(format!("{}/{} image={}", ns, name, image));
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn which(cmd: &str) -> bool {
