@@ -6,6 +6,7 @@ import { diagnoseError } from "./diagnosis";
 import { deductCredits, TOOL_CREDITS } from "./credits";
 import { audit, requestMeta } from "../lib/audit";
 import { executeGraphTool, GRAPH_TOOL_NAMES } from "./graph-tools";
+import { toolFindCauses } from "./causal";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -457,6 +458,21 @@ const TOOL_LIST: ToolDefinition[] = [
     },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 500, tier: "cloud" },
   },
+  // ── Causal inference ──
+  {
+    name: "find_causes",
+    description: "ROOT CAUSE ANALYSIS: Given an incident (crash, error, alert), traces the dependency graph backwards to find what caused it. Scores candidates by structural proximity, temporal correlation, and historical frequency. Returns ranked probable causes with confidence scores.",
+    input_schema: {
+      type: "object",
+      properties: {
+        node_name: { type: "string", description: "Name of the affected function, pod, or service" },
+        event_type: { type: "string", description: "Type: error, pod_crash, alert, latency_spike (optional)" },
+        lookback_minutes: { type: "integer", description: "How far back to search (default 60)" },
+      },
+      required: ["node_name"],
+    },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 200, tier: "cloud" },
+  },
   // ── Agent-backed infrastructure tools (queries remote agents) ──
   {
     name: "host_health",
@@ -560,8 +576,23 @@ tools.post("/call", async (c) => {
   const startTime = Date.now();
   let proxyResult: Record<string, unknown>;
 
+  // ── Causal inference ──
+  if (body.tool === "find_causes") {
+    try {
+      const repoName = (body.input.repo as string) || (body.input.repo_name as string);
+      const projectId = (body.input.project_id as string) || await resolveProjectId(c.env.DB, auth.orgId, repoName);
+      if (!projectId) {
+        proxyResult = { error: "no_project", message: "No project found. Run 'savants reindex' first." };
+      } else {
+        proxyResult = await toolFindCauses(c.env.DB, projectId, body.input);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Causal analysis failed";
+      return c.json({ error: "causal_error", message, status: 500 }, 500);
+    }
+  }
   // ── Handle diagnose_error directly (uses all available sources) ──
-  if (body.tool === "diagnose_error" || body.tool === "diagnose") {
+  else if (body.tool === "diagnose_error" || body.tool === "diagnose") {
     try {
       const result = await diagnoseError(c.env, auth.orgId, {
         error_message: (body.input.error_message as string) || (body.input.error as string) || (body.input.query as string) || "",

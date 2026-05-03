@@ -10,6 +10,7 @@ export const TOOL_CREDITS: Record<string, number> = {
   // Diagnosis (most expensive - cross-layer analysis)
   diagnose_error: 50,
   diagnose: 25,
+  find_causes: 20,
   unanswered_questions: 50,
   pr_risk: 20,
   radar: 10,
