@@ -368,29 +368,8 @@ async fn main() {
                 println!("{}", "Agent key revocation requires savants.cloud.".dimmed());
                 println!("Run {} to connect first.", "savants connect".cyan());
             }
-            AgentAction::Run { key, cluster } => {
-                let agent_key = key
-                    .or_else(|| std::env::var("SAVANTS_AGENT_KEY").ok())
-                    .unwrap_or_else(|| {
-                        eprintln!("{}: No agent key provided.", "Error".red());
-                        eprintln!("Set --key or SAVANTS_AGENT_KEY env var.");
-                        std::process::exit(1);
-                    });
-                let cluster_name = cluster
-                    .or_else(|| std::env::var("SAVANTS_CLUSTER").ok())
-                    .unwrap_or_else(|| {
-                        // Try to detect from hostname
-                        hostname::get()
-                            .map(|h| h.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| "unknown".to_string())
-                    });
-                println!("{}", "Starting Savants agent...".bold());
-                println!("  Cluster: {}", cluster_name.cyan());
-                println!("  Key:     {}...", &agent_key[..std::cmp::min(20, agent_key.len())]);
-                println!();
-                // TODO: Run the ingest loop, pushing deltas to savants.cloud
-                println!("{}", "Agent mode requires savants.cloud (coming soon).".yellow());
-                println!("For local monitoring, use: {}", "savants k8s watch".cyan());
+            AgentAction::Run { key: _, cluster } => {
+                commands::agent::start(cluster).await;
             }
         },
         Commands::Connect { action } => match action {
