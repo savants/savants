@@ -71,33 +71,68 @@ is_nixos() {
 
 install_nixos() {
     printf "\n%s  savants%s %sinstaller (NixOS)%s\n\n" "$BOLD" "$RESET" "$DIM" "$RESET"
-    info "NixOS detected - building from source with nix-shell"
+    info "NixOS detected - using static binary"
 
-    if ! command -v nix-shell >/dev/null 2>&1; then
-        error "nix-shell not found"
-    fi
-
-    # Check if already installed
+    # Check current version
     if [ -x "$BIN_DIR/savants" ]; then
         CURRENT_VERSION="$("$BIN_DIR/savants" --version 2>/dev/null | awk '{print $2}')" || true
-        info "Current version: ${BOLD}v${CURRENT_VERSION}${RESET}"
     fi
 
-    mkdir -p "$BIN_DIR"
+    LATEST_VERSION="$(fetch_quiet "${R2_URL}/latest/version.txt")" || true
+    LATEST_VERSION="$(echo "$LATEST_VERSION" | tr -d '[:space:]')"
 
-    # Clone or update source
+    if [ -n "$CURRENT_VERSION" ] && [ -n "$LATEST_VERSION" ]; then
+        if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+            ok "Already on latest: ${BOLD}v${CURRENT_VERSION}${RESET}"
+            printf "\n"
+            exit 0
+        fi
+        info "Updating: ${BOLD}v${CURRENT_VERSION}${RESET} -> ${BOLD}v${LATEST_VERSION}${RESET}"
+    elif [ -n "$LATEST_VERSION" ]; then
+        info "Installing: ${BOLD}v${LATEST_VERSION}${RESET}"
+    fi
+
+    mkdir -p "$BIN_DIR" "$SAVANTS_HOME/data"
+
+    # Try static musl binary first (no dynamic linker needed)
+    ARCHIVE="savants-x86_64-unknown-linux-musl.tar.gz"
+    TMP_FILE="/tmp/${ARCHIVE}"
+
+    info "Downloading static binary..."
+    if fetch "${R2_URL}/latest/${ARCHIVE}" "$TMP_FILE" 2>/dev/null; then
+        ok "Downloaded static binary"
+        tar xzf "$TMP_FILE" -C "$BIN_DIR"
+        [ -f "$BIN_DIR/savants-x86_64-unknown-linux-musl" ] && mv "$BIN_DIR/savants-x86_64-unknown-linux-musl" "$BIN_DIR/savants"
+        chmod +x "$BIN_DIR/savants"
+        rm -f "$TMP_FILE"
+
+        # Verify it runs
+        if "$BIN_DIR/savants" --version >/dev/null 2>&1; then
+            ensure_path
+            INSTALLED_VERSION="$("$BIN_DIR/savants" --version 2>/dev/null | awk '{print $2}')" || true
+            printf "\n%s%s  savants v%s installed%s\n\n" "$GREEN" "$BOLD" "${INSTALLED_VERSION:-?}" "$RESET"
+            printf "  %ssavants up%s            auto-detect + index your repo\n" "$BOLD" "$RESET"
+            printf "  %ssavants serve%s         start MCP server for your AI editor\n" "$BOLD" "$RESET"
+            printf "\n  %sTo update later: curl -fsSL savants.sh | sh%s\n\n" "$DIM" "$RESET"
+            return
+        fi
+        warn "Static binary failed, falling back to source build..."
+    fi
+
+    # Fallback: build from source
+    info "Building from source (this takes ~2 min on first run)..."
+    if ! command -v nix-shell >/dev/null 2>&1; then
+        error "nix-shell not found and static binary unavailable"
+    fi
+
     SRC_DIR="/tmp/savants-src"
     if [ -d "$SRC_DIR/.git" ]; then
-        info "Updating source..."
         git -C "$SRC_DIR" pull --quiet 2>/dev/null || true
     else
-        info "Cloning source..."
         rm -rf "$SRC_DIR"
         git clone --quiet --depth 1 https://github.com/savants-dev/savants.git "$SRC_DIR"
     fi
 
-    # Build with nix-shell providing deps
-    info "Building (this takes ~2 min on first run)..."
     nix-shell -p pkg-config openssl cmake --extra-experimental-features flakes \
         --run "cd $SRC_DIR && cargo build --release 2>&1" | tail -3
 
@@ -105,14 +140,10 @@ install_nixos() {
         cp "$SRC_DIR/target/release/savants" "$BIN_DIR/savants"
         chmod +x "$BIN_DIR/savants"
         ensure_path
-
         INSTALLED_VERSION="$("$BIN_DIR/savants" --version 2>/dev/null | awk '{print $2}')" || true
         printf "\n%s%s  savants v%s installed%s\n\n" "$GREEN" "$BOLD" "${INSTALLED_VERSION:-?}" "$RESET"
-        printf "  %ssavants up%s            auto-detect + index your repo\n" "$BOLD" "$RESET"
-        printf "  %ssavants serve%s         start MCP server for your AI editor\n" "$BOLD" "$RESET"
-        printf "\n  %sTo update later: curl -fsSL savants.sh | sh%s\n\n" "$DIM" "$RESET"
     else
-        error "Build failed. Run manually: nix-shell -p pkg-config openssl cmake --run 'cargo build --release'"
+        error "Build failed. Run: nix-shell -p pkg-config openssl cmake --run 'cargo build --release'"
     fi
 }
 
