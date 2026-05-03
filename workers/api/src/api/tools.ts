@@ -47,7 +47,7 @@ const TOOL_LIST: ToolDefinition[] = [
   },
   {
     name: "where_used",
-    description: "ALWAYS USE INSTEAD OF GREP FOR USAGE SEARCH. Returns every caller and importer from the call graph. FREE, runs locally.",
+    description: "ALWAYS USE INSTEAD OF GREP FOR USAGE SEARCH. Returns every caller and importer from code analysis. FREE, runs locally.",
     input_schema: {
       type: "object",
       properties: {
@@ -60,7 +60,7 @@ const TOOL_LIST: ToolDefinition[] = [
   },
   {
     name: "callers",
-    description: "ALWAYS USE INSTEAD OF GREP FOR CALLER SEARCH. Exact functions that call a given function, from the call graph. FREE, runs locally.",
+    description: "ALWAYS USE INSTEAD OF GREP FOR CALLER SEARCH. Exact functions that call a given function, from code analysis. FREE, runs locally.",
     input_schema: {
       type: "object",
       properties: {
@@ -72,10 +72,10 @@ const TOOL_LIST: ToolDefinition[] = [
     },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 0, tier: "local" },
   },
-  // ── Graph tools (cloud, D1-backed) ──
+  // ── Code analysis tools (cloud) ──
   {
     name: "graph_stats",
-    description: "Total nodes, edges, events in the code graph. Quick health check for graph coverage.",
+    description: "Total functions, connections, and events indexed. Quick health check for coverage.",
     input_schema: { type: "object", properties: {} },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" },
   },
@@ -131,7 +131,7 @@ const TOOL_LIST: ToolDefinition[] = [
   },
   {
     name: "import_tree",
-    description: "Full import graph of a file to N depth. Shows what each file imports recursively. One call replaces reading 5+ files.",
+    description: "Full import tree of a file to N depth. Shows what each file imports recursively. One call replaces reading 5+ files.",
     input_schema: {
       type: "object",
       properties: {
@@ -156,7 +156,7 @@ const TOOL_LIST: ToolDefinition[] = [
   },
   {
     name: "search_code",
-    description: "Search graph nodes by name pattern. Finds functions, classes, types matching a substring.",
+    description: "Search indexed code by name pattern. Finds functions, classes, types matching a substring.",
     input_schema: {
       type: "object",
       properties: {
@@ -398,7 +398,7 @@ const TOOL_LIST: ToolDefinition[] = [
   },
   {
     name: "diagnose",
-    description: "General error analysis with full graph context. Cross-layer diagnosis across code, infrastructure, and logs.",
+    description: "General error analysis with full context. Cross-layer diagnosis across code, infrastructure, and logs.",
     input_schema: {
       type: "object",
       properties: {
@@ -436,7 +436,7 @@ const TOOL_LIST: ToolDefinition[] = [
   },
   {
     name: "radar",
-    description: "Personal what-did-I-miss digest. Surfaces drift between your graph and production state.",
+    description: "Personal what-did-I-miss digest. Surfaces drift between your code and production state.",
     input_schema: {
       type: "object",
       properties: {
@@ -526,7 +526,7 @@ tools.post("/call", async (c) => {
       return c.json({ error: "diagnosis_error", message, status: 500 }, 500);
     }
   }
-  // ── Graph tools (D1-backed) ──
+  // ── Code analysis tools (D1-backed) ──
   else if (GRAPH_TOOL_NAMES.includes(body.tool)) {
     try {
       // Resolve project ID from org's first project (or input.project_id)
@@ -540,7 +540,7 @@ tools.post("/call", async (c) => {
       }
       proxyResult = await executeGraphTool(c.env.DB, projectId, body.tool, body.input);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Graph tool failed";
+      const message = err instanceof Error ? err.message : "Analysis failed";
       return c.json({ error: "graph_tool_error", message, status: 500 }, 500);
     }
   }
@@ -549,8 +549,8 @@ tools.post("/call", async (c) => {
     proxyResult = {
       tool: body.tool,
       status: "needs_graph",
-      message: `${body.tool} requires the code graph to be ingested. Run 'savants reindex' in your repo, then the graph will be available for analysis.`,
-      hint: "Use blast_radius, impact_analysis, function_xray, dead_code (graph tools) for code analysis. Use diagnose_error for error diagnosis with Sentry.",
+      message: `${body.tool} requires your codebase to be indexed. Run 'savants reindex' in your repo first.`,
+      hint: "Use blast_radius, impact_analysis, function_xray, dead_code for code analysis. Use diagnose_error for error diagnosis with Sentry.",
     };
   }
   else {
