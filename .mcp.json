@@ -4,12 +4,7 @@
       "args": [
         "serve"
       ],
-      "command": "/home/miguel/git/bernadinm/savants/savants-cli/target/release/savants",
-      "env": {
-        "SAVANTS_HOST": "localhost",
-        "SAVANTS_MEMORY": "savants",
-        "SAVANTS_PORT": "6379"
-      }
+      "command": "/home/miguel/.savants/bin/savants"
     }
   }
 }

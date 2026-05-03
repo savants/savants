@@ -343,7 +343,7 @@ graph.post("/ingest", async (c) => {
 
 // ─── Ingest from OSS binary (accepts ParseResult format) ────────────────────
 
-graph.post("/ingest/parse-result", async (c) => {
+graph.post("/parse-result", async (c) => {
   const auth = c.get("auth");
   const body = await c.req.json<{
     repo: string;
