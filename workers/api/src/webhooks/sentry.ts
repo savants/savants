@@ -239,38 +239,62 @@ async function handleSentryAlert(
     return c.json({ received: true, resource, auto_diagnose: false, error_message: errorMessage });
   }
 
-  // Proxy diagnose_error to GRAPH_PROXY_URL
+  // Run diagnosis directly (no proxy needed - we have the diagnosis engine locally)
+  const { diagnoseError } = await import("../api/diagnosis");
   const startTime = Date.now();
   let diagnosisResult: Record<string, unknown> = {};
 
   try {
-    const proxyRes = await fetch(`${c.env.GRAPH_PROXY_URL}/api/v1/tools/call`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Webhook-Source": "sentry",
-        "X-Org-Id": orgId,
-      },
-      body: JSON.stringify({
-        tool: "diagnose_error",
-        input: { error_message: diagnosisInput },
-      }),
+    const result = await diagnoseError(c.env, orgId, {
+      error_message: diagnosisInput,
+      sentry_event_id: eventId || undefined,
+      sentry_project: projectSlug || undefined,
     });
-
-    if (proxyRes.ok) {
-      diagnosisResult = await proxyRes.json<Record<string, unknown>>();
-    } else {
-      const errText = await proxyRes.text();
-      console.error(`[sentry] proxy error for org ${orgId}: ${proxyRes.status} - ${errText.substring(0, 500)}`);
-      return c.json({ received: true, resource, proxy_error: true, status: proxyRes.status });
-    }
+    diagnosisResult = result as unknown as Record<string, unknown>;
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown proxy error";
-    console.error(`[sentry] proxy error for org ${orgId}: ${message}`);
-    return c.json({ received: true, resource, proxy_error: true, message });
+    const message = err instanceof Error ? err.message : "Diagnosis failed";
+    console.error(`[sentry] diagnosis error for org ${orgId}: ${message}`);
+    return c.json({ received: true, resource, diagnosis_error: true, message });
   }
 
   const durationMs = Date.now() - startTime;
+
+  // Store as graph event for causal inference
+  try {
+    // Find the project for this sentry project slug
+    const project = await c.env.DB.prepare(
+      "SELECT project_id FROM project_sources WHERE source_type = 'sentry' AND source_config LIKE ?1 LIMIT 1"
+    ).bind(`%${projectSlug || "vocator"}%`).first<{ project_id: string }>();
+
+    if (project) {
+      // Match error to a code graph node via function name from stack trace
+      let nodeId: string | null = null;
+      const fn = (diagnosisResult as any).function;
+      if (fn) {
+        const node = await c.env.DB.prepare(
+          "SELECT id FROM graph_nodes WHERE project_id = ?1 AND name = ?2 LIMIT 1"
+        ).bind(project.project_id, fn).first<{ id: string }>();
+        nodeId = node?.id || null;
+      }
+
+      await c.env.DB.prepare(`
+        INSERT INTO graph_events (id, project_id, type, title, description, severity, node_id, source_type, source_ref, metadata, occurred_at)
+        VALUES (?1, ?2, 'sentry_error', ?3, ?4, ?5, ?6, 'sentry', ?7, ?8, ?9)
+      `).bind(
+        crypto.randomUUID(),
+        project.project_id,
+        errorMessage.slice(0, 200),
+        diagnosisInput.slice(0, 1000),
+        (diagnosisResult as any).severity || "error",
+        nodeId,
+        eventId || issueUrl,
+        JSON.stringify({ project_slug: projectSlug, issue_url: issueUrl, confidence: (diagnosisResult as any).confidence }),
+        Math.floor(Date.now() / 1000),
+      ).run();
+    }
+  } catch {
+    // Non-fatal: graph storage failed but diagnosis still proceeds
+  }
 
   // Log usage event
   await logUsageEvent(c.env.DB, {
@@ -285,7 +309,13 @@ async function handleSentryAlert(
   });
 
   // Format the diagnosis for Slack
-  const diagnosis = (diagnosisResult.diagnosis as string) ?? (diagnosisResult.summary as string) ?? JSON.stringify(diagnosisResult, null, 2).substring(0, 2000);
+  const dr = diagnosisResult as any;
+  let diagnosis = dr.root_cause || "";
+  if (dr.file) diagnosis += `\nFile: ${dr.file}:${dr.line || "?"}`;
+  if (dr.function) diagnosis += `\nFunction: ${dr.function}()`;
+  if (dr.suggested_fix) diagnosis += `\nFix: ${dr.suggested_fix}`;
+  if (dr.confidence) diagnosis += `\nConfidence: ${Math.round(dr.confidence * 100)}%`;
+  if (!diagnosis) diagnosis = JSON.stringify(diagnosisResult, null, 2).substring(0, 2000);
 
   // Post to Slack if the org has a Slack integration configured
   if (config.slack_channel) {
