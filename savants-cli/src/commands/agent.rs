@@ -442,6 +442,9 @@ struct Finding {
 fn watch_health() -> Vec<Finding> {
     let mut findings = Vec::new();
 
+    // ── Security checks ──
+    findings.extend(watch_security());
+
     // Memory
     if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
         let mut total = 0u64;
@@ -605,6 +608,321 @@ fn watch_health() -> Vec<Finding> {
     }
 
     findings
+}
+
+// ── Security watch ──
+
+fn watch_security() -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let baseline_dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".savants")
+        .join("baselines");
+    let _ = std::fs::create_dir_all(&baseline_dir);
+
+    // 1. Suspicious processes (crypto miners, reverse shells)
+    if let Ok(proc_dir) = std::fs::read_dir("/proc") {
+        let suspicious_names = [
+            "xmrig", "minerd", "cpuminer", "cgminer", "bfgminer", "ethminer",
+            "kdevtmpfsi", "kinsing", "dbused", "dbus-daemon-", // common malware names
+        ];
+        let suspicious_cmdlines = [
+            "stratum+tcp", "stratum+ssl", // mining pool protocols
+            "bash -i >& /dev/tcp",        // reverse shell
+            "nc -e /bin",                 // netcat shell
+            "/dev/tcp/",                  // bash reverse shell
+            "python -c 'import socket",  // python reverse shell
+        ];
+
+        for entry in proc_dir.flatten() {
+            let pid = match entry.file_name().to_string_lossy().parse::<u32>() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            let cmdline_path = format!("/proc/{}/cmdline", pid);
+            let comm_path = format!("/proc/{}/comm", pid);
+
+            let comm = std::fs::read_to_string(&comm_path).unwrap_or_default();
+            let comm = comm.trim();
+            let cmdline = std::fs::read_to_string(&cmdline_path)
+                .unwrap_or_default()
+                .replace('\0', " ");
+
+            // Check process name
+            for name in &suspicious_names {
+                if comm.contains(name) {
+                    // Get CPU usage
+                    let cpu = get_process_cpu(pid).unwrap_or(0.0);
+                    findings.push(Finding {
+                        key: format!("suspicious_process_{}_{}", name, pid),
+                        severity: "critical".into(),
+                        category: "security".into(),
+                        title: format!("Suspicious process: {} (PID {})", comm, pid),
+                        message: format!(
+                            "Process '{}' matches known malware signature '{}'. CPU: {:.0}%. Cmdline: {}",
+                            comm, name, cpu, cmdline.chars().take(200).collect::<String>()
+                        ),
+                        metadata: serde_json::json!({"pid": pid, "comm": comm, "cpu": cpu}),
+                    });
+                }
+            }
+
+            // Check cmdline patterns
+            for pattern in &suspicious_cmdlines {
+                if cmdline.contains(pattern) {
+                    findings.push(Finding {
+                        key: format!("suspicious_cmdline_{}_{}", pid, &pattern[..8.min(pattern.len())]),
+                        severity: "critical".into(),
+                        category: "security".into(),
+                        title: format!("Suspicious command: PID {}", pid),
+                        message: format!(
+                            "Process {} running suspicious command matching '{}': {}",
+                            comm, pattern, cmdline.chars().take(300).collect::<String>()
+                        ),
+                        metadata: serde_json::json!({"pid": pid, "pattern": pattern}),
+                    });
+                }
+            }
+
+            // High CPU unknown process (potential miner)
+            if !comm.is_empty() {
+                let cpu = get_process_cpu(pid).unwrap_or(0.0);
+                if cpu > 90.0 {
+                    let known_high_cpu = ["cc1", "gcc", "rustc", "cargo", "node", "python", "java", "go", "make", "ninja", "nix"];
+                    if !known_high_cpu.iter().any(|k| comm.contains(k)) {
+                        findings.push(Finding {
+                            key: format!("high_cpu_process_{}", pid),
+                            severity: "warning".into(),
+                            category: "security".into(),
+                            title: format!("High CPU process: {} ({:.0}%)", comm, cpu),
+                            message: format!(
+                                "Unknown process '{}' (PID {}) using {:.0}% CPU. Could be a crypto miner.",
+                                comm, pid, cpu
+                            ),
+                            metadata: serde_json::json!({"pid": pid, "comm": comm, "cpu": cpu}),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. SSH authorized_keys changes
+    let ssh_baseline = baseline_dir.join("ssh_keys.txt");
+    let mut current_keys = String::new();
+    for user_dir in &["/root", "/home"] {
+        if let Ok(entries) = std::fs::read_dir(user_dir) {
+            for entry in entries.flatten() {
+                let auth_keys = entry.path().join(".ssh").join("authorized_keys");
+                if auth_keys.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&auth_keys) {
+                        current_keys.push_str(&format!("{}:\n{}\n", auth_keys.display(), content));
+                    }
+                }
+            }
+        }
+        // Also check the path directly (for /root)
+        let auth_keys = std::path::PathBuf::from(user_dir).join(".ssh").join("authorized_keys");
+        if auth_keys.exists() {
+            if let Ok(content) = std::fs::read_to_string(&auth_keys) {
+                current_keys.push_str(&format!("{}:\n{}\n", auth_keys.display(), content));
+            }
+        }
+    }
+
+    if !current_keys.is_empty() {
+        if let Ok(baseline) = std::fs::read_to_string(&ssh_baseline) {
+            if baseline != current_keys {
+                findings.push(Finding {
+                    key: "ssh_keys_changed".into(),
+                    severity: "critical".into(),
+                    category: "security".into(),
+                    title: "SSH authorized_keys changed".into(),
+                    message: "SSH authorized keys have been modified since last baseline. Verify no unauthorized keys were added.".into(),
+                    metadata: serde_json::json!({"baseline_size": baseline.len(), "current_size": current_keys.len()}),
+                });
+            }
+        } else {
+            // First run - save baseline
+            let _ = std::fs::write(&ssh_baseline, &current_keys);
+        }
+    }
+
+    // 3. New cron jobs
+    let cron_baseline = baseline_dir.join("cron_jobs.txt");
+    let mut current_crons = String::new();
+    for cron_dir in &["/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/var/spool/cron/crontabs"] {
+        if let Ok(entries) = std::fs::read_dir(cron_dir) {
+            for entry in entries.flatten() {
+                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                    current_crons.push_str(&format!("{}:\n{}\n", entry.path().display(), content));
+                }
+            }
+        }
+    }
+    // User crontabs
+    if let Ok(out) = std::process::Command::new("crontab").args(["-l"]).output() {
+        if out.status.success() {
+            current_crons.push_str(&format!("user_crontab:\n{}\n", String::from_utf8_lossy(&out.stdout)));
+        }
+    }
+
+    if !current_crons.is_empty() {
+        if let Ok(baseline) = std::fs::read_to_string(&cron_baseline) {
+            if baseline != current_crons {
+                findings.push(Finding {
+                    key: "cron_jobs_changed".into(),
+                    severity: "warning".into(),
+                    category: "security".into(),
+                    title: "Cron jobs changed".into(),
+                    message: "Scheduled tasks have been modified. Verify no unauthorized cron jobs were added.".into(),
+                    metadata: serde_json::json!({}),
+                });
+            }
+        } else {
+            let _ = std::fs::write(&cron_baseline, &current_crons);
+        }
+    }
+
+    // 4. New user accounts
+    let passwd_baseline = baseline_dir.join("passwd.txt");
+    if let Ok(current_passwd) = std::fs::read_to_string("/etc/passwd") {
+        if let Ok(baseline) = std::fs::read_to_string(&passwd_baseline) {
+            let baseline_users: std::collections::HashSet<&str> = baseline.lines().collect();
+            let new_users: Vec<&str> = current_passwd.lines()
+                .filter(|l| !baseline_users.contains(l))
+                .collect();
+            for user_line in &new_users {
+                let username = user_line.split(':').next().unwrap_or("?");
+                findings.push(Finding {
+                    key: format!("new_user_{}", username),
+                    severity: "critical".into(),
+                    category: "security".into(),
+                    title: format!("New user account: {}", username),
+                    message: format!("User '{}' was added to /etc/passwd since last baseline.", username),
+                    metadata: serde_json::json!({"user": username}),
+                });
+            }
+        } else {
+            let _ = std::fs::write(&passwd_baseline, &current_passwd);
+        }
+    }
+
+    // 5. Unusual outbound connections
+    if let Ok(out) = std::process::Command::new("ss")
+        .args(["-tnp", "state", "established"])
+        .output()
+    {
+        if out.status.success() {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let well_known_ports = [80, 443, 53, 22, 6443, 8443, 5432, 3306, 6379, 8080, 9090, 10250];
+            for line in raw.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 5 {
+                    let remote = parts[4]; // peer address
+                    if let Some(port_str) = remote.rsplit(':').next() {
+                        if let Ok(port) = port_str.parse::<u16>() {
+                            // Flag connections to unusual high ports (potential C2)
+                            if port > 10000 && !well_known_ports.contains(&port) {
+                                let process = parts.get(5).unwrap_or(&"?");
+                                // Skip known services
+                                if !process.contains("kubelet") && !process.contains("containerd")
+                                    && !process.contains("flannel") && !process.contains("coredns")
+                                    && !process.contains("cloudflared")
+                                {
+                                    findings.push(Finding {
+                                        key: format!("outbound_{}_{}", remote, port),
+                                        severity: "warning".into(),
+                                        category: "security".into(),
+                                        title: format!("Unusual outbound connection to port {}", port),
+                                        message: format!("Connection to {} from process {}. Non-standard port.", remote, process),
+                                        metadata: serde_json::json!({"remote": remote, "port": port, "process": process}),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. K8s: privileged pods
+    if which("kubectl") {
+        if let Ok(out) = std::process::Command::new("kubectl")
+            .args(["get", "pods", "--all-namespaces", "-o", "json"])
+            .output()
+        {
+            if out.status.success() {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    if let Some(items) = json["items"].as_array() {
+                        for item in items {
+                            let name = item["metadata"]["name"].as_str().unwrap_or("?");
+                            let ns = item["metadata"]["namespace"].as_str().unwrap_or("?");
+
+                            // Skip kube-system - those are expected to be privileged
+                            if ns == "kube-system" { continue; }
+
+                            if let Some(containers) = item["spec"]["containers"].as_array() {
+                                for c in containers {
+                                    let privileged = c["securityContext"]["privileged"].as_bool().unwrap_or(false);
+                                    let host_network = item["spec"]["hostNetwork"].as_bool().unwrap_or(false);
+                                    let host_pid = item["spec"]["hostPID"].as_bool().unwrap_or(false);
+
+                                    if privileged {
+                                        findings.push(Finding {
+                                            key: format!("privileged_pod_{}_{}", ns, name),
+                                            severity: "warning".into(),
+                                            category: "security".into(),
+                                            title: format!("Privileged pod: {}/{}", ns, name),
+                                            message: format!("Pod {}/{} container {} runs as privileged. Container escape risk.", ns, name, c["name"].as_str().unwrap_or("?")),
+                                            metadata: serde_json::json!({"pod": name, "namespace": ns}),
+                                        });
+                                    }
+                                    if host_network || host_pid {
+                                        findings.push(Finding {
+                                            key: format!("host_access_pod_{}_{}", ns, name),
+                                            severity: "warning".into(),
+                                            category: "security".into(),
+                                            title: format!("Host access pod: {}/{}", ns, name),
+                                            message: format!("Pod {}/{} has hostNetwork={} hostPID={}.", ns, name, host_network, host_pid),
+                                            metadata: serde_json::json!({"pod": name, "namespace": ns, "host_network": host_network, "host_pid": host_pid}),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+fn get_process_cpu(pid: u32) -> Option<f64> {
+    // Read /proc/[pid]/stat for CPU time
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let fields: Vec<&str> = stat.split_whitespace().collect();
+    if fields.len() < 15 { return None; }
+    let utime: u64 = fields[13].parse().ok()?;
+    let stime: u64 = fields[14].parse().ok()?;
+
+    // Read system uptime
+    let uptime_str = std::fs::read_to_string("/proc/uptime").ok()?;
+    let uptime: f64 = uptime_str.split_whitespace().next()?.parse().ok()?;
+
+    // Process start time (field 21, in clock ticks)
+    let starttime: u64 = fields[21].parse().ok()?;
+    let hz = 100u64; // clock ticks per second (standard on Linux)
+
+    let total_time = utime + stime;
+    let seconds = uptime - (starttime as f64 / hz as f64);
+    if seconds <= 0.0 { return None; }
+
+    Some((total_time as f64 / hz as f64) / seconds * 100.0)
 }
 
 fn which(cmd: &str) -> bool {
