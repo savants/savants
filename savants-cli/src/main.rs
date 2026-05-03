@@ -99,10 +99,49 @@ enum Commands {
     Disconnect,
     /// Show usage this month (calls, cost, by tool)
     Usage,
+    /// Manage projects and their data sources
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
     /// View internal state
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectAction {
+    /// Create a new project
+    Create {
+        /// Project name (e.g. talent-pipeline)
+        name: String,
+        /// GitHub repo (e.g. sourcecoders-ai/talent-pipeline)
+        #[arg(long)]
+        github: Option<String>,
+        /// Sentry project slug
+        #[arg(long)]
+        sentry: Option<String>,
+        /// K8s namespace
+        #[arg(long)]
+        k8s: Option<String>,
+    },
+    /// List all projects
+    List,
+    /// Show project details with all sources
+    Show {
+        /// Project name or ID
+        name: String,
+    },
+    /// Add a source to a project
+    Connect {
+        /// Project name
+        project: String,
+        /// Source type: github, sentry, k8s, slack
+        source_type: String,
+        /// Source identifier (repo name, project slug, namespace, channel)
+        source_id: String,
     },
 }
 
@@ -398,6 +437,9 @@ async fn main() {
         }
         Commands::Usage => {
             commands::usage::run().await;
+        }
+        Commands::Project { action } => {
+            commands::project::run(action).await;
         }
         Commands::Config { action } => {
             match action {
