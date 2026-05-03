@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 const VERSION_URL: &str = "https://releases.savants.dev/latest/version.txt";
 const CHECK_INTERVAL: Duration = Duration::from_secs(86400); // 24 hours
-const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CURRENT_VERSION: &str = env!("SAVANTS_VERSION");
 
 fn cache_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".savants").join("data").join("last_version_check"))

@@ -36,5 +36,17 @@ fn main() {
         }
     )).unwrap();
 
+    // Version from git tag
+    let version = std::process::Command::new("git")
+        .args(["describe", "--tags", "--abbrev=0"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().trim_start_matches('v').to_string())
+        .unwrap_or_else(|| env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string()));
+
+    println!("cargo:rustc-env=SAVANTS_VERSION={}", version);
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../.git/refs/tags");
 }

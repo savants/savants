@@ -35,7 +35,7 @@ pub use utils::find_in_path;
 #[derive(Parser)]
 #[command(name = "savants")]
 #[command(about = "Your infrastructure savant. Know what's wrong in 60 seconds.")]
-#[command(version)]
+#[command(version = env!("SAVANTS_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
