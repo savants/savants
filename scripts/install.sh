@@ -65,7 +65,64 @@ fetch_quiet() {
     fi
 }
 
+is_nixos() {
+    [ -f /etc/NIXOS ] || [ -d /nix/store ]
+}
+
+install_nixos() {
+    printf "\n%s  savants%s %sinstaller (NixOS)%s\n\n" "$BOLD" "$RESET" "$DIM" "$RESET"
+    info "NixOS detected - building from source with nix-shell"
+
+    if ! command -v nix-shell >/dev/null 2>&1; then
+        error "nix-shell not found"
+    fi
+
+    # Check if already installed
+    if [ -x "$BIN_DIR/savants" ]; then
+        CURRENT_VERSION="$("$BIN_DIR/savants" --version 2>/dev/null | awk '{print $2}')" || true
+        info "Current version: ${BOLD}v${CURRENT_VERSION}${RESET}"
+    fi
+
+    mkdir -p "$BIN_DIR"
+
+    # Clone or update source
+    SRC_DIR="/tmp/savants-src"
+    if [ -d "$SRC_DIR/.git" ]; then
+        info "Updating source..."
+        git -C "$SRC_DIR" pull --quiet 2>/dev/null || true
+    else
+        info "Cloning source..."
+        rm -rf "$SRC_DIR"
+        git clone --quiet --depth 1 https://github.com/savants-dev/savants.git "$SRC_DIR"
+    fi
+
+    # Build with nix-shell providing deps
+    info "Building (this takes ~2 min on first run)..."
+    nix-shell -p pkg-config openssl cmake --extra-experimental-features flakes \
+        --run "cd $SRC_DIR && cargo build --release 2>&1" | tail -3
+
+    if [ -f "$SRC_DIR/target/release/savants" ]; then
+        cp "$SRC_DIR/target/release/savants" "$BIN_DIR/savants"
+        chmod +x "$BIN_DIR/savants"
+        ensure_path
+
+        INSTALLED_VERSION="$("$BIN_DIR/savants" --version 2>/dev/null | awk '{print $2}')" || true
+        printf "\n%s%s  savants v%s installed%s\n\n" "$GREEN" "$BOLD" "${INSTALLED_VERSION:-?}" "$RESET"
+        printf "  %ssavants up%s            auto-detect + index your repo\n" "$BOLD" "$RESET"
+        printf "  %ssavants serve%s         start MCP server for your AI editor\n" "$BOLD" "$RESET"
+        printf "\n  %sTo update later: curl -fsSL savants.sh | sh%s\n\n" "$DIM" "$RESET"
+    else
+        error "Build failed. Run manually: nix-shell -p pkg-config openssl cmake --run 'cargo build --release'"
+    fi
+}
+
 main() {
+    # NixOS: dynamically linked binaries don't work, use nix flake instead
+    if is_nixos; then
+        install_nixos
+        return
+    fi
+
     printf "\n%s  savants%s %sinstaller%s\n\n" "$BOLD" "$RESET" "$DIM" "$RESET"
     detect_platform
     info "Platform: ${BOLD}${TARGET}${RESET}"
