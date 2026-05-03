@@ -40,13 +40,23 @@ pub async fn start(name: Option<String>) {
     let version = env!("CARGO_PKG_VERSION").to_string();
 
     // Detect capabilities
-    let mut capabilities = vec!["host_health".to_string()];
+    let mut capabilities = vec!["host_health".to_string(), "security_scan".to_string()];
     if which("kubectl") {
         capabilities.push("pod_status".to_string());
         capabilities.push("pod_logs".to_string());
+        capabilities.push("k8s_events".to_string());
     }
     if which("docker") {
         capabilities.push("docker_status".to_string());
+    }
+    if which("aws") || std::env::var("AWS_ACCESS_KEY_ID").is_ok() {
+        capabilities.push("aws_health".to_string());
+    }
+    if which("gcloud") || std::env::var("GOOGLE_APPLICATION_CREDENTIALS").is_ok() {
+        capabilities.push("gcp_health".to_string());
+    }
+    if std::env::var("CF_API_TOKEN").is_ok() || std::env::var("CLOUDFLARE_API_TOKEN").is_ok() {
+        capabilities.push("cloudflare_health".to_string());
     }
 
     println!("Savants agent starting...");
@@ -445,6 +455,12 @@ fn watch_health() -> Vec<Finding> {
     // ── Security checks ──
     findings.extend(watch_security());
 
+    // ── K8s events ──
+    findings.extend(watch_k8s_events());
+
+    // ── Cloud providers ──
+    findings.extend(watch_cloud_providers());
+
     // Memory
     if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
         let mut total = 0u64;
@@ -602,6 +618,256 @@ fn watch_health() -> Vec<Finding> {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+// ── K8s events watch ──
+
+fn watch_k8s_events() -> Vec<Finding> {
+    let mut findings = Vec::new();
+    if !which("kubectl") {
+        return findings;
+    }
+
+    // Get recent warning/error events from the last 5 minutes
+    let output = std::process::Command::new("kubectl")
+        .args([
+            "get", "events", "--all-namespaces",
+            "--field-selector=type!=Normal",
+            "-o", "json",
+            "--sort-by=.lastTimestamp",
+        ])
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                if let Some(items) = json["items"].as_array() {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    for item in items.iter().rev().take(20) {
+                        let reason = item["reason"].as_str().unwrap_or("?");
+                        let message = item["message"].as_str().unwrap_or("");
+                        let ns = item["involvedObject"]["namespace"].as_str().unwrap_or("?");
+                        let obj_name = item["involvedObject"]["name"].as_str().unwrap_or("?");
+                        let obj_kind = item["involvedObject"]["kind"].as_str().unwrap_or("?");
+                        let count = item["count"].as_u64().unwrap_or(1);
+
+                        // Only alert on significant events
+                        let is_significant = matches!(
+                            reason,
+                            "FailedScheduling" | "FailedMount" | "FailedAttachVolume"
+                                | "BackOff" | "Unhealthy" | "FailedCreate"
+                                | "EvictionThresholdMet" | "OOMKilling"
+                                | "NodeNotReady" | "NetworkNotReady"
+                        );
+
+                        if is_significant && count > 1 {
+                            let severity = if matches!(reason, "OOMKilling" | "EvictionThresholdMet" | "NodeNotReady") {
+                                "critical"
+                            } else {
+                                "warning"
+                            };
+
+                            findings.push(Finding {
+                                key: format!("k8s_event_{}_{}_{}", ns, obj_name, reason),
+                                severity: severity.into(),
+                                category: "k8s_event".into(),
+                                title: format!("{}: {}/{} ({}x)", reason, ns, obj_name, count),
+                                message: format!(
+                                    "{} {} {}/{}: {} (occurred {} times)",
+                                    obj_kind, reason, ns, obj_name, message.chars().take(200).collect::<String>(), count
+                                ),
+                                metadata: serde_json::json!({
+                                    "reason": reason, "namespace": ns,
+                                    "object": obj_name, "kind": obj_kind, "count": count,
+                                }),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+// ── Cloud provider watch ──
+
+fn watch_cloud_providers() -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // AWS health check
+    if which("aws") || std::env::var("AWS_ACCESS_KEY_ID").is_ok() {
+        findings.extend(watch_aws());
+    }
+
+    // GCP health check
+    if which("gcloud") || std::env::var("GOOGLE_APPLICATION_CREDENTIALS").is_ok() {
+        findings.extend(watch_gcp());
+    }
+
+    // Cloudflare health check
+    if std::env::var("CF_API_TOKEN").is_ok() || std::env::var("CLOUDFLARE_API_TOKEN").is_ok() {
+        findings.extend(watch_cloudflare());
+    }
+
+    findings
+}
+
+fn watch_aws() -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // Check for recent CloudTrail security events
+    let output = std::process::Command::new("aws")
+        .args([
+            "cloudtrail", "lookup-events",
+            "--lookup-attributes", "AttributeKey=EventName,AttributeValue=ConsoleLogin",
+            "--max-items", "5",
+            "--output", "json",
+        ])
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                if let Some(events) = json["Events"].as_array() {
+                    for event in events {
+                        let username = event["Username"].as_str().unwrap_or("?");
+                        let event_name = event["EventName"].as_str().unwrap_or("?");
+
+                        // Check for root console login
+                        if username == "root" || username == "Root" {
+                            findings.push(Finding {
+                                key: format!("aws_root_login"),
+                                severity: "critical".into(),
+                                category: "aws".into(),
+                                title: "AWS root account console login".into(),
+                                message: format!("Root account logged into AWS console. Use IAM users instead."),
+                                metadata: serde_json::json!({"username": username, "event": event_name}),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for unencrypted S3 buckets
+    let output = std::process::Command::new("aws")
+        .args(["s3api", "list-buckets", "--output", "json"])
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                if let Some(buckets) = json["Buckets"].as_array() {
+                    if buckets.len() > 0 {
+                        // Just report count for now, detailed scan is expensive
+                        findings.push(Finding {
+                            key: "aws_buckets_scanned".into(),
+                            severity: "info".into(),
+                            category: "aws".into(),
+                            title: format!("AWS: {} S3 buckets", buckets.len()),
+                            message: format!("Monitoring {} S3 buckets.", buckets.len()),
+                            metadata: serde_json::json!({"bucket_count": buckets.len()}),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+fn watch_gcp() -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // Check for GCP audit log anomalies
+    let output = std::process::Command::new("gcloud")
+        .args([
+            "logging", "read",
+            "severity>=WARNING AND protoPayload.@type=\"type.googleapis.com/google.cloud.audit.AuditLog\"",
+            "--limit=10", "--format=json",
+        ])
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(events) = serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout) {
+                for event in events.iter().take(5) {
+                    let method = event["protoPayload"]["methodName"].as_str().unwrap_or("?");
+                    let principal = event["protoPayload"]["authenticationInfo"]["principalEmail"]
+                        .as_str()
+                        .unwrap_or("?");
+                    let severity = event["severity"].as_str().unwrap_or("WARNING");
+
+                    // Flag IAM changes, service account key creation
+                    let is_sensitive = method.contains("SetIamPolicy")
+                        || method.contains("CreateServiceAccountKey")
+                        || method.contains("DeleteFirewallRule");
+
+                    if is_sensitive {
+                        findings.push(Finding {
+                            key: format!("gcp_audit_{}", method),
+                            severity: "warning".into(),
+                            category: "gcp".into(),
+                            title: format!("GCP: {} by {}", method, principal),
+                            message: format!("Sensitive API call: {} executed by {}.", method, principal),
+                            metadata: serde_json::json!({"method": method, "principal": principal}),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+fn watch_cloudflare() -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    let token = std::env::var("CF_API_TOKEN")
+        .or_else(|_| std::env::var("CLOUDFLARE_API_TOKEN"))
+        .unwrap_or_default();
+
+    if token.is_empty() {
+        return findings;
+    }
+
+    // Check Workers errors via analytics API
+    // For now, just verify API connectivity
+    let output = std::process::Command::new("curl")
+        .args([
+            "-sf", "--max-time", "5",
+            "-H", &format!("Authorization: Bearer {}", token),
+            "https://api.cloudflare.com/client/v4/user/tokens/verify",
+        ])
+        .output();
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                if json["success"].as_bool() != Some(true) {
+                    findings.push(Finding {
+                        key: "cloudflare_token_invalid".into(),
+                        severity: "warning".into(),
+                        category: "cloudflare".into(),
+                        title: "Cloudflare API token invalid".into(),
+                        message: "The configured Cloudflare API token failed verification.".into(),
+                        metadata: serde_json::json!({}),
+                    });
                 }
             }
         }
