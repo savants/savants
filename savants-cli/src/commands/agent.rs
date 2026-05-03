@@ -1338,15 +1338,28 @@ fn discover_git_repos() -> Vec<std::path::PathBuf> {
 }
 
 fn git_head(repo: &std::path::Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["-C", &repo.to_string_lossy(), "rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
+    let repo_str = repo.to_string_lossy();
+
+    // Fetch latest from remote (non-blocking, ignore errors)
+    let _ = std::process::Command::new("git")
+        .args(["-C", &repo_str, "fetch", "--quiet"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    // Track origin/main (deployed code), not whatever branch is checked out
+    for branch in &["origin/main", "origin/master", "HEAD"] {
+        let output = std::process::Command::new("git")
+            .args(["-C", &repo_str, "rev-parse", branch])
+            .output()
+            .ok();
+        if let Some(out) = output {
+            if out.status.success() {
+                return Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
+            }
+        }
     }
+    None
 }
 
 fn detect_deploy(repo_name: &str, commit: &str) -> Option<String> {
