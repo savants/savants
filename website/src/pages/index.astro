@@ -387,6 +387,16 @@ import Base from '../layouts/Base.astro';
     color: var(--accent); margin-bottom: 6px; font-weight: 500;
   }
   .cloud-tool p { font-size: 0.85rem; color: var(--muted); }
+  .tool-detail {
+    display: none; margin-top: 16px; padding-top: 16px;
+    border-top: 1px solid var(--border); font-size: 0.85rem;
+    animation: detailFade 0.3s ease;
+  }
+  .tool-detail.open { display: block; }
+  @keyframes detailFade { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+  .detail-label { font-size: 0.7rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+  .detail-input { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+  .detail-output { font-size: 0.85rem; line-height: 1.7; color: var(--fg); }
   .tool-price {
     font-family: 'Inter', sans-serif; font-size: 0.75rem; font-weight: 600;
     color: var(--accent); background: rgba(34,211,238,0.1);
@@ -527,6 +537,7 @@ import Base from '../layouts/Base.astro';
   <div class="links" id="navLinks">
     <a href="/case-study">Case Study</a>
     <a href="https://github.com/savants-dev/savants" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://api.savants.cloud/api/v1/docs" target="_blank">Docs</a>
     <a href="https://savants.cloud/activate" class="nav-cta">Get Started</a>
   </div>
   <button class="hamburger" id="hamburgerBtn" aria-label="Menu">
@@ -833,23 +844,92 @@ import Base from '../layouts/Base.astro';
     <p class="cloud-intro gs-up">Cloud tools add production intelligence. Pay per call, no commitments.</p>
 
     <div class="cloud-tools">
-      <div class="cloud-tool gs-up">
+      <div class="cloud-tool gs-up" id="card-diagnose" onclick="toggleDetail('detail-diagnose')" style="cursor:pointer">
         <img src="/diagnose-feature.png" alt="Error diagnosis" style="width:100%;border-radius:8px;margin-bottom:12px;opacity:0.85">
         <h4>diagnose-error <span class="tool-price">50 credits</span></h4>
         <p>Root cause file + line in 0.7s. Upstream trace, git blame, Slack context.</p>
+        <div class="tool-detail" id="detail-diagnose">
+          <div class="detail-label">Example</div>
+          <div class="detail-input">Input: "PrismaClientKnownRequestError: Foreign key constraint violated on ProcessingJob_userId"</div>
+          <div class="detail-output">
+            <div><strong>Root cause:</strong> sendFailureNotification() at resume-review.activities.ts:838</div>
+            <div style="margin-top:8px"><strong>Upstream trace:</strong></div>
+            <div style="padding-left:12px;color:var(--muted)">
+              &larr; triggered by generateAIReview() (LLM validation failed)<br>
+              &larr; triggered by Temporal worker activity
+            </div>
+            <div style="margin-top:8px"><strong>Fix:</strong> Verify userId exists before prisma.create()</div>
+            <div style="margin-top:8px;font-size:0.75rem;color:var(--muted)">Confidence: 85% (enriched with Sentry breadcrumbs)</div>
+          </div>
+        </div>
       </div>
-      <div class="cloud-tool gs-up">
+      <div class="cloud-tool gs-up" id="card-prrisk" onclick="toggleDetail('detail-prrisk')" style="cursor:pointer">
         <img src="/pr-risk-feature.png" alt="PR risk analysis" style="width:100%;border-radius:8px;margin-bottom:12px;opacity:0.85">
         <h4>pr-risk <span class="tool-price">20 credits</span></h4>
         <p>8-check risk analysis per PR. Blast radius, affected consumers, test gaps.</p>
+        <div class="tool-detail" id="detail-prrisk">
+          <div class="detail-label">Example</div>
+          <div class="detail-input">Input: PR #847 - "Refactor payment retry logic"</div>
+          <div class="detail-output">
+            <div><strong>Risk:</strong> <span style="color:var(--yellow)">Medium (6/10)</span></div>
+            <div style="margin-top:8px"><strong>Blast radius:</strong> 12 files, 3 services affected</div>
+            <div style="margin-top:8px"><strong>Warnings:</strong></div>
+            <div style="padding-left:12px;color:var(--muted)">
+              &#9888; Removed error retry - was this intentional?<br>
+              &#9888; paymentService.ts has no test coverage for this path<br>
+              &#10003; No breaking API changes detected
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="cloud-tool gs-up">
+      <div class="cloud-tool gs-up" id="card-diffimpact" onclick="toggleDetail('detail-diffimpact')" style="cursor:pointer">
+        <img src="/graph-viz.png" alt="Impact analysis" style="width:100%;border-radius:8px;margin-bottom:12px;opacity:0.85">
         <h4>diff-impact <span class="tool-price">10 credits</span></h4>
         <p>Full downstream impact analysis across services and modules.</p>
+        <div class="tool-detail" id="detail-diffimpact">
+          <div class="detail-label">Example</div>
+          <div class="detail-input">Input: "What breaks if I rename processOrder()?"</div>
+          <div class="detail-output">
+            <div><strong>Affected:</strong> 18 files across 4 services</div>
+            <div style="margin-top:8px;padding-left:12px;color:var(--muted)">
+              api-gateway: 3 routes call processOrder()<br>
+              billing-service: 2 event handlers<br>
+              notification-service: 1 webhook<br>
+              12 test files reference this function
+            </div>
+            <div style="margin-top:8px;font-size:0.75rem;color:var(--accent)">Rename safely with these 18 changes.</div>
+          </div>
+        </div>
       </div>
-      <div class="cloud-tool gs-up">
+      <div class="cloud-tool gs-up" id="card-radar" onclick="toggleDetail('detail-radar')" style="cursor:pointer">
+        <svg viewBox="0 0 200 140" style="width:100%;border-radius:8px;margin-bottom:12px;opacity:0.85" xmlns="http://www.w3.org/2000/svg">
+          <rect width="200" height="140" fill="#0a0a0a" rx="8"/>
+          <circle cx="100" cy="70" r="50" fill="none" stroke="#22d3ee" stroke-opacity="0.1" stroke-width="1"/>
+          <circle cx="100" cy="70" r="35" fill="none" stroke="#22d3ee" stroke-opacity="0.15" stroke-width="1"/>
+          <circle cx="100" cy="70" r="20" fill="none" stroke="#22d3ee" stroke-opacity="0.2" stroke-width="1"/>
+          <line x1="100" y1="20" x2="100" y2="120" stroke="#22d3ee" stroke-opacity="0.08"/>
+          <line x1="50" y1="70" x2="150" y2="70" stroke="#22d3ee" stroke-opacity="0.08"/>
+          <circle cx="82" cy="52" r="3" fill="#f87171"><animate attributeName="opacity" values="0.3;1;0.3" dur="2s" repeatCount="indefinite"/></circle>
+          <circle cx="125" cy="65" r="3" fill="#facc15"><animate attributeName="opacity" values="0.3;1;0.3" dur="3s" repeatCount="indefinite"/></circle>
+          <circle cx="108" cy="88" r="3" fill="#4ade80"><animate attributeName="opacity" values="0.3;1;0.3" dur="2.5s" repeatCount="indefinite"/></circle>
+          <line x1="100" y1="70" x2="130" y2="40" stroke="#22d3ee" stroke-opacity="0.4" stroke-width="1.5">
+            <animateTransform attributeName="transform" type="rotate" from="0 100 70" to="360 100 70" dur="4s" repeatCount="indefinite"/>
+          </line>
+        </svg>
         <h4>radar <span class="tool-price">10 credits</span></h4>
         <p>What-did-I-miss digest. Knows when your graph drifts from production.</p>
+        <div class="tool-detail" id="detail-radar">
+          <div class="detail-label">Example</div>
+          <div class="detail-input">Input: "What changed in the last 24 hours?"</div>
+          <div class="detail-output">
+            <div><strong>3 items need attention:</strong></div>
+            <div style="margin-top:8px;padding-left:12px;">
+              <div style="color:var(--red)">&#9679; Sentry: 12 new errors in auth-service (started 3h ago)</div>
+              <div style="color:var(--yellow);margin-top:4px">&#9679; PR #892 merged without review (config change)</div>
+              <div style="color:var(--green);margin-top:4px">&#9679; Deployment v2.4.2 healthy (all checks passed)</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -894,6 +974,17 @@ import Base from '../layouts/Base.astro';
      SCRIPTS
      ============================================================ -->
 <script>
+  // ------ Cloud tool card expand ------
+  function toggleDetail(id) {
+    const el = document.getElementById(id);
+    if (el) {
+      const isOpen = el.classList.contains('open');
+      // Close all others
+      document.querySelectorAll('.tool-detail').forEach(d => d.classList.remove('open'));
+      if (!isOpen) el.classList.add('open');
+    }
+  }
+
   // ------ Hamburger menu ------
   document.getElementById('hamburgerBtn')?.addEventListener('click', () => {
     document.getElementById('navLinks')?.classList.toggle('open');
@@ -1143,20 +1234,22 @@ import Base from '../layouts/Base.astro';
     }
 
     // Schedule shooting stars at random intervals
-    function scheduleNext() {
-      const delay = 1500 + Math.random() * 4000;
-      setTimeout(() => { spawnShootingStar(); scheduleNext(); }, delay);
-    }
-    scheduleNext();
-    // Start with a couple
-    spawnShootingStar();
-    setTimeout(spawnShootingStar, 800);
+    let lastStarTime = performance.now();
+    let nextStarDelay = 1500 + Math.random() * 4000;
 
     let time = 0;
 
     function draw() {
       ctx.clearRect(0, 0, w, h);
       time++;
+
+      // Spawn shooting stars inside rAF so they stop when tab is hidden
+      const now = performance.now();
+      if (now - lastStarTime > nextStarDelay) {
+        spawnShootingStar();
+        lastStarTime = now;
+        nextStarDelay = 1500 + Math.random() * 4000;
+      }
 
       const rect = canvas.getBoundingClientRect();
       const mx = mouseX - rect.left;

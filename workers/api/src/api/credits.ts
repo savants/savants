@@ -7,17 +7,46 @@ const credits = new Hono<HonoEnv>();
 
 // Credit costs per tool
 export const TOOL_CREDITS: Record<string, number> = {
+  // Diagnosis (most expensive - cross-layer analysis)
   diagnose_error: 50,
   diagnose: 25,
   unanswered_questions: 50,
   pr_risk: 20,
-  diff_impact: 10,
   radar: 10,
+  // Graph tools (D1 queries - cheap)
+  graph_stats: 1,
+  function_xray: 5,
+  blast_radius: 10,
+  impact_analysis: 10,
+  dead_code: 5,
+  import_tree: 5,
+  module_exports: 3,
+  search_code: 1,
+  find_references: 3,
+  dependency_chain: 5,
+  risk_score: 3,
+  community_summary: 3,
+  decorated_with: 1,
+  pre_change_warning: 5,
+  coupling_check: 3,
+  co_change_partners: 3,
+  resolves_to: 1,
+  diff_impact: 10,
+  // K8s / infra
+  cluster_state: 3,
+  list_pods: 1,
+  pod_story: 3,
+  host_state: 3,
+  host_story: 3,
+  deployment_info: 3,
+  pod_dependencies: 1,
+  namespace_summary: 3,
+  // Indexing
   reindex_diff: 3,
   reindex_full: 20,
   // Docs
-  doc_upload: 1, // per 10K tokens (calculated dynamically, this is the minimum)
-  doc_crawl: 2,  // per 10K tokens (crawling costs more)
+  doc_upload: 1,
+  doc_crawl: 2,
   // Local tools are free
   semantic_search: 0,
   file_skeleton: 0,

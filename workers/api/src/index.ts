@@ -329,7 +329,8 @@ api.route("/query", queryRoutes);
 api.route("/integrations", integrationsRoutes);
 api.route("/credits", creditsRoutes);
 api.route("/projects", projectsRoutes);
-api.route("/graph", graphRoutes);
+api.route("/graph", graphRoutes);    // internal graph queries
+api.route("/ingest", graphRoutes);   // /api/v1/ingest/parse-result (OSS binary uploads here)
 api.route("/audit", auditRoutes);
 api.route("/transfers", transfersRoutes);
 api.route("/docs", docsUploadRoutes);

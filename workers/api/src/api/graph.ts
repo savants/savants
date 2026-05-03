@@ -341,6 +341,177 @@ graph.post("/ingest", async (c) => {
   });
 });
 
+// ─── Ingest from OSS binary (accepts ParseResult format) ────────────────────
+
+graph.post("/ingest/parse-result", async (c) => {
+  const auth = c.get("auth");
+  const body = await c.req.json<{
+    repo: string;
+    files: number;
+    entities: Array<{
+      kind: string;
+      name: string;
+      file: string;
+      line: number;
+      end_line: number;
+      body: string;
+      params: string[];
+      import_source: string;
+      import_names: string[];
+    }>;
+    call_sites: Array<{
+      caller_file: string;
+      caller_name: string;
+      callee_name: string;
+    }>;
+  }>();
+
+  if (!body.repo || !body.entities) {
+    return c.json({ error: "repo and entities required", status: 400 }, 400);
+  }
+
+  // Auto-create project if it doesn't exist
+  const slug = body.repo.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  let project = await c.env.DB
+    .prepare("SELECT id FROM projects WHERE org_id = ?1 AND slug = ?2")
+    .bind(auth.orgId, slug)
+    .first<{ id: string }>();
+
+  if (!project) {
+    const projectId = crypto.randomUUID();
+    await c.env.DB
+      .prepare("INSERT INTO projects (id, org_id, name, slug, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)")
+      .bind(projectId, auth.orgId, body.repo, slug, Math.floor(Date.now() / 1000))
+      .run();
+    project = { id: projectId };
+  }
+
+  const projectId = project.id;
+  const now = Math.floor(Date.now() / 1000);
+
+  // Clear existing code nodes for this project
+  await c.env.DB
+    .prepare("DELETE FROM graph_edges WHERE project_id = ?1")
+    .bind(projectId).run();
+  await c.env.DB
+    .prepare("DELETE FROM graph_nodes WHERE project_id = ?1 AND source_type = 'code'")
+    .bind(projectId).run();
+
+  // Build node ID map: "file:name" -> uuid
+  const nodeIdMap = new Map<string, string>();
+  let nodeCount = 0;
+
+  // Batch insert nodes (use D1 batch for performance)
+  const nodeStmts = [];
+  for (const entity of body.entities) {
+    const nodeId = crypto.randomUUID();
+    const key = `${entity.file}:${entity.name}`;
+    nodeIdMap.set(key, nodeId);
+    // Also map by name alone for call_site matching
+    if (!nodeIdMap.has(entity.name)) {
+      nodeIdMap.set(entity.name, nodeId);
+    }
+
+    const hasValidation = entity.body.includes("validate") || entity.body.includes("check") || entity.body.includes("guard");
+    const hasErrorHandling = entity.body.includes("catch") || entity.body.includes("throw") || entity.body.includes("Error");
+    const isExported = entity.body.startsWith("export ") || entity.name.startsWith("export");
+
+    const metadata = JSON.stringify({
+      params: entity.params,
+      exported: isExported,
+      has_validation: hasValidation,
+      has_error_handling: hasErrorHandling,
+      import_source: entity.import_source || undefined,
+      import_names: entity.import_names?.length ? entity.import_names : undefined,
+    });
+
+    nodeStmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO graph_nodes (id, project_id, type, name, qualified_name, file_path, line_start, line_end, language, content_summary, metadata, source_type, source_id, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'code', ?12, ?13)`
+      ).bind(
+        nodeId, projectId, entity.kind, entity.name,
+        `${entity.file}:${entity.name}`,
+        entity.file, entity.line, entity.end_line,
+        detectLanguage(entity.file),
+        entity.body.slice(0, 200),
+        metadata,
+        body.repo,
+        now
+      )
+    );
+    nodeCount++;
+  }
+
+  // Execute node inserts in batches of 50
+  for (let i = 0; i < nodeStmts.length; i += 50) {
+    await c.env.DB.batch(nodeStmts.slice(i, i + 50));
+  }
+
+  // Insert edges from call_sites
+  let edgeCount = 0;
+  const edgeStmts = [];
+  for (const cs of body.call_sites || []) {
+    const callerKey = `${cs.caller_file}:${cs.caller_name}`;
+    const callerId = nodeIdMap.get(callerKey) || nodeIdMap.get(cs.caller_name);
+    const calleeId = nodeIdMap.get(cs.callee_name);
+
+    if (callerId && calleeId && callerId !== calleeId) {
+      edgeStmts.push(
+        c.env.DB.prepare(
+          `INSERT INTO graph_edges (id, project_id, source_node, target_node, type, weight, metadata)
+           VALUES (?1, ?2, ?3, ?4, 'CALLS', 1.0, '{}')`
+        ).bind(crypto.randomUUID(), projectId, callerId, calleeId)
+      );
+      edgeCount++;
+    }
+  }
+
+  // Insert import edges
+  for (const entity of body.entities) {
+    if (entity.kind === "import" && entity.import_source) {
+      const importerId = nodeIdMap.get(`${entity.file}:${entity.name}`) || nodeIdMap.get(entity.name);
+      // Find target by import_source filename
+      for (const importedName of entity.import_names || []) {
+        const targetId = nodeIdMap.get(importedName);
+        if (importerId && targetId && importerId !== targetId) {
+          edgeStmts.push(
+            c.env.DB.prepare(
+              `INSERT INTO graph_edges (id, project_id, source_node, target_node, type, weight, metadata)
+               VALUES (?1, ?2, ?3, ?4, 'IMPORTS', 1.0, '{}')`
+            ).bind(crypto.randomUUID(), projectId, importerId, targetId)
+          );
+          edgeCount++;
+        }
+      }
+    }
+  }
+
+  // Execute edge inserts in batches
+  for (let i = 0; i < edgeStmts.length; i += 50) {
+    await c.env.DB.batch(edgeStmts.slice(i, i + 50));
+  }
+
+  return c.json({
+    ingested: true,
+    project_id: projectId,
+    repo: body.repo,
+    files: body.files,
+    nodes: nodeCount,
+    edges: edgeCount,
+  });
+});
+
+function detectLanguage(filePath: string): string {
+  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+  const map: Record<string, string> = {
+    ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
+    py: "python", rs: "rust", go: "go", java: "java", rb: "ruby",
+    c: "c", cpp: "cpp", h: "c", hpp: "cpp", cs: "csharp",
+  };
+  return map[ext] || ext;
+}
+
 // ─── Stats for a project graph ───────────────────────────────────────────────
 
 graph.get("/stats/:projectId", async (c) => {
