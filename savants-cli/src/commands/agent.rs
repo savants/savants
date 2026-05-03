@@ -109,18 +109,21 @@ pub async fn start(name: Option<String>) {
             println!("    {}", r.display());
         }
     }
-    let mut repo_heads: HashMap<String, String> = HashMap::new();
-    for repo in &repos {
-        if let Some(head) = git_head(repo) {
-            repo_heads.insert(repo.to_string_lossy().to_string(), head);
-        }
-    }
+    // Load last-known heads from cache, or empty (triggers initial index)
+    let heads_cache = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".savants")
+        .join("agent_heads.json");
+    let mut repo_heads: HashMap<String, String> = std::fs::read_to_string(&heads_cache)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
 
     println!("  Polling for queries...\n");
 
     let mut last_heartbeat = std::time::Instant::now();
     let mut last_watch = std::time::Instant::now() - std::time::Duration::from_secs(WATCH_INTERVAL_SECS);
-    let mut last_git_watch = std::time::Instant::now();
+    let mut last_git_watch = std::time::Instant::now() - std::time::Duration::from_secs(GIT_WATCH_INTERVAL_SECS); // trigger immediately
     let mut known_issues: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Main loop: poll for queries + proactive health watch
@@ -235,6 +238,10 @@ pub async fn start(name: Option<String>) {
 
                     repo_heads.insert(repo_str, current_head);
                 }
+            }
+            // Persist heads cache so restarts don't re-upload everything
+            if let Ok(json) = serde_json::to_string(&repo_heads) {
+                let _ = std::fs::write(&heads_cache, json);
             }
             last_git_watch = std::time::Instant::now();
         }
