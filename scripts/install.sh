@@ -197,9 +197,11 @@ ensure_path() {
         fish) RC="$HOME/.config/fish/config.fish" ;;
         *)    RC="$HOME/.bashrc" ;;
     esac
-    if [ -f "$RC" ] && ! grep -q "savants/bin" "$RC" 2>/dev/null; then
+    if [ -f "$RC" ] && [ -w "$RC" ] && ! grep -q "savants/bin" "$RC" 2>/dev/null; then
         printf '\n# Savants\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$RC"
         info "Added to PATH in $RC"
+    elif ! echo "$PATH" | grep -q "savants/bin"; then
+        warn "Add to your shell config: export PATH=\"$BIN_DIR:\$PATH\""
     fi
     export PATH="$BIN_DIR:$PATH"
 }
