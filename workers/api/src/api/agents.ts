@@ -260,18 +260,23 @@ agents.post("/notify", async (c) => {
 
   const now = Math.floor(Date.now() / 1000);
 
-  // Store as audit log entry (no project FK needed)
-  await c.env.DB.prepare(`
-    INSERT INTO audit_log (id, org_id, actor_id, action, resource_type, resource_id, metadata, ip, user_agent, created_at)
-    VALUES (?1, ?2, ?3, 'agent.notify', 'agent', ?4, ?5, '', '', ?6)
-  `).bind(
-    crypto.randomUUID(),
-    auth.orgId,
-    body.agent_id,
-    body.agent_id,
-    JSON.stringify({ severity: body.severity, category: body.category, title: body.title, message: body.message, key: body.key, agent_name: body.agent_name, ...body.metadata }),
-    now,
-  ).run();
+  // Store as audit log entry
+  try {
+    await c.env.DB.prepare(`
+      INSERT INTO audit_log (id, org_id, actor_id, action, resource_type, resource_id, metadata, ip_address, user_agent, created_at)
+      VALUES (?1, ?2, ?3, 'agent.notify', 'agent', ?4, ?5, '', '', ?6)
+    `).bind(
+      crypto.randomUUID(),
+      auth.orgId,
+      body.agent_id,
+      body.agent_id,
+      JSON.stringify({ severity: body.severity, category: body.category, title: body.title, message: body.message, key: body.key, agent_name: body.agent_name, ...body.metadata }),
+      now,
+    ).run();
+  } catch (err) {
+    // Log but don't fail the notify
+    console.error("[notify] audit_log insert failed:", err instanceof Error ? err.message : err);
+  }
 
   // Route to notification channels
   const integrations = await c.env.DB.prepare(

@@ -109,9 +109,24 @@ export async function diagnoseError(
         try { return JSON.parse(r.metadata || "{}"); } catch { return {}; }
       }).filter(f => f.title);
 
-      if (agentFindings.length > 0 || (agents.results as any[]).length > 0 || (k8sEvents.results as any[]).length > 0) {
+      // Check for resolved issues: compare current findings vs past findings
+      const pastFindings = await env.DB.prepare(`
+        SELECT metadata FROM audit_log
+        WHERE org_id = ?1 AND action = 'agent.notify' AND created_at > ?2
+        ORDER BY created_at DESC LIMIT 50
+      `).bind(orgId, Math.floor(Date.now() / 1000) - 86400).all();
+
+      const pastKeys = new Set<string>();
+      for (const pf of pastFindings.results as any[]) {
+        try { const m = JSON.parse(pf.metadata || "{}"); if (m.key) pastKeys.add(m.key); } catch {}
+      }
+      const currentKeys = new Set(agentFindings.map((f: any) => f.key).filter(Boolean));
+      const resolvedKeys = [...pastKeys].filter(k => !currentKeys.has(k));
+
+      if (agentFindings.length > 0 || (agents.results as any[]).length > 0 || (k8sEvents.results as any[]).length > 0 || resolvedKeys.length > 0) {
         sources.push("agent_findings");
         infraData = {
+          resolved_issues: resolvedKeys,
           agents: (agents.results as any[]).map(a => ({
             name: a.name, os: a.os, status: a.status,
             capabilities: JSON.parse(a.capabilities || "[]"),
@@ -631,6 +646,26 @@ function buildDiagnosis(
       rootCause += "\n\nUnhealthy pods: " + infraData.unhealthy_pods.map((p: any) =>
         `${p.name} (${p.restarts} restarts)`
       ).join(", ");
+    }
+
+    // Show resolved issues - reduces confidence if the issue was previously active but now cleared
+    if (infraData.resolved_issues?.length > 0) {
+      rootCause += "\n\nRecently resolved: " + infraData.resolved_issues.join(", ");
+      // If the error message mentions something that was resolved, lower confidence
+      const lowerError = parsed.message.toLowerCase();
+      for (const resolved of infraData.resolved_issues) {
+        const resolvedLower = (resolved as string).toLowerCase();
+        if (lowerError.includes(resolvedLower.split("_")[0])) {
+          confidence -= 0.3;
+          rootCause += `\n\nNote: "${resolved}" was previously reported but is no longer active. This issue may have been resolved.`;
+        }
+      }
+    }
+
+    // If no current findings match the error, lower confidence
+    if (infraData.recent_findings?.length === 0 && infraData.k8s_events?.length === 0) {
+      confidence -= 0.2;
+      rootCause += "\n\nNo active agent findings match this error. The issue may have been resolved or the agent may not be monitoring this specific component.";
     }
   }
 
