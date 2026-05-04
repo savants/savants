@@ -330,15 +330,29 @@ async function searchSentryEvents(
 
   // Step 1: Search issues by error message (this is what Sentry MCP does)
   try {
-    // Clean the error message for search - use 3-4 distinctive terms only
-    // Sentry search treats each word as AND, so fewer = more results
-    const stopWords = new Set(["with", "status", "code", "error", "failed", "the", "from", "that", "this", "undefined", "null"]);
-    const searchTerms = errorMessage
-      .replace(/['":\[\]()]/g, " ")
-      .split(/\s+/)
-      .filter(w => w.length > 3 && !stopWords.has(w.toLowerCase()))
-      .slice(0, 3)
-      .join(" ");
+    // Use the error title/type as search - Sentry matches on issue title
+    // Too many terms = zero results. Extract the most distinctive part.
+    let searchTerms = "";
+    // Try to get the error type (e.g. "LLMParseError", "AxiosError", "TypeError")
+    const typeMatch = errorMessage.match(/^(\w+Error|\w+Exception|Error)/);
+    if (typeMatch) {
+      searchTerms = typeMatch[1];
+    }
+    // If the error has a bracketed context like [ATS Push], use that
+    const bracketMatch = errorMessage.match(/\[([^\]]+)\]/);
+    if (bracketMatch) {
+      searchTerms = searchTerms ? `${searchTerms} ${bracketMatch[1]}` : bracketMatch[1];
+    }
+    // Fallback: first 3 words over 4 chars
+    if (!searchTerms) {
+      const stopWords = new Set(["with", "status", "code", "error", "failed", "from", "that", "this"]);
+      searchTerms = errorMessage
+        .replace(/['":\[\]()]/g, " ")
+        .split(/\s+/)
+        .filter(w => w.length > 4 && !stopWords.has(w.toLowerCase()))
+        .slice(0, 2)
+        .join(" ");
+    }
 
     const query = encodeURIComponent(`is:unresolved ${searchTerms}`);
     const issuesRes = await fetch(
