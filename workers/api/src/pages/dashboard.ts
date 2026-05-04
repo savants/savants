@@ -429,53 +429,50 @@ export function overviewPage(): string {
   const content = `
       <div id="alert-box" class="alert"></div>
 
-      <!-- Metrics row -->
-      <div class="metrics-row" id="metrics-row">
-        <div class="metric-card accent">
-          <div class="metric-value skeleton skeleton-number" id="metric-tokens">&nbsp;</div>
-          <div class="metric-label">Tokens Saved</div>
+      <!-- Projects -->
+      <div class="card" style="margin-bottom:24px">
+        <div class="card-header">
+          <div class="card-title">Projects</div>
         </div>
-        <div class="metric-card accent">
-          <div class="metric-value skeleton skeleton-number" id="metric-time">&nbsp;</div>
-          <div class="metric-label">Time Saved</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-value skeleton skeleton-number" id="metric-diagnoses">&nbsp;</div>
-          <div class="metric-label">Diagnoses</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-value skeleton skeleton-number" id="metric-errors">&nbsp;</div>
-          <div class="metric-label">Errors Caught</div>
+        <div id="projects-list">
+          <div class="activity-item"><div class="skeleton" style="width:100%;height:60px;border-radius:8px"></div></div>
         </div>
       </div>
 
       <div class="grid-2">
         <!-- Left column -->
         <div>
-          <!-- Usage chart -->
+          <!-- Agents -->
           <div class="card" style="margin-bottom:24px">
             <div class="card-header">
-              <div class="card-title">Usage (last 7 days)</div>
+              <div class="card-title">Agents</div>
             </div>
-            <div class="bar-chart" id="usage-chart">
-              <div class="bar-col"><div class="bar skeleton" style="height:40px"></div><div class="bar-label">-</div></div>
-              <div class="bar-col"><div class="bar skeleton" style="height:25px"></div><div class="bar-label">-</div></div>
-              <div class="bar-col"><div class="bar skeleton" style="height:55px"></div><div class="bar-label">-</div></div>
-              <div class="bar-col"><div class="bar skeleton" style="height:35px"></div><div class="bar-label">-</div></div>
-              <div class="bar-col"><div class="bar skeleton" style="height:60px"></div><div class="bar-label">-</div></div>
-              <div class="bar-col"><div class="bar skeleton" style="height:20px"></div><div class="bar-label">-</div></div>
-              <div class="bar-col"><div class="bar skeleton" style="height:45px"></div><div class="bar-label">-</div></div>
+            <div id="agents-list">
+              <div class="activity-item"><div class="skeleton" style="width:100%;height:40px;border-radius:8px"></div></div>
             </div>
           </div>
 
-          <!-- Remaining calls -->
+          <!-- Integrations -->
           <div class="card" style="margin-bottom:24px">
             <div class="card-header">
-              <div class="card-title">Free Calls Remaining</div>
-              <span class="mono" id="calls-count" style="color:var(--accent)">- / 10</span>
+              <div class="card-title">Integrations</div>
+              <a href="/dashboard/integrations" style="font-size:0.8rem;color:var(--accent);text-decoration:none">Manage</a>
             </div>
-            <div class="progress-bar">
-              <div class="progress-fill" id="calls-progress" style="width:100%"></div>
+            <div id="integration-status">
+              <div class="activity-item"><div class="skeleton skeleton-text" style="width:120px"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right column -->
+        <div>
+          <!-- Recent findings -->
+          <div class="card" style="margin-bottom:24px">
+            <div class="card-header">
+              <div class="card-title">Recent Findings</div>
+            </div>
+            <div class="activity-feed" id="findings-feed">
+              <div class="activity-item"><div class="skeleton" style="width:100%;height:40px;border-radius:8px"></div></div>
             </div>
           </div>
 
@@ -485,38 +482,10 @@ export function overviewPage(): string {
               <div class="card-title">Quick Actions</div>
             </div>
             <div class="quick-actions">
-              <a href="/dashboard/keys" class="btn btn-secondary btn-sm">${ICONS.keys} Create API Key</a>
-              <a href="/dashboard/team" class="btn btn-secondary btn-sm">${ICONS.team} Invite Teammate</a>
-              <a href="/dashboard/integrations" class="btn btn-secondary btn-sm">${ICONS.integrations} Connect Sentry</a>
-            </div>
-          </div>
-        </div>
-
-        <!-- Right column -->
-        <div>
-          <!-- Integration status -->
-          <div class="card" style="margin-bottom:24px">
-            <div class="card-header">
-              <div class="card-title">Integrations</div>
-              <a href="/dashboard/integrations" style="font-size:0.8rem;color:var(--accent);text-decoration:none">Manage</a>
-            </div>
-            <div id="integration-status">
-              <div class="activity-item">
-                <div class="skeleton" style="width:32px;height:32px;border-radius:8px;flex-shrink:0"></div>
-                <div class="skeleton skeleton-text" style="width:120px"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Recent activity -->
-          <div class="card">
-            <div class="card-header">
-              <div class="card-title">Recent Activity</div>
-            </div>
-            <div class="activity-feed" id="activity-feed">
-              <div class="activity-item"><div class="skeleton" style="width:32px;height:32px;border-radius:8px;flex-shrink:0"></div><div style="flex:1"><div class="skeleton skeleton-text"></div></div></div>
-              <div class="activity-item"><div class="skeleton" style="width:32px;height:32px;border-radius:8px;flex-shrink:0"></div><div style="flex:1"><div class="skeleton skeleton-text"></div></div></div>
-              <div class="activity-item"><div class="skeleton" style="width:32px;height:32px;border-radius:8px;flex-shrink:0"></div><div style="flex:1"><div class="skeleton skeleton-text"></div></div></div>
+              <a href="/dashboard/keys" class="btn btn-secondary btn-sm">${ICONS.keys} API Keys</a>
+              <a href="/dashboard/team" class="btn btn-secondary btn-sm">${ICONS.team} Team</a>
+              <a href="/dashboard/integrations" class="btn btn-secondary btn-sm">${ICONS.integrations} Integrations</a>
+              <a href="/dashboard/billing" class="btn btn-secondary btn-sm">${ICONS.billing} Billing</a>
             </div>
           </div>
         </div>
@@ -528,84 +497,83 @@ export function overviewPage(): string {
 (function(){
   if (!getToken()) return;
 
-  // Load usage data
-  apiFetch('/api/v1/usage').then(function(r) {
-    if (!r.ok) {
-      showAlert('alert-box', 'error', r.data.message || 'Failed to load usage data');
+  // Load projects with source counts
+  apiFetch('/api/v1/projects').then(function(r) {
+    var el = document.getElementById('projects-list');
+    if (!r.ok || !r.data.projects || r.data.projects.length === 0) {
+      el.innerHTML = '<div class="empty-state" style="padding:24px 0;text-align:center"><p style="font-size:0.85rem;color:var(--muted)">No projects yet.</p><p style="margin-top:8px"><code style="background:var(--surface);padding:4px 8px;border-radius:4px;font-size:0.8rem">savants project create my-app --github org/repo</code></p></div>';
       return;
     }
-    var d = r.data;
+    el.innerHTML = r.data.projects.map(function(p) {
+      var sources = p.source_count || 0;
+      var members = p.member_count || 0;
+      return '<div class="activity-item" style="padding:12px 0;border-bottom:1px solid var(--border)">' +
+        '<div style="flex:1">' +
+          '<div style="font-weight:600;color:var(--fg)">' + p.name + '</div>' +
+          '<div style="font-size:0.8rem;color:var(--muted);margin-top:2px">' + sources + ' sources, ' + members + ' members</div>' +
+        '</div>' +
+        '<div style="font-size:0.75rem;color:var(--muted)">' + (p.slug || '') + '</div>' +
+      '</div>';
+    }).join('');
+  });
 
-    // Metrics
-    document.getElementById('metric-tokens').textContent = formatNumber(d.value.tokens_saved);
-    document.getElementById('metric-tokens').classList.remove('skeleton','skeleton-number');
-    document.getElementById('metric-time').textContent = (d.value.time_saved_minutes || 0) + ' min';
-    document.getElementById('metric-time').classList.remove('skeleton','skeleton-number');
-    document.getElementById('metric-diagnoses').textContent = formatNumber(d.total_calls);
-    document.getElementById('metric-diagnoses').classList.remove('skeleton','skeleton-number');
-
-    // Errors caught = breakdown calls for diagnose_error tool
-    var errCalls = 0;
-    (d.breakdown || []).forEach(function(b) {
-      if (b.tool === 'diagnose_error' || b.tool === 'sentry_diagnose') errCalls += b.calls;
-    });
-    document.getElementById('metric-errors').textContent = formatNumber(errCalls);
-    document.getElementById('metric-errors').classList.remove('skeleton','skeleton-number');
-
-    // Progress bar
-    var remaining = d.remaining != null ? d.remaining : 10;
-    var limit = d.limit != null ? d.limit : 10;
-    document.getElementById('calls-count').textContent = remaining + ' / ' + limit;
-    var pct = limit > 0 ? ((limit - remaining) / limit * 100) : 0;
-    document.getElementById('calls-progress').style.width = Math.min(100, pct) + '%';
-
-    // Bar chart - use breakdown data
-    var chartEl = document.getElementById('usage-chart');
-    if (d.breakdown && d.breakdown.length > 0) {
-      var maxCalls = Math.max.apply(null, d.breakdown.map(function(b){return b.calls}));
-      chartEl.innerHTML = d.breakdown.slice(0, 7).map(function(b) {
-        var h = maxCalls > 0 ? Math.max(4, (b.calls / maxCalls) * 70) : 4;
-        var shortName = b.tool.replace('savants_','').replace('_',' ').substring(0,8);
-        return '<div class="bar-col"><div class="bar" style="height:'+h+'px" title="'+b.tool+': '+b.calls+' calls"></div><div class="bar-label">'+shortName+'</div></div>';
-      }).join('');
-    } else {
-      chartEl.innerHTML = '<div style="text-align:center;width:100%;padding:20px 0;color:var(--muted);font-size:0.85rem">No usage data yet</div>';
+  // Load agents
+  apiFetch('/api/v1/agents').then(function(r) {
+    var el = document.getElementById('agents-list');
+    if (!r.ok || !r.data.agents || r.data.agents.length === 0) {
+      el.innerHTML = '<div class="empty-state" style="padding:16px 0;text-align:center"><p style="font-size:0.85rem;color:var(--muted)">No agents running.</p><p style="margin-top:8px"><code style="background:var(--surface);padding:4px 8px;border-radius:4px;font-size:0.8rem">savants agent start</code></p></div>';
+      return;
     }
-  }).catch(function(e) {
-    showAlert('alert-box', 'error', 'Failed to connect to API');
+    el.innerHTML = r.data.agents.map(function(a) {
+      var online = a.online;
+      var dotClass = online ? 'green' : 'gray';
+      var caps = (a.capabilities || []).length;
+      return '<div class="activity-item" style="padding:8px 0">' +
+        '<div class="status-dot ' + dotClass + '"></div>' +
+        '<div style="flex:1">' +
+          '<div class="activity-text">' + (a.name || a.hostname || '?') + '</div>' +
+          '<div style="font-size:0.75rem;color:var(--muted)">' + (a.os || '') + ' / ' + (a.arch || '') + ' - ' + caps + ' capabilities</div>' +
+        '</div>' +
+        '<div style="font-size:0.75rem;color:var(--muted)">' + (online ? 'online' : 'offline') + '</div>' +
+      '</div>';
+    }).join('');
   });
 
   // Load integrations
   apiFetch('/api/v1/integrations').then(function(r) {
     var el = document.getElementById('integration-status');
-    if (!r.ok) { el.innerHTML = '<div style="color:var(--muted);font-size:0.85rem">Could not load integrations</div>'; return; }
+    if (!r.ok) { el.innerHTML = '<div style="color:var(--muted);font-size:0.85rem">Could not load</div>'; return; }
 
-    var integrationTypes = ['sentry','github','slack'];
+    var types = ['sentry','github','linear','slack','cloudflare','gotify'];
     var connected = {};
     (r.data.integrations || []).forEach(function(i) { connected[i.type] = i.enabled; });
 
-    el.innerHTML = integrationTypes.map(function(type) {
-      var isConnected = connected[type];
-      var dotClass = isConnected ? 'green' : 'gray';
-      var label = isConnected ? 'Connected' : 'Not connected';
-      return '<div class="activity-item"><div class="status-dot '+dotClass+'"></div><div class="activity-text" style="text-transform:capitalize">'+type+'</div><div style="font-size:0.75rem;color:var(--muted)">'+label+'</div></div>';
+    el.innerHTML = types.map(function(type) {
+      var isOn = connected[type];
+      var dotClass = isOn ? 'green' : 'gray';
+      return '<div class="activity-item" style="padding:4px 0"><div class="status-dot '+dotClass+'"></div><div class="activity-text" style="text-transform:capitalize">'+type+'</div><div style="font-size:0.75rem;color:var(--muted)">'+(isOn ? 'Connected' : '-')+'</div></div>';
     }).join('');
   });
 
-  // Recent activity - just show breakdown as activity items
-  apiFetch('/api/v1/usage').then(function(r) {
-    var feed = document.getElementById('activity-feed');
-    if (!r.ok || !r.data.breakdown || r.data.breakdown.length === 0) {
-      feed.innerHTML = '<div class="empty-state" style="padding:24px 0"><p style="font-size:0.85rem">No activity yet. Make your first API call to see it here.</p></div>';
+  // Load recent agent findings
+  apiFetch('/api/v1/agents/events?limit=10').then(function(r) {
+    var el = document.getElementById('findings-feed');
+    if (!r.ok || !r.data.events || r.data.events.length === 0) {
+      el.innerHTML = '<div class="empty-state" style="padding:16px 0;text-align:center"><p style="font-size:0.85rem;color:var(--muted)">No findings yet. Agent will report issues automatically.</p></div>';
       return;
     }
-    feed.innerHTML = r.data.breakdown.slice(0, 10).map(function(b) {
-      var avgMs = b.calls > 0 ? Math.round(b.duration_ms / b.calls) : 0;
-      return '<div class="activity-item">' +
-        '<div class="activity-icon">&#9889;</div>' +
-        '<div style="flex:1"><div class="activity-text">' + b.tool + ' <span>- ' + b.calls + ' calls</span></div>' +
-        '<div class="activity-duration">' + avgMs + 'ms avg</div></div>' +
-        '<div style="font-size:0.75rem;color:var(--muted)">' + b.tokens_out + ' tokens</div></div>';
+    el.innerHTML = r.data.events.map(function(e) {
+      var icon = e.severity === 'critical' ? '&#128308;' : e.severity === 'warning' ? '&#128992;' : '&#128309;';
+      var ago = Math.round((Date.now()/1000 - e.timestamp) / 60);
+      var agoText = ago < 60 ? ago + 'm ago' : Math.round(ago/60) + 'h ago';
+      return '<div class="activity-item" style="padding:8px 0">' +
+        '<div style="font-size:1.1rem">' + icon + '</div>' +
+        '<div style="flex:1">' +
+          '<div class="activity-text" style="font-size:0.85rem">' + (e.title || '').substring(0,60) + '</div>' +
+          '<div style="font-size:0.75rem;color:var(--muted)">' + (e.agent || '') + ' - ' + (e.category || '') + '</div>' +
+        '</div>' +
+        '<div style="font-size:0.75rem;color:var(--muted)">' + agoText + '</div>' +
+      '</div>';
     }).join('');
   });
 })();
