@@ -482,6 +482,168 @@ fn host_health() -> serde_json::Value {
         }
     }
 
+    // ── USE Method: Brendan Gregg's system performance checklist ──
+
+    // CPU per-core utilization from /proc/stat
+    if let Ok(stat) = std::fs::read_to_string("/proc/stat") {
+        let mut cpu_lines: Vec<serde_json::Value> = Vec::new();
+        for line in stat.lines() {
+            if line.starts_with("cpu") && !line.starts_with("cpu ") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 8 {
+                    let user: u64 = parts[1].parse().unwrap_or(0);
+                    let system: u64 = parts[3].parse().unwrap_or(0);
+                    let idle: u64 = parts[4].parse().unwrap_or(0);
+                    let iowait: u64 = parts[5].parse().unwrap_or(0);
+                    let steal: u64 = parts[8].parse().unwrap_or(0);
+                    let total = user + system + idle + iowait + steal;
+                    cpu_lines.push(serde_json::json!({
+                        "core": parts[0],
+                        "user_pct": if total > 0 { (user as f64 / total as f64 * 100.0) as u32 } else { 0 },
+                        "system_pct": if total > 0 { (system as f64 / total as f64 * 100.0) as u32 } else { 0 },
+                        "iowait_pct": if total > 0 { (iowait as f64 / total as f64 * 100.0) as u32 } else { 0 },
+                        "steal_pct": if total > 0 { (steal as f64 / total as f64 * 100.0) as u32 } else { 0 },
+                        "idle_pct": if total > 0 { (idle as f64 / total as f64 * 100.0) as u32 } else { 0 },
+                    }));
+                }
+            }
+            // CPU saturation: run queue
+            if line.starts_with("procs_running") {
+                if let Some(r) = line.split_whitespace().nth(1).and_then(|s| s.parse::<u64>().ok()) {
+                    info.insert("cpu_run_queue".into(), r.into());
+                }
+            }
+            // Context switches
+            if line.starts_with("ctxt") {
+                if let Some(c) = line.split_whitespace().nth(1).and_then(|s| s.parse::<u64>().ok()) {
+                    info.insert("context_switches".into(), c.into());
+                }
+            }
+        }
+        if !cpu_lines.is_empty() {
+            info.insert("cpu_per_core".into(), cpu_lines.into());
+        }
+    }
+
+    // Memory saturation: swap activity from /proc/vmstat
+    if let Ok(vmstat) = std::fs::read_to_string("/proc/vmstat") {
+        let mut swap = serde_json::Map::new();
+        let mut oom = 0u64;
+        for line in vmstat.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 2 { continue; }
+            match parts[0] {
+                "pswpin" => { swap.insert("swap_in_pages".into(), parts[1].parse::<u64>().unwrap_or(0).into()); }
+                "pswpout" => { swap.insert("swap_out_pages".into(), parts[1].parse::<u64>().unwrap_or(0).into()); }
+                "pgpgin" => { swap.insert("page_in_kb".into(), parts[1].parse::<u64>().unwrap_or(0).into()); }
+                "pgpgout" => { swap.insert("page_out_kb".into(), parts[1].parse::<u64>().unwrap_or(0).into()); }
+                "oom_kill" => { oom = parts[1].parse().unwrap_or(0); }
+                _ => {}
+            }
+        }
+        if !swap.is_empty() {
+            swap.insert("oom_kills".into(), oom.into());
+            info.insert("memory_saturation".into(), serde_json::Value::Object(swap));
+        }
+    }
+
+    // Disk I/O from /proc/diskstats
+    if let Ok(diskstats) = std::fs::read_to_string("/proc/diskstats") {
+        let mut disks_io: Vec<serde_json::Value> = Vec::new();
+        for line in diskstats.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 14 { continue; }
+            let dev = parts[2];
+            // Only real disks (sda, nvme0n1, vda) not partitions
+            if dev.starts_with("loop") || dev.starts_with("dm-") || dev.contains('p') && dev.len() > 4 { continue; }
+            if dev.ends_with(|c: char| c.is_ascii_digit()) && (dev.starts_with("sd") || dev.starts_with("vd")) && dev.len() > 3 { continue; }
+
+            let reads: u64 = parts[3].parse().unwrap_or(0);
+            let read_ms: u64 = parts[6].parse().unwrap_or(0);
+            let writes: u64 = parts[7].parse().unwrap_or(0);
+            let write_ms: u64 = parts[10].parse().unwrap_or(0);
+            let io_in_progress: u64 = parts[11].parse().unwrap_or(0);
+            let io_ms: u64 = parts[12].parse().unwrap_or(0);
+            let weighted_ms: u64 = parts[13].parse().unwrap_or(0);
+
+            if reads + writes > 0 {
+                disks_io.push(serde_json::json!({
+                    "device": dev,
+                    "reads": reads,
+                    "writes": writes,
+                    "read_ms": read_ms,
+                    "write_ms": write_ms,
+                    "io_in_progress": io_in_progress,
+                    "io_ms_total": io_ms,
+                    "weighted_io_ms": weighted_ms,
+                    "avg_read_ms": if reads > 0 { read_ms as f64 / reads as f64 } else { 0.0 },
+                    "avg_write_ms": if writes > 0 { write_ms as f64 / writes as f64 } else { 0.0 },
+                }));
+            }
+        }
+        if !disks_io.is_empty() {
+            info.insert("disk_io".into(), disks_io.into());
+        }
+    }
+
+    // TCP stats from /proc/net/snmp
+    if let Ok(snmp) = std::fs::read_to_string("/proc/net/snmp") {
+        let lines: Vec<&str> = snmp.lines().collect();
+        for i in 0..lines.len() {
+            if lines[i].starts_with("Tcp:") && i + 1 < lines.len() && lines[i + 1].starts_with("Tcp:") {
+                let headers: Vec<&str> = lines[i].split_whitespace().collect();
+                let values: Vec<&str> = lines[i + 1].split_whitespace().collect();
+                let mut tcp = serde_json::Map::new();
+                for (j, h) in headers.iter().enumerate() {
+                    if j < values.len() {
+                        match *h {
+                            "ActiveOpens" | "PassiveOpens" | "AttemptFails" | "EstabResets" |
+                            "CurrEstab" | "RetransSegs" | "InErrs" | "OutRsts" | "InSegs" | "OutSegs" => {
+                                tcp.insert(h.to_string(), values[j].parse::<u64>().unwrap_or(0).into());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if !tcp.is_empty() {
+                    info.insert("tcp".into(), serde_json::Value::Object(tcp));
+                }
+                break;
+            }
+        }
+    }
+
+    // PSI (Pressure Stall Information) - Linux 4.20+
+    for resource in &["cpu", "memory", "io"] {
+        if let Ok(psi) = std::fs::read_to_string(format!("/proc/pressure/{}", resource)) {
+            for line in psi.lines() {
+                if line.starts_with("some") {
+                    // Parse: some avg10=0.00 avg60=0.00 avg300=0.00 total=12345
+                    let mut psi_data = serde_json::Map::new();
+                    for part in line.split_whitespace().skip(1) {
+                        if let Some((k, v)) = part.split_once('=') {
+                            psi_data.insert(k.to_string(), v.parse::<f64>().unwrap_or(0.0).into());
+                        }
+                    }
+                    info.insert(format!("pressure_{}", resource), serde_json::Value::Object(psi_data));
+                    break;
+                }
+            }
+        }
+    }
+
+    // File descriptor usage
+    if let Ok(fdr) = std::fs::read_to_string("/proc/sys/fs/file-nr") {
+        let parts: Vec<&str> = fdr.split_whitespace().collect();
+        if parts.len() >= 3 {
+            info.insert("file_descriptors".into(), serde_json::json!({
+                "allocated": parts[0].parse::<u64>().unwrap_or(0),
+                "free": parts[1].parse::<u64>().unwrap_or(0),
+                "max": parts[2].parse::<u64>().unwrap_or(0),
+            }));
+        }
+    }
+
     serde_json::json!(info)
 }
 
