@@ -24,6 +24,79 @@ async function getSentryCreds(db: Env["DB"], orgId: string): Promise<SentryCreds
   return { auth_token: creds.auth_token, org_slug: config.org_slug };
 }
 
+// ── Graph enrichment: match stack trace to code graph ──
+async function enrichWithGraph(
+  db: Env["DB"],
+  orgId: string,
+  stackFrames: Array<{ file?: string; function?: string; line?: number }>
+): Promise<{
+  enriched_frames: Array<{
+    function: string;
+    file: string;
+    line: number;
+    callers: string[];
+    blast_radius: number;
+    authored_by?: string;
+    has_tests: boolean;
+  }>;
+  total_blast_radius: number;
+}> {
+  if (!stackFrames.length) return { enriched_frames: [], total_blast_radius: 0 };
+
+  // Find the project for this org (most recently updated)
+  const project = await db.prepare(
+    "SELECT id FROM projects WHERE org_id = ?1 ORDER BY updated_at DESC LIMIT 1"
+  ).bind(orgId).first<{ id: string }>();
+  if (!project) return { enriched_frames: [], total_blast_radius: 0 };
+
+  const enriched = [];
+  let totalBlast = 0;
+
+  for (const frame of stackFrames.slice(-5)) { // Top 5 frames
+    if (!frame.function) continue;
+
+    // Find in graph
+    const node = await db.prepare(
+      "SELECT id, name, file_path, line_start, metadata FROM graph_nodes WHERE project_id = ?1 AND name = ?2 LIMIT 1"
+    ).bind(project.id, frame.function).first<{ id: string; name: string; file_path: string; line_start: number; metadata: string }>();
+
+    if (!node) continue;
+
+    // Get callers
+    const callers = await db.prepare(`
+      SELECT n.name, n.file_path FROM graph_edges e
+      JOIN graph_nodes n ON n.id = e.source_node
+      WHERE e.target_node = ?1 AND e.type = 'CALLS' LIMIT 10
+    `).bind(node.id).all();
+
+    // Blast radius via recursive CTE
+    const blast = await db.prepare(`
+      WITH RECURSIVE br(node_id, depth) AS (
+        SELECT ?1, 0
+        UNION
+        SELECT e.source_node, br.depth + 1
+        FROM graph_edges e JOIN br ON br.node_id = e.target_node
+        WHERE e.type = 'CALLS' AND br.depth < 3
+      )
+      SELECT COUNT(DISTINCT node_id) - 1 as c FROM br
+    `).bind(node.id).first<{ c: number }>();
+
+    const blastCount = blast?.c || 0;
+    totalBlast += blastCount;
+
+    enriched.push({
+      function: node.name,
+      file: node.file_path || frame.file || "?",
+      line: node.line_start || frame.line || 0,
+      callers: (callers.results as any[]).map(c => `${c.name}() in ${c.file_path}`),
+      blast_radius: blastCount,
+      has_tests: false, // Would need test file detection
+    });
+  }
+
+  return { enriched_frames: enriched, total_blast_radius: totalBlast };
+}
+
 async function sentryGet(token: string, url: string): Promise<any> {
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -62,6 +135,9 @@ export async function getSentryIssue(db: Env["DB"], orgId: string, input: { issu
     ?.map((b: any) => ({ category: b.category, message: b.message, level: b.level }))
     || [];
 
+  // Graph enrichment: match stack trace to code graph
+  const graphContext = await enrichWithGraph(db, orgId, stackFrames);
+
   return {
     id: issue.id,
     short_id: issue.shortId,
@@ -79,6 +155,12 @@ export async function getSentryIssue(db: Env["DB"], orgId: string, input: { issu
     breadcrumbs,
     tags: event?.tags?.filter((t: any) => ["environment", "release", "browser", "os", "server_name"].includes(t.key))
       ?.map((t: any) => ({ [t.key]: t.value })) || [],
+    // Graph context: what Sentry MCP can't give you
+    graph: graphContext.enriched_frames.length > 0 ? {
+      matched_functions: graphContext.enriched_frames,
+      total_blast_radius: graphContext.total_blast_radius,
+      risk: graphContext.total_blast_radius > 10 ? "high" : graphContext.total_blast_radius > 3 ? "medium" : "low",
+    } : undefined,
   };
 }
 
@@ -95,8 +177,14 @@ export async function searchSentryIssues(db: Env["DB"], orgId: string, input: { 
   const issues = await sentryGet(creds.auth_token, url);
   if (!issues || !Array.isArray(issues)) return { results: [], count: 0 };
 
-  return {
-    results: issues.map((i: any) => ({
+  // For each issue, try to match culprit to code graph
+  const project = await db.prepare(
+    "SELECT id FROM projects WHERE org_id = ?1 ORDER BY updated_at DESC LIMIT 1"
+  ).bind(orgId).first<{ id: string }>();
+
+  const results = [];
+  for (const i of issues) {
+    const result: any = {
       id: i.id,
       short_id: i.shortId,
       title: i.title,
@@ -108,9 +196,32 @@ export async function searchSentryIssues(db: Env["DB"], orgId: string, input: { 
       last_seen: i.lastSeen,
       assigned_to: i.assignedTo?.name || null,
       project: i.project?.slug,
-    })),
-    count: issues.length,
-  };
+    };
+
+    // Try to match culprit to graph node (lightweight - just callers count)
+    if (project && i.culprit) {
+      const funcName = i.culprit.split(/[./]/).pop()?.replace(/[()]/g, "");
+      if (funcName) {
+        const node = await db.prepare(
+          "SELECT id FROM graph_nodes WHERE project_id = ?1 AND name = ?2 LIMIT 1"
+        ).bind(project.id, funcName).first<{ id: string }>();
+        if (node) {
+          const callerCount = await db.prepare(
+            "SELECT COUNT(*) as c FROM graph_edges WHERE target_node = ?1 AND type = 'CALLS'"
+          ).bind(node.id).first<{ c: number }>();
+          result.graph = {
+            function_in_graph: true,
+            callers: callerCount?.c || 0,
+            risk: (callerCount?.c || 0) > 5 ? "high" : "low",
+          };
+        }
+      }
+    }
+
+    results.push(result);
+  }
+
+  return { results, count: results.length };
 }
 
 // ── search_sentry_events ──
