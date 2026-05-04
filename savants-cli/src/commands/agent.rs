@@ -405,6 +405,76 @@ fn host_health() -> serde_json::Value {
         }
     }
 
+    // ── Network interfaces ──
+    let mut interfaces: Vec<serde_json::Value> = Vec::new();
+    if let Ok(proc_net) = std::fs::read_to_string("/proc/net/dev") {
+        for line in proc_net.lines().skip(2) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 12 { continue; }
+            let iface = parts[0].trim_end_matches(':');
+            if iface == "lo" || iface.starts_with("veth") || iface.starts_with("br-") || iface.starts_with("docker") || iface.starts_with("flannel") || iface.starts_with("cni") { continue; }
+            let rx_bytes: u64 = parts[1].parse().unwrap_or(0);
+            let tx_bytes: u64 = parts[9].parse().unwrap_or(0);
+            let rx_drops: u64 = parts[4].parse().unwrap_or(0);
+            let tx_drops: u64 = parts[12].parse().unwrap_or(0);
+            interfaces.push(serde_json::json!({
+                "name": iface,
+                "rx_gb": rx_bytes / 1_073_741_824,
+                "tx_gb": tx_bytes / 1_073_741_824,
+                "rx_drops": rx_drops,
+                "tx_drops": tx_drops,
+                "type": if iface.starts_with("wl") { "wifi" } else if iface.starts_with("en") || iface.starts_with("eth") { "ethernet" } else if iface.starts_with("tailscale") { "vpn" } else { "other" },
+            }));
+        }
+    }
+    if !interfaces.is_empty() {
+        info.insert("network_interfaces".into(), interfaces.into());
+    }
+
+    // ── DNS ──
+    if let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf") {
+        let nameservers: Vec<&str> = resolv.lines()
+            .filter(|l| l.starts_with("nameserver"))
+            .filter_map(|l| l.split_whitespace().nth(1))
+            .collect();
+        info.insert("dns_nameservers".into(), serde_json::json!(nameservers));
+
+        // Test actual resolution
+        let mut dns_ok = true;
+        if let Ok(out) = std::process::Command::new("getent").args(["hosts", "google.com"]).output() {
+            if !out.status.success() { dns_ok = false; }
+        }
+        info.insert("dns_resolving".into(), dns_ok.into());
+    }
+
+    // ── Default route ──
+    if let Ok(out) = std::process::Command::new("ip").args(["route", "show", "default"]).output() {
+        if out.status.success() {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let routes: Vec<&str> = raw.lines().collect();
+            info.insert("default_routes".into(), serde_json::json!(routes));
+        }
+    }
+
+    // ── Tailscale ──
+    if which("tailscale") {
+        if let Ok(out) = std::process::Command::new("tailscale").args(["status", "--json"]).output() {
+            if out.status.success() {
+                if let Ok(status) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    let self_online = status["Self"]["Online"].as_bool().unwrap_or(false);
+                    let health = status["Health"].as_array()
+                        .map(|h| h.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    info.insert("tailscale".into(), serde_json::json!({
+                        "online": self_online,
+                        "ip": status["Self"]["TailscaleIPs"][0].as_str().unwrap_or("?"),
+                        "health_warnings": health,
+                    }));
+                }
+            }
+        }
+    }
+
     serde_json::json!(info)
 }
 
@@ -1017,17 +1087,15 @@ fn watch_network() -> Vec<Finding> {
             .map(|l| l.split_whitespace().nth(1).unwrap_or("?"))
             .collect();
 
-        // Check for Tailscale DNS as sole nameserver (single point of failure)
-        if nameservers.len() == 1 && nameservers[0] == "100.100.100.100" {
-            findings.push(Finding {
-                key: "dns_single_tailscale".into(),
-                severity: "warning".into(),
-                category: "network".into(),
-                title: "Single DNS nameserver: Tailscale MagicDNS".into(),
-                message: "Only nameserver is 100.100.100.100 (Tailscale). If Tailscale coordination fails, all DNS resolution stops. Add a fallback like 1.1.1.1 or 8.8.8.8.".into(),
-                metadata: serde_json::json!({"nameservers": nameservers}),
-            });
-        }
+        // Report DNS configuration
+        findings.push(Finding {
+            key: "dns_config".into(),
+            severity: "info".into(),
+            category: "network".into(),
+            title: format!("DNS nameservers: {}", nameservers.join(", ")),
+            message: format!("Configured nameservers: {}. Count: {}.", nameservers.join(", "), nameservers.len()),
+            metadata: serde_json::json!({"nameservers": nameservers, "count": nameservers.len()}),
+        });
     }
 
     // 3. WiFi as primary interface (server should use ethernet)
@@ -1052,38 +1120,40 @@ fn watch_network() -> Vec<Finding> {
             }
         }
 
-        if wifi_bytes > 0 && wifi_bytes > eth_bytes * 2 {
+        // Report interface traffic distribution
+        if wifi_bytes > 0 || eth_bytes > 0 {
             findings.push(Finding {
-                key: "wifi_primary_interface".into(),
-                severity: "warning".into(),
+                key: "network_traffic_distribution".into(),
+                severity: "info".into(),
                 category: "network".into(),
-                title: format!("WiFi ({}) carrying more traffic than ethernet ({})", wifi_name, eth_name),
+                title: "Network interface traffic".into(),
                 message: format!(
-                    "WiFi has received {} GB vs ethernet {} GB. Servers should use wired connections for reliability. WiFi power-save mode causes intermittent packet drops.",
-                    wifi_bytes / 1_073_741_824, eth_bytes / 1_073_741_824
+                    "WiFi ({}): {} GB received. Ethernet ({}): {} GB received.",
+                    if wifi_name.is_empty() { "none" } else { &wifi_name },
+                    wifi_bytes / 1_073_741_824,
+                    if eth_name.is_empty() { "none" } else { &eth_name },
+                    eth_bytes / 1_073_741_824
                 ),
                 metadata: serde_json::json!({"wifi": wifi_name, "wifi_gb": wifi_bytes / 1_073_741_824, "eth": eth_name, "eth_gb": eth_bytes / 1_073_741_824}),
             });
         }
 
-        // Check for WiFi DORMANT state
-        if let Ok(output) = std::process::Command::new("ip")
-            .args(["link", "show"])
-            .output()
-        {
-            let raw = String::from_utf8_lossy(&output.stdout);
-            for line in raw.lines() {
-                if line.contains("DORMANT") && (line.contains("wl") || line.contains("wlan")) {
-                    let iface = line.split(':').nth(1).unwrap_or("?").trim().split('@').next().unwrap_or("?");
-                    findings.push(Finding {
-                        key: format!("wifi_dormant_{}", iface),
-                        severity: "warning".into(),
-                        category: "network".into(),
-                        title: format!("WiFi {} in DORMANT power-save mode", iface),
-                        message: "WiFi interface is in power-save mode which causes intermittent latency spikes and packet drops. Disable power management: iw dev <iface> set power_save off".into(),
-                        metadata: serde_json::json!({"interface": iface}),
-                    });
-                }
+        // Report WiFi power save state
+        if !wifi_name.is_empty() {
+            if let Ok(output) = std::process::Command::new("iw")
+                .args(["dev", &wifi_name, "get", "power_save"])
+                .output()
+            {
+                let raw = String::from_utf8_lossy(&output.stdout);
+                let power_save = if raw.contains("on") { "on" } else { "off" };
+                findings.push(Finding {
+                    key: format!("wifi_power_save_{}", wifi_name),
+                    severity: "info".into(),
+                    category: "network".into(),
+                    title: format!("WiFi {} power save: {}", wifi_name, power_save),
+                    message: format!("WiFi interface {} power_save is {}.", wifi_name, power_save),
+                    metadata: serde_json::json!({"interface": wifi_name, "power_save": power_save}),
+                });
             }
         }
     }
