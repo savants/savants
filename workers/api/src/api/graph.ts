@@ -370,20 +370,15 @@ graph.post("/parse-result", async (c) => {
     return c.json({ error: "repo and entities required", status: 400 }, 400);
   }
 
-  // Auto-create project if it doesn't exist
+  // Find existing project by slug - do NOT auto-create
   const slug = body.repo.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-  let project = await c.env.DB
-    .prepare("SELECT id FROM projects WHERE org_id = ?1 AND slug = ?2")
-    .bind(auth.orgId, slug)
+  const project = await c.env.DB
+    .prepare("SELECT id FROM projects WHERE org_id = ?1 AND (slug = ?2 OR name = ?3)")
+    .bind(auth.orgId, slug, body.repo)
     .first<{ id: string }>();
 
   if (!project) {
-    const projectId = crypto.randomUUID();
-    await c.env.DB
-      .prepare("INSERT INTO projects (id, org_id, name, slug, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)")
-      .bind(projectId, auth.orgId, body.repo, slug, Math.floor(Date.now() / 1000))
-      .run();
-    project = { id: projectId };
+    return c.json({ error: "project_not_found", message: `No project '${body.repo}'. Create one first: savants project create ${slug}` }, 404);
   }
 
   const projectId = project.id;

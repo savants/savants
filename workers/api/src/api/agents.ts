@@ -29,18 +29,41 @@ agents.post("/register", async (c) => {
 
   if (!body.name) return c.json({ error: "name required" }, 400);
 
-  const agentId = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
+  const caps = JSON.stringify(body.capabilities || ["host_health", "pod_status", "pod_logs"]);
+  const machineId = (body as any).machine_id;
 
-  await c.env.DB.prepare(`
-    INSERT INTO agents (id, org_id, name, hostname, os, arch, capabilities, version, last_heartbeat, status, created_at)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'online', ?9)
-  `).bind(
-    agentId, auth.orgId, body.name,
-    body.hostname || null, body.os || null, body.arch || null,
-    JSON.stringify(body.capabilities || ["host_health", "pod_status", "pod_logs"]),
-    body.version || null, now
-  ).run();
+  // Upsert: match by machine_id (unique per host), fallback to name+org
+  const existing = machineId
+    ? await c.env.DB.prepare(
+        "SELECT id FROM agents WHERE org_id = ?1 AND hostname = ?2 LIMIT 1"
+      ).bind(auth.orgId, machineId).first<{ id: string }>()
+    : await c.env.DB.prepare(
+        "SELECT id FROM agents WHERE org_id = ?1 AND name = ?2 LIMIT 1"
+      ).bind(auth.orgId, body.name).first<{ id: string }>();
+
+  let agentId: string;
+  if (existing) {
+    agentId = existing.id;
+    await c.env.DB.prepare(`
+      UPDATE agents SET name = ?1, hostname = ?2, os = ?3, arch = ?4, capabilities = ?5,
+        version = ?6, last_heartbeat = ?7, status = 'online'
+      WHERE id = ?8
+    `).bind(
+      body.name, machineId || body.hostname || null, body.os || null, body.arch || null,
+      caps, body.version || null, now, agentId
+    ).run();
+  } else {
+    agentId = crypto.randomUUID();
+    await c.env.DB.prepare(`
+      INSERT INTO agents (id, org_id, name, hostname, os, arch, capabilities, version, last_heartbeat, status, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'online', ?9)
+    `).bind(
+      agentId, auth.orgId, body.name,
+      machineId || body.hostname || null, body.os || null, body.arch || null,
+      caps, body.version || null, now
+    ).run();
+  }
 
   return c.json({ agent_id: agentId, status: "registered" });
 });

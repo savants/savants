@@ -74,6 +74,7 @@ pub async fn start(name: Option<String>) {
         .json(&serde_json::json!({
             "name": agent_name,
             "hostname": &agent_name,
+            "machine_id": get_machine_id(),
             "os": os,
             "arch": arch,
             "capabilities": capabilities,
@@ -1644,6 +1645,31 @@ fn detect_deploy(repo_name: &str, commit: &str) -> Option<String> {
     }
 
     None
+}
+
+fn get_machine_id() -> String {
+    // Linux: /etc/machine-id
+    if let Ok(id) = std::fs::read_to_string("/etc/machine-id") {
+        return id.trim().to_string();
+    }
+    // macOS: IOPlatformUUID
+    if let Ok(out) = std::process::Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()
+    {
+        let raw = String::from_utf8_lossy(&out.stdout);
+        for line in raw.lines() {
+            if line.contains("IOPlatformUUID") {
+                if let Some(uuid) = line.split('"').nth(3) {
+                    return uuid.to_string();
+                }
+            }
+        }
+    }
+    // Fallback: hostname
+    hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 fn which(cmd: &str) -> bool {
