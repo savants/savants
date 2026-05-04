@@ -30,6 +30,15 @@ pub async fn start(name: Option<String>) {
         }
     };
 
+    // Save token to OSS state file so MCP binary auto-detects cloud mode
+    let oss_state_path = dirs::home_dir().unwrap_or_default().join(".savants").join("state.json");
+    if let Ok(raw) = std::fs::read_to_string(&oss_state_path) {
+        if let Ok(mut oss_state) = serde_json::from_str::<serde_json::Value>(&raw) {
+            oss_state["cloud_token"] = serde_json::json!(token);
+            let _ = std::fs::write(&oss_state_path, serde_json::to_string_pretty(&oss_state).unwrap_or_default());
+        }
+    }
+
     let agent_name = name.unwrap_or_else(|| {
         hostname::get()
             .map(|h| h.to_string_lossy().to_string())
