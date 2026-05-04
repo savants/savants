@@ -330,12 +330,14 @@ async function searchSentryEvents(
 
   // Step 1: Search issues by error message (this is what Sentry MCP does)
   try {
-    // Clean the error message for search - use key phrases
+    // Clean the error message for search - use 3-4 distinctive terms only
+    // Sentry search treats each word as AND, so fewer = more results
+    const stopWords = new Set(["with", "status", "code", "error", "failed", "the", "from", "that", "this", "undefined", "null"]);
     const searchTerms = errorMessage
-      .replace(/['"]/g, "")
+      .replace(/['":\[\]()]/g, " ")
       .split(/\s+/)
-      .filter(w => w.length > 3)
-      .slice(0, 8)
+      .filter(w => w.length > 3 && !stopWords.has(w.toLowerCase()))
+      .slice(0, 3)
       .join(" ");
 
     const query = encodeURIComponent(`is:unresolved ${searchTerms}`);
