@@ -292,6 +292,32 @@ agents.get("/incidents", async (c) => {
     }
   }
 
+  // Get ALL change events in the same window (deploys, k8s events, config changes)
+  const changeEvents = await c.env.DB.prepare(`
+    SELECT metadata, created_at FROM audit_log
+    WHERE org_id = ?1 AND created_at > ?2
+      AND (action = 'agent.notify' OR action = 'tool.call')
+    ORDER BY created_at ASC
+  `).bind(auth.orgId, now - lookback).all();
+
+  const changes: Array<{ title: string; category: string; timestamp: number; key: string }> = [];
+  for (const row of changeEvents.results as any[]) {
+    let meta: any = {};
+    try { meta = JSON.parse(row.metadata || "{}"); } catch { continue; }
+    // Track deploys, k8s events, and config-related changes
+    if (meta.category === "deploy" || meta.category === "k8s_event" ||
+        (meta.category === "network" && meta.key?.includes("dns")) ||
+        meta.title?.includes("restart") || meta.title?.includes("config") ||
+        meta.title?.includes("Deploy") || meta.title?.includes("changed")) {
+      changes.push({
+        title: meta.title || meta.key || "unknown change",
+        category: meta.category || "change",
+        timestamp: row.created_at,
+        key: meta.key || "",
+      });
+    }
+  }
+
   // Determine which are active vs resolved
   // Active = last seen within the last 5 minutes (agent reports every 60s, deduplicates)
   const activeThreshold = now - 300;
@@ -302,9 +328,62 @@ agents.get("/incidents", async (c) => {
       return (sevOrder[a.severity] ?? 3) - (sevOrder[b.severity] ?? 3);
     });
 
-  const resolved = Object.values(incidents)
+  const resolvedRaw = Object.values(incidents)
     .filter(i => i.last_seen <= activeThreshold)
     .sort((a, b) => b.last_seen - a.last_seen);
+
+  // For each resolved incident, find the change event that likely resolved it
+  const resolved = resolvedRaw.map(incident => {
+    // Find changes that happened AFTER the last occurrence of this incident
+    // and BEFORE it stopped being reported (last_seen + 5min buffer)
+    const resolvedWindow = incident.last_seen + 300;
+    const relevantChanges = changes.filter(c =>
+      c.timestamp >= incident.last_seen - 60 && // started around when issue was last seen
+      c.timestamp <= resolvedWindow + 600 // within 10 min after it stopped
+    );
+
+    // Score each change by relevance to the incident
+    let resolvedBy: string | null = null;
+    let resolvedByTimestamp: number | null = null;
+    let resolutionConfidence = 0;
+
+    for (const change of relevantChanges) {
+      let score = 0;
+
+      // Temporal proximity: closer = higher score
+      const timeDelta = Math.abs(change.timestamp - incident.last_seen);
+      score += Math.max(0, 1 - timeDelta / 600); // 1.0 if same time, 0 if 10min apart
+
+      // Category match: same category = higher score
+      if (change.category === incident.category) score += 0.5;
+
+      // Key overlap: if the change key contains words from the incident key
+      const incidentWords = incident.key.toLowerCase().split("_");
+      const changeWords = change.key.toLowerCase().split("_");
+      const overlap = incidentWords.filter(w => changeWords.includes(w) || change.title.toLowerCase().includes(w)).length;
+      score += overlap * 0.3;
+
+      // Deploy events are always relevant (they change state)
+      if (change.category === "deploy") score += 0.3;
+
+      if (score > resolutionConfidence) {
+        resolutionConfidence = score;
+        resolvedBy = change.title;
+        resolvedByTimestamp = change.timestamp;
+      }
+    }
+
+    return {
+      ...incident,
+      duration_min: Math.round((incident.last_seen - incident.first_seen) / 60),
+      resolved_min_ago: Math.round((now - incident.last_seen) / 60),
+      status: "resolved" as const,
+      resolved_by: resolvedBy,
+      resolved_by_timestamp: resolvedByTimestamp,
+      resolution_confidence: Math.round(resolutionConfidence * 100) / 100,
+      verified: resolutionConfidence > 0.5, // high confidence = verified resolution
+    };
+  });
 
   return c.json({
     active: active.map(i => ({
@@ -312,15 +391,12 @@ agents.get("/incidents", async (c) => {
       duration_min: Math.round((now - i.first_seen) / 60),
       status: "active",
     })),
-    resolved: resolved.map(i => ({
-      ...i,
-      duration_min: Math.round((i.last_seen - i.first_seen) / 60),
-      resolved_min_ago: Math.round((now - i.last_seen) / 60),
-      status: "resolved",
-    })),
+    resolved,
+    changes: changes.slice(-10), // last 10 change events for context
     summary: {
       active_count: active.length,
       resolved_count: resolved.length,
+      verified_resolutions: resolved.filter(r => r.verified).length,
       critical: active.filter(i => i.severity === "critical").length,
       warning: active.filter(i => i.severity === "warning").length,
     },
