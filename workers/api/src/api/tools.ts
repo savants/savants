@@ -8,6 +8,7 @@ import { audit, requestMeta } from "../lib/audit";
 import { executeGraphTool, GRAPH_TOOL_NAMES } from "./graph-tools";
 import { toolFindCauses } from "./causal";
 import { executeSentryTool, SENTRY_TOOL_NAMES } from "./sentry-tools";
+import { executeGitHubTool, GITHUB_TOOL_NAMES } from "./github-tools";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -474,6 +475,30 @@ const TOOL_LIST: ToolDefinition[] = [
     },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 200, tier: "cloud" },
   },
+  // ── GitHub tools (replaces GitHub MCP) ──
+  ...GITHUB_TOOL_NAMES.map(name => ({
+    name,
+    description: {
+      search_github_issues: "Search GitHub issues by query. Graph-enriched.",
+      search_github_code: "Search code across GitHub repos.",
+      search_github_prs: "Search pull requests.",
+      list_github_issues: "List issues for a repo.",
+      list_github_prs: "List pull requests for a repo. See open/closed PRs.",
+      get_github_commit: "Get commit details with graph blast radius of changed files.",
+      list_github_commits: "List recent commits for a repo or branch.",
+      get_github_file: "Read a file from a GitHub repo.",
+      add_github_comment: "Comment on an issue or PR.",
+      create_github_pr: "Create a pull request.",
+      merge_github_pr: "Merge a pull request.",
+      list_github_actions: "List CI workflow runs. See which are failing.",
+      get_github_action_run: "Get details of a specific CI run.",
+      get_github_action_logs: "Get failed job details from a CI run.",
+      list_github_releases: "List releases for a repo.",
+      list_code_scanning_alerts: "List code scanning security alerts with graph context.",
+    }[name] || name,
+    input_schema: { type: "object", properties: { repo: { type: "string" }, query: { type: "string" } } },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" as const },
+  })),
   // ── Sentry tools (replaces Sentry MCP) ──
   {
     name: "get_sentry_issue",
@@ -636,6 +661,15 @@ tools.post("/call", async (c) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sentry tool failed";
       return c.json({ error: "sentry_tool_error", message, status: 500 }, 500);
+    }
+  }
+  // ── GitHub tools (replaces GitHub MCP) ──
+  else if (GITHUB_TOOL_NAMES.includes(body.tool)) {
+    try {
+      proxyResult = await executeGitHubTool(c.env.DB, auth.orgId, body.tool, body.input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "GitHub tool failed";
+      return c.json({ error: "github_tool_error", message, status: 500 }, 500);
     }
   }
   // ── Handle diagnose_error directly (uses all available sources) ──
