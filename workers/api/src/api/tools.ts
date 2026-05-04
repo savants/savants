@@ -10,6 +10,7 @@ import { toolFindCauses } from "./causal";
 import { executeSentryTool, SENTRY_TOOL_NAMES } from "./sentry-tools";
 import { executeGitHubTool, GITHUB_TOOL_NAMES } from "./github-tools";
 import { executeLinearTool, LINEAR_TOOL_NAMES } from "./linear-tools";
+import { executeSlackTool, SLACK_TOOL_NAMES } from "./slack-tools";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -500,6 +501,22 @@ const TOOL_LIST: ToolDefinition[] = [
     input_schema: { type: "object", properties: { repo: { type: "string" }, query: { type: "string" } } },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" as const },
   })),
+  // ── Slack tools (replaces Slack MCP) ──
+  ...SLACK_TOOL_NAMES.map(name => ({
+    name,
+    description: {
+      search_slack_messages: "Search Slack messages across all channels.",
+      get_slack_history: "Get recent messages from a channel.",
+      get_slack_thread: "Get all replies in a thread.",
+      post_slack_message: "Post a message to a channel or thread.",
+      list_slack_channels: "List all channels with member counts.",
+      search_slack_users: "Search for users by name or email.",
+      get_slack_unreads: "Get channels with unread messages.",
+      find_unanswered_questions: "Find questions in Slack that nobody answered. Links to code owners via the graph. The killer feature.",
+    }[name] || name,
+    input_schema: { type: "object", properties: { query: { type: "string" }, channel: { type: "string" } } },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" as const },
+  })),
   // ── Linear tools (replaces Linear MCP) ──
   ...LINEAR_TOOL_NAMES.map(name => ({
     name,
@@ -679,6 +696,15 @@ tools.post("/call", async (c) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sentry tool failed";
       return c.json({ error: "sentry_tool_error", message, status: 500 }, 500);
+    }
+  }
+  // ── Slack tools (replaces Slack MCP) ──
+  else if (SLACK_TOOL_NAMES.includes(body.tool)) {
+    try {
+      proxyResult = await executeSlackTool(c.env.DB, auth.orgId, body.tool, body.input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Slack tool failed";
+      return c.json({ error: "slack_tool_error", message, status: 500 }, 500);
     }
   }
   // ── Linear tools (replaces Linear MCP) ──
