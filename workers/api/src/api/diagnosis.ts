@@ -62,6 +62,79 @@ export async function diagnoseError(
   sources.push("error_message");
   const parsed = parseErrorMessage(input.error_message);
 
+  // ── Source 1b: Detect if this is an infra problem (not code) ──
+  const infraKeywords = ["pod", "node", "cluster", "dns", "tunnel", "timeout", "connection",
+    "interface", "drops", "tailscale", "cloudflared", "coredns", "wifi", "ethernet",
+    "memory", "disk", "cpu", "load", "systemd", "service", "k8s", "kubernetes",
+    "restarts", "crashloop", "oom", "evict", "unhealthy", "probe", "certificate"];
+  const lowerMsg = input.error_message.toLowerCase();
+  const isInfra = infraKeywords.filter(k => lowerMsg.includes(k)).length >= 2;
+
+  let infraData: any = null;
+
+  if (isInfra) {
+    // Query agent for current host + k8s state
+    try {
+      // Get recent agent findings from audit log
+      const findings = await env.DB.prepare(`
+        SELECT metadata, created_at FROM audit_log
+        WHERE org_id = ?1 AND action = 'agent.notify'
+        ORDER BY created_at DESC LIMIT 20
+      `).bind(orgId).all();
+
+      // Get online agents
+      const agents = await env.DB.prepare(
+        "SELECT name, hostname, os, capabilities, last_heartbeat, status FROM agents WHERE org_id = ?1 AND status = 'online'"
+      ).bind(orgId).all();
+
+      // Get recent k8s events from graph
+      const k8sEvents = await env.DB.prepare(`
+        SELECT type, title, severity, occurred_at FROM graph_events
+        WHERE project_id IN (SELECT id FROM projects WHERE org_id = ?1)
+          AND occurred_at > ?2
+        ORDER BY occurred_at DESC LIMIT 20
+      `).bind(orgId, Math.floor(Date.now() / 1000) - 7200).all();
+
+      // Get pods with high restarts
+      const unhealthyPods = await env.DB.prepare(`
+        SELECT name, metadata FROM graph_nodes
+        WHERE project_id IN (SELECT id FROM projects WHERE org_id = ?1)
+          AND type = 'k8s_pod'
+          AND CAST(json_extract(metadata, '$.restarts') AS INTEGER) > 10
+        ORDER BY CAST(json_extract(metadata, '$.restarts') AS INTEGER) DESC
+        LIMIT 10
+      `).bind(orgId).all();
+
+      const agentFindings = (findings.results as any[]).map(r => {
+        try { return JSON.parse(r.metadata || "{}"); } catch { return {}; }
+      }).filter(f => f.title);
+
+      if (agentFindings.length > 0 || (agents.results as any[]).length > 0 || (k8sEvents.results as any[]).length > 0) {
+        sources.push("agent_findings");
+        infraData = {
+          agents: (agents.results as any[]).map(a => ({
+            name: a.name, os: a.os, status: a.status,
+            capabilities: JSON.parse(a.capabilities || "[]"),
+          })),
+          recent_findings: agentFindings.slice(0, 10).map(f => ({
+            severity: f.severity, category: f.category, title: f.title,
+            message: f.message,
+          })),
+          k8s_events: (k8sEvents.results as any[]).map(e => ({
+            type: e.type, title: e.title, severity: e.severity,
+          })),
+          unhealthy_pods: (unhealthyPods.results as any[]).map(p => {
+            let meta: any = {};
+            try { meta = JSON.parse(p.metadata || "{}"); } catch {}
+            return { name: p.name, restarts: meta.restarts, status: meta.status };
+          }),
+        };
+      }
+    } catch {
+      // Agent data unavailable
+    }
+  }
+
   // ── Source 2: Sentry enrichment (if integration exists) ──
   try {
     const sentryIntegration = await getIntegration(env.DB, orgId, "sentry");
@@ -242,7 +315,7 @@ export async function diagnoseError(
   }
 
   // ── Build diagnosis from all available sources ──
-  return buildDiagnosis(parsed, sentryData, graphData, ticketData, sources);
+  return buildDiagnosis(parsed, sentryData, graphData, ticketData, infraData, isInfra, sources);
 }
 
 function parseErrorMessage(msg: string): {
@@ -435,6 +508,8 @@ function buildDiagnosis(
   sentryData: any | null,
   graphData: any | null,
   ticketData: any | null,
+  infraData: any | null,
+  isInfra: boolean,
   sources: string[]
 ): DiagnosisResult {
   let rootCause = "";
@@ -525,11 +600,84 @@ function buildDiagnosis(
     }
   }
 
+  // ── Enrich from infrastructure data ──
+  if (isInfra && infraData) {
+    confidence += 0.2;
+
+    // Build infra context into the diagnosis
+    const findings = infraData.recent_findings || [];
+    const agents = infraData.agents || [];
+    const k8sEvents = infraData.k8s_events || [];
+
+    if (findings.length > 0) {
+      rootCause += "\n\nAgent findings:\n" + findings.map((f: any) =>
+        `[${f.severity}] ${f.title}: ${f.message}`
+      ).join("\n");
+    }
+
+    if (agents.length > 0) {
+      rootCause += "\n\nAgents: " + agents.map((a: any) =>
+        `${a.name} (${a.status}, ${a.capabilities?.length || 0} capabilities)`
+      ).join(", ");
+    }
+
+    if (k8sEvents.length > 0) {
+      rootCause += "\n\nRecent K8s events:\n" + k8sEvents.map((e: any) =>
+        `[${e.severity}] ${e.title}`
+      ).join("\n");
+    }
+
+    if (infraData.unhealthy_pods?.length > 0) {
+      rootCause += "\n\nUnhealthy pods: " + infraData.unhealthy_pods.map((p: any) =>
+        `${p.name} (${p.restarts} restarts)`
+      ).join(", ");
+    }
+  }
+
   // ── Generate diagnosis based on error patterns ──
   const errorType = parsed.type;
   const errorMsg = parsed.message;
 
-  if (errorType.includes("Prisma") || errorMsg.includes("Foreign key")) {
+  // ── Infrastructure patterns ──
+  if (isInfra) {
+    const msg = errorMsg.toLowerCase();
+
+    if (msg.includes("dns") || msg.includes("nameserver") || msg.includes("resolve")) {
+      rootCause = `DNS resolution failure detected. ${rootCause}`;
+      suggestedFix = "1. Check /etc/resolv.conf for nameserver configuration.\n2. Verify CoreDNS is running and its upstream forwarders are reachable.\n3. Add fallback DNS servers (1.1.1.1, 8.8.8.8) to CoreDNS forward config.\n4. If using Tailscale MagicDNS as sole nameserver, add non-Tailscale fallbacks.";
+      severity = "critical";
+      confidence += 0.15;
+    } else if (msg.includes("tunnel") || msg.includes("cloudflared") || msg.includes("tls handshake")) {
+      rootCause = `Network tunnel connectivity failure. ${rootCause}`;
+      suggestedFix = "1. Check DNS resolution from within the cluster (CoreDNS upstream).\n2. Verify the host network interface is stable (WiFi power-save, packet drops).\n3. Check cloudflared pod logs for connection/reconnection patterns.\n4. If using WiFi, disable power management: iw dev <iface> set power_save off.";
+      severity = "critical";
+      confidence += 0.15;
+    } else if (msg.includes("tx_drops") || msg.includes("rx_drops") || msg.includes("packet")) {
+      rootCause = `Network packet loss on interface. ${rootCause}`;
+      suggestedFix = "1. Check interface error counters: ip -s link show.\n2. If WiFi, check power-save mode and signal quality.\n3. If VPN (tailscale), check coordination server reachability.\n4. Consider switching to wired ethernet for server workloads.";
+      severity = "warning";
+      confidence += 0.1;
+    } else if (msg.includes("restart") || msg.includes("crashloop") || msg.includes("oom")) {
+      rootCause = `Pod instability - high restart count indicates recurring failures. ${rootCause}`;
+      suggestedFix = "1. Check pod logs for the crash reason: kubectl logs <pod> --previous.\n2. Check resource limits - OOMKilled means the pod needs more memory.\n3. Check liveness/readiness probes - may be too aggressive.\n4. Check if a dependency (database, external service) is intermittently unavailable.";
+      severity = "critical";
+      confidence += 0.1;
+    } else if (msg.includes("disk") || msg.includes("storage") || msg.includes("volume")) {
+      rootCause = `Storage issue detected. ${rootCause}`;
+      suggestedFix = "1. Check disk usage: df -h.\n2. Identify large files/directories: du -sh /* | sort -rh.\n3. Check if PVCs are bound and have available space.\n4. Consider enabling log rotation or cleaning old data.";
+      severity = "warning";
+      confidence += 0.1;
+    } else if (msg.includes("memory") || msg.includes("load") || msg.includes("cpu")) {
+      rootCause = `Resource pressure detected. ${rootCause}`;
+      suggestedFix = "1. Check host resource usage: top, free -h.\n2. Identify resource-hungry pods: kubectl top pods --all-namespaces.\n3. Set resource limits on pods that don't have them.\n4. Consider scaling up the node or evicting non-critical workloads.";
+      severity = "warning";
+      confidence += 0.1;
+    } else {
+      rootCause = `Infrastructure issue detected. ${rootCause}`;
+      suggestedFix = "1. Check agent findings for related alerts.\n2. Review pod logs for the affected services.\n3. Check host health (memory, disk, network).\n4. Review recent deployments or configuration changes.";
+      confidence += 0.05;
+    }
+  } else if (errorType.includes("Prisma") || errorMsg.includes("Foreign key")) {
     rootCause = `Database foreign key constraint violation. The code at ${file || "?"}:${line || "?"} in ${fn || "?"}() tries to create a record referencing a row that doesn't exist in the parent table.`;
     suggestedFix = `1. Add a null check before the database write: verify the referenced ID exists with a findUnique() call.\n2. Wrap the create() in a try/catch so the error handler doesn't itself crash.\n3. Consider using connectOrCreate instead of a hard foreign key reference.`;
     severity = "error";
