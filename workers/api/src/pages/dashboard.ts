@@ -38,7 +38,8 @@ body::before{
 .nav-item.active::before{content:'';display:inline-block;width:3px;height:16px;border-radius:2px;background:linear-gradient(180deg,var(--accent),var(--accent2));margin-right:-4px}
 .nav-icon{width:18px;height:18px;opacity:0.6;flex-shrink:0}
 .sidebar-footer{padding:16px 20px;border-top:1px solid var(--border)}
-.user-info{font-size:0.8rem;color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.user-info{font-size:0.8rem;color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:8px;overflow:hidden}
+.user-info span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px}
 .user-avatar{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:600;color:var(--bg);flex-shrink:0}
 .sidebar-footer a{font-size:0.8rem;color:var(--muted);text-decoration:none;transition:color 0.15s}
 .sidebar-footer a:hover{color:var(--fg)}
@@ -402,9 +403,11 @@ ${SHARED_JS}
     if (parts.length === 3) {
       var payload = JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));
       var email = payload.email || '';
-      var initials = email.split('@')[0].substring(0,2).toUpperCase();
+      var name = email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+      var initials = name.split(' ').map(function(w) { return w[0]; }).join('').substring(0,2).toUpperCase();
       document.getElementById('user-avatar').textContent = initials;
-      document.getElementById('user-name').textContent = email;
+      document.getElementById('user-name').textContent = name;
+      document.getElementById('user-name').title = email;
     }
   } catch(e) {}
 
