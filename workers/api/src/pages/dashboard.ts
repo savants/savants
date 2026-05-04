@@ -1792,18 +1792,31 @@ export function projectDetailPage(projectSlug: string): string {
       }
     });
 
-    // Load graph stats
-    apiFetch('/api/v1/tools/call', {
-      method: 'POST',
-      body: JSON.stringify({ tool: 'graph_stats', input: { project_id: projectId } })
-    }).then(function(r) {
-      if (!r.ok || !r.data.result) return;
-      var g = r.data.result;
-      document.getElementById('graph-nodes').textContent = formatNumber(g.total_nodes || 0);
-      document.getElementById('graph-edges').textContent = formatNumber(g.total_edges || 0);
-      var nodeTypes = g.nodes_by_type || {};
-      var files = nodeTypes.file || nodeTypes.module || 0;
-      document.getElementById('graph-files').textContent = formatNumber(files);
+    // Load graph stats (use graph API directly, not tool call)
+    apiFetch('/api/v1/graph/stats/' + projectId).then(function(r) {
+      if (!r.ok || !r.data) return;
+      var g = r.data;
+      var totals = g.totals || {};
+      document.getElementById('graph-nodes').textContent = formatNumber(totals.nodes || 0);
+      document.getElementById('graph-edges').textContent = formatNumber(totals.edges || 0);
+
+      // Count files from nodes_by_type
+      var files = 0;
+      (g.nodes_by_type || []).forEach(function(n) {
+        if (n.type === 'file' || n.type === 'module') files += n.count;
+      });
+      document.getElementById('graph-files').textContent = formatNumber(files || totals.nodes || 0);
+      document.getElementById('graph-last-indexed').textContent = 'Active';
+
+      // Show top functions by type
+      var hotspots = document.getElementById('graph-hotspots');
+      if (g.nodes_by_type && g.nodes_by_type.length > 0) {
+        hotspots.innerHTML = g.nodes_by_type.map(function(n) {
+          return '<div class="activity-item" style="padding:6px 0"><div style="flex:1;font-size:0.85rem">' + n.type + '</div><div style="color:var(--accent);font-family:JetBrains Mono,monospace;font-size:0.85rem">' + n.count + '</div></div>';
+        }).join('');
+      } else {
+        hotspots.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;padding:16px 0">No graph data. Index a repo to see stats.</div>';
+      }
     });
   });
 
