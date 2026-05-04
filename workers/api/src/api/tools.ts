@@ -11,6 +11,7 @@ import { executeSentryTool, SENTRY_TOOL_NAMES } from "./sentry-tools";
 import { executeGitHubTool, GITHUB_TOOL_NAMES } from "./github-tools";
 import { executeLinearTool, LINEAR_TOOL_NAMES } from "./linear-tools";
 import { executeSlackTool, SLACK_TOOL_NAMES } from "./slack-tools";
+import { executeCloudfareTool, CLOUDFLARE_TOOL_NAMES } from "./cloudflare-tools";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -501,6 +502,20 @@ const TOOL_LIST: ToolDefinition[] = [
     input_schema: { type: "object", properties: { repo: { type: "string" }, query: { type: "string" } } },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" as const },
   })),
+  // ── Cloudflare tools ──
+  ...CLOUDFLARE_TOOL_NAMES.map(name => ({
+    name,
+    description: {
+      list_cf_workers: "List all Cloudflare Workers with routes and last modified date.",
+      get_cf_worker_errors: "Get Worker error rate and request count for a specific worker.",
+      list_cf_d1: "List D1 databases with size and table count.",
+      list_cf_kv: "List KV namespaces.",
+      list_cf_tunnels: "List Cloudflare tunnels with connection status and colos.",
+      get_cf_dns: "Get DNS records for a zone.",
+    }[name] || name,
+    input_schema: { type: "object", properties: { worker: { type: "string" }, zone: { type: "string" } } },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" as const },
+  })),
   // ── Slack tools (replaces Slack MCP) ──
   ...SLACK_TOOL_NAMES.map(name => ({
     name,
@@ -696,6 +711,15 @@ tools.post("/call", async (c) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sentry tool failed";
       return c.json({ error: "sentry_tool_error", message, status: 500 }, 500);
+    }
+  }
+  // ── Cloudflare tools ──
+  else if (CLOUDFLARE_TOOL_NAMES.includes(body.tool)) {
+    try {
+      proxyResult = await executeCloudfareTool(c.env.DB, auth.orgId, body.tool, body.input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Cloudflare tool failed";
+      return c.json({ error: "cf_tool_error", message, status: 500 }, 500);
     }
   }
   // ── Slack tools (replaces Slack MCP) ──
