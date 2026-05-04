@@ -94,7 +94,7 @@ projects.get("/:id", async (c) => {
     project,
     sources: (sources.results as unknown as any[]).map((s) => ({
       ...s,
-      config: JSON.parse(s.config || "{}"),
+      config: JSON.parse(s.source_config || s.config || "{}"),
     })),
     members: members.results,
   });
