@@ -27,7 +27,7 @@ import docsIndexerRoutes from "./api/docs-indexer";
 import agentsRoutes from "./api/agents";
 import { sentrySetupPage } from "./pages/sentry-setup";
 import { githubSetupPage } from "./pages/github-setup";
-import { dashboardPage } from "./pages/dashboard";
+import { dashboardPage, projectDetailPage } from "./pages/dashboard";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -293,6 +293,9 @@ app.get("/integrations/sentry", (c) => {
 
 // Dashboard pages (server-rendered)
 app.get("/dashboard", (c) => c.html(dashboardPage()));
+app.get("/dashboard/project/:slug", (c) => {
+  return c.html(projectDetailPage(c.req.param("slug")));
+});
 app.get("/dashboard/:page", (c) => {
   const page = c.req.param("page");
   return c.html(dashboardPage(page));

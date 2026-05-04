@@ -507,13 +507,13 @@ export function overviewPage(): string {
     el.innerHTML = r.data.projects.map(function(p) {
       var sources = p.source_count || 0;
       var members = p.member_count || 0;
-      return '<div class="activity-item" style="padding:12px 0;border-bottom:1px solid var(--border)">' +
+      return '<a href="/dashboard/project/' + (p.slug || p.id) + '" class="activity-item" style="padding:12px 0;border-bottom:1px solid var(--border);text-decoration:none;display:flex;cursor:pointer">' +
         '<div style="flex:1">' +
           '<div style="font-weight:600;color:var(--fg)">' + p.name + '</div>' +
           '<div style="font-size:0.8rem;color:var(--muted);margin-top:2px">' + sources + ' sources, ' + members + ' members</div>' +
         '</div>' +
-        '<div style="font-size:0.75rem;color:var(--muted)">' + (p.slug || '') + '</div>' +
-      '</div>';
+        '<div style="font-size:0.75rem;color:var(--muted)">' + (p.slug || '') + ' &#8250;</div>' +
+      '</a>';
     }).join('');
   });
 
@@ -1629,6 +1629,230 @@ export function docsPage(): string {
 }
 
 // ─── Page Router ─────────────────────────────────────────────────────────────
+
+export function projectDetailPage(projectSlug: string): string {
+  const content = `
+      <div id="alert-box" class="alert"></div>
+      <div style="margin-bottom:16px">
+        <a href="/dashboard" style="color:var(--muted);text-decoration:none;font-size:0.85rem">< Back to Overview</a>
+      </div>
+      <div id="project-header" style="margin-bottom:24px">
+        <h2 style="font-size:1.4rem;font-weight:700" id="project-name">Loading...</h2>
+        <div style="color:var(--muted);font-size:0.85rem" id="project-slug">${projectSlug}</div>
+      </div>
+
+      <!-- Tabs -->
+      <div style="display:flex;gap:8px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:8px">
+        <button class="btn btn-sm tab-btn active" data-tab="sources">Sources</button>
+        <button class="btn btn-sm tab-btn" data-tab="members">Members</button>
+        <button class="btn btn-sm tab-btn" data-tab="graph">Graph</button>
+        <button class="btn btn-sm tab-btn" data-tab="errors">Errors</button>
+        <button class="btn btn-sm tab-btn" data-tab="ci">CI Runs</button>
+        <button class="btn btn-sm tab-btn" data-tab="settings">Settings</button>
+      </div>
+
+      <!-- Sources tab -->
+      <div class="tab-content active" id="tab-sources">
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Connected Sources</div>
+          </div>
+          <div id="sources-list"><div class="skeleton" style="height:60px;border-radius:8px"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">Add Source</div></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;padding:8px 0">
+            <button class="btn btn-secondary btn-sm" onclick="addSource('github_repo')">+ GitHub Repo</button>
+            <button class="btn btn-secondary btn-sm" onclick="addSource('sentry_project')">+ Sentry Project</button>
+            <button class="btn btn-secondary btn-sm" onclick="addSource('k8s_namespace')">+ K8s Namespace</button>
+            <button class="btn btn-secondary btn-sm" onclick="addSource('slack_channel')">+ Slack Channel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Members tab -->
+      <div class="tab-content" id="tab-members" style="display:none">
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header"><div class="card-title">Team Members</div></div>
+          <div id="members-list"><div class="skeleton" style="height:40px;border-radius:8px"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">Invite Member</div></div>
+          <div style="display:flex;gap:8px;padding:8px 0">
+            <input type="email" id="invite-email" placeholder="email@company.com" style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--fg);font-size:0.85rem">
+            <button class="btn btn-primary btn-sm" onclick="inviteMember()">Invite</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Graph tab -->
+      <div class="tab-content" id="tab-graph" style="display:none">
+        <div class="metrics-row" id="graph-metrics">
+          <div class="metric-card"><div class="metric-value" id="graph-nodes">-</div><div class="metric-label">Functions</div></div>
+          <div class="metric-card"><div class="metric-value" id="graph-edges">-</div><div class="metric-label">Call Chains</div></div>
+          <div class="metric-card"><div class="metric-value" id="graph-files">-</div><div class="metric-label">Files</div></div>
+          <div class="metric-card"><div class="metric-value" id="graph-last-indexed">-</div><div class="metric-label">Last Indexed</div></div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-header"><div class="card-title">Top Functions by Callers</div></div>
+          <div id="graph-hotspots"><div style="color:var(--muted);font-size:0.85rem;padding:16px 0">Loading graph data...</div></div>
+        </div>
+      </div>
+
+      <!-- Errors tab -->
+      <div class="tab-content" id="tab-errors" style="display:none">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Recent Sentry Errors</div></div>
+          <div id="errors-list"><div style="color:var(--muted);font-size:0.85rem;padding:16px 0">Loading...</div></div>
+        </div>
+      </div>
+
+      <!-- CI tab -->
+      <div class="tab-content" id="tab-ci" style="display:none">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Recent CI Runs</div></div>
+          <div id="ci-list"><div style="color:var(--muted);font-size:0.85rem;padding:16px 0">Loading...</div></div>
+        </div>
+      </div>
+
+      <!-- Settings tab -->
+      <div class="tab-content" id="tab-settings" style="display:none">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Project Settings</div></div>
+          <div style="padding:16px 0">
+            <div style="margin-bottom:16px">
+              <label style="font-size:0.85rem;color:var(--muted);display:block;margin-bottom:4px">Project Name</label>
+              <input type="text" id="settings-name" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--fg);font-size:0.85rem;width:300px">
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="saveSettings()">Save</button>
+            <button class="btn btn-sm" style="background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger-border);margin-left:16px" onclick="deleteProject()">Delete Project</button>
+          </div>
+        </div>
+      </div>
+  `;
+
+  const js = `
+<script>
+(function(){
+  if (!getToken()) return;
+  var slug = '${projectSlug}';
+  var projectId = '';
+
+  // Tab switching
+  document.querySelectorAll('.tab-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+      document.querySelectorAll('.tab-content').forEach(function(t) { t.style.display = 'none'; });
+      btn.classList.add('active');
+      document.getElementById('tab-' + btn.dataset.tab).style.display = 'block';
+    });
+  });
+
+  // Load project list to find ID by slug
+  apiFetch('/api/v1/projects').then(function(r) {
+    if (!r.ok) return;
+    var project = r.data.projects.find(function(p) { return p.slug === slug || p.name === slug; });
+    if (!project) { showAlert('alert-box', 'error', 'Project not found'); return; }
+    projectId = project.id;
+    document.getElementById('project-name').textContent = project.name;
+    document.getElementById('settings-name').value = project.name;
+
+    // Load project detail
+    apiFetch('/api/v1/projects/' + projectId).then(function(r) {
+      if (!r.ok) return;
+      var sources = r.data.sources || [];
+      var members = r.data.members || [];
+
+      // Sources
+      var srcEl = document.getElementById('sources-list');
+      if (sources.length === 0) {
+        srcEl.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;padding:16px 0">No sources connected. Add one below.</div>';
+      } else {
+        srcEl.innerHTML = sources.map(function(s) {
+          var cfg = s.config || {};
+          var detail = cfg.full_name || cfg.project_slug || cfg.namespace || cfg.channel_name || JSON.stringify(cfg).substring(0,60);
+          return '<div class="activity-item" style="padding:10px 0;border-bottom:1px solid var(--border)">' +
+            '<div class="status-dot green"></div>' +
+            '<div style="flex:1"><div class="activity-text">' + s.source_type + '</div><div style="font-size:0.75rem;color:var(--muted)">' + detail + '</div></div>' +
+            '<button class="btn btn-sm" style="font-size:0.7rem;padding:2px 8px;background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger-border)" onclick="removeSource(\\'' + s.id + '\\')">Remove</button>' +
+          '</div>';
+        }).join('');
+      }
+
+      // Members
+      var memEl = document.getElementById('members-list');
+      if (members.length === 0) {
+        memEl.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;padding:16px 0">No members. Invite someone below.</div>';
+      } else {
+        memEl.innerHTML = members.map(function(m) {
+          return '<div class="activity-item" style="padding:8px 0">' +
+            '<div style="flex:1"><div class="activity-text">' + (m.email || m.name || '?') + '</div><div style="font-size:0.75rem;color:var(--muted)">' + (m.role || 'member') + '</div></div>' +
+          '</div>';
+        }).join('');
+      }
+    });
+
+    // Load graph stats
+    apiFetch('/api/v1/tools/call', {
+      method: 'POST',
+      body: JSON.stringify({ tool: 'graph_stats', input: { project_id: projectId } })
+    }).then(function(r) {
+      if (!r.ok || !r.data.result) return;
+      var g = r.data.result;
+      document.getElementById('graph-nodes').textContent = formatNumber(g.total_nodes || 0);
+      document.getElementById('graph-edges').textContent = formatNumber(g.total_edges || 0);
+      var nodeTypes = g.nodes_by_type || {};
+      var files = nodeTypes.file || nodeTypes.module || 0;
+      document.getElementById('graph-files').textContent = formatNumber(files);
+    });
+  });
+
+  // Global functions for buttons
+  window.addSource = function(type) {
+    var value = prompt('Enter the ' + type.replace('_', ' ') + ' identifier:');
+    if (!value) return;
+    var config = {};
+    if (type === 'github_repo') { var parts = value.split('/'); config = { owner: parts[0] || '', repo: parts[1] || value, full_name: value }; }
+    else if (type === 'sentry_project') { config = { project_slug: value }; }
+    else if (type === 'k8s_namespace') { config = { namespace: value }; }
+    else if (type === 'slack_channel') { config = { channel_name: value }; }
+    apiFetch('/api/v1/projects/' + projectId + '/sources', {
+      method: 'POST', body: JSON.stringify({ source_type: type, config: config })
+    }).then(function(r) { if (r.ok) location.reload(); else alert('Failed: ' + JSON.stringify(r.data)); });
+  };
+
+  window.removeSource = function(sourceId) {
+    if (!confirm('Remove this source?')) return;
+    apiFetch('/api/v1/projects/' + projectId + '/sources/' + sourceId, { method: 'DELETE' })
+      .then(function(r) { if (r.ok) location.reload(); });
+  };
+
+  window.inviteMember = function() {
+    var email = document.getElementById('invite-email').value.trim();
+    if (!email) return;
+    apiFetch('/api/v1/projects/' + projectId + '/members', {
+      method: 'POST', body: JSON.stringify({ email: email })
+    }).then(function(r) { if (r.ok) location.reload(); else alert(r.data.message || 'Failed'); });
+  };
+
+  window.saveSettings = function() {
+    var name = document.getElementById('settings-name').value.trim();
+    if (!name) return;
+    // TODO: API to update project name
+    alert('Saved (not implemented yet)');
+  };
+
+  window.deleteProject = function() {
+    if (!confirm('Delete this project? This cannot be undone.')) return;
+    apiFetch('/api/v1/projects/' + projectId, { method: 'DELETE' })
+      .then(function(r) { if (r.ok) location.href = '/dashboard'; });
+  };
+})();
+</script>
+`;
+
+  return layout("overview", "Project: " + projectSlug, content) + js + closeHtml();
+}
 
 export function dashboardPage(page?: string): string {
   switch (page) {
