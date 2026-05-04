@@ -244,6 +244,89 @@ agents.get("/events", async (c) => {
   return c.json({ events });
 });
 
+// GET /agents/incidents - Active and recently resolved incidents
+agents.get("/incidents", async (c) => {
+  const auth = c.get("auth");
+  const now = Math.floor(Date.now() / 1000);
+  const lookback = parseInt(c.req.query("hours") || "24") * 3600;
+
+  // Get all findings in the lookback window
+  const allFindings = await c.env.DB.prepare(`
+    SELECT metadata, created_at FROM audit_log
+    WHERE org_id = ?1 AND action = 'agent.notify' AND created_at > ?2
+    ORDER BY created_at DESC
+  `).bind(auth.orgId, now - lookback).all();
+
+  // Group by key, track first/last seen
+  const incidents: Record<string, {
+    key: string; severity: string; category: string;
+    title: string; message: string; agent: string;
+    first_seen: number; last_seen: number; occurrences: number;
+  }> = {};
+
+  for (const row of allFindings.results as any[]) {
+    let meta: any = {};
+    try { meta = JSON.parse(row.metadata || "{}"); } catch { continue; }
+    if (!meta.key) continue;
+
+    if (!incidents[meta.key]) {
+      incidents[meta.key] = {
+        key: meta.key,
+        severity: meta.severity || "info",
+        category: meta.category || "unknown",
+        title: meta.title || meta.key,
+        message: meta.message || "",
+        agent: meta.agent_name || "?",
+        first_seen: row.created_at,
+        last_seen: row.created_at,
+        occurrences: 1,
+      };
+    } else {
+      incidents[meta.key].occurrences++;
+      if (row.created_at < incidents[meta.key].first_seen) {
+        incidents[meta.key].first_seen = row.created_at;
+      }
+      if (row.created_at > incidents[meta.key].last_seen) {
+        incidents[meta.key].last_seen = row.created_at;
+      }
+    }
+  }
+
+  // Determine which are active vs resolved
+  // Active = last seen within the last 5 minutes (agent reports every 60s, deduplicates)
+  const activeThreshold = now - 300;
+  const active = Object.values(incidents)
+    .filter(i => i.last_seen > activeThreshold)
+    .sort((a, b) => {
+      const sevOrder: Record<string, number> = { critical: 0, warning: 1, info: 2 };
+      return (sevOrder[a.severity] ?? 3) - (sevOrder[b.severity] ?? 3);
+    });
+
+  const resolved = Object.values(incidents)
+    .filter(i => i.last_seen <= activeThreshold)
+    .sort((a, b) => b.last_seen - a.last_seen);
+
+  return c.json({
+    active: active.map(i => ({
+      ...i,
+      duration_min: Math.round((now - i.first_seen) / 60),
+      status: "active",
+    })),
+    resolved: resolved.map(i => ({
+      ...i,
+      duration_min: Math.round((i.last_seen - i.first_seen) / 60),
+      resolved_min_ago: Math.round((now - i.last_seen) / 60),
+      status: "resolved",
+    })),
+    summary: {
+      active_count: active.length,
+      resolved_count: resolved.length,
+      critical: active.filter(i => i.severity === "critical").length,
+      warning: active.filter(i => i.severity === "warning").length,
+    },
+  });
+});
+
 // POST /agents/notify - Agent sends a finding, cloud routes to notification channels
 agents.post("/notify", async (c) => {
   const auth = c.get("auth");
