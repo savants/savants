@@ -165,7 +165,54 @@ pub async fn start(name: Option<String>) {
             last_watch = std::time::Instant::now();
         }
 
-        // Git watch: detect pushes, reindex, upload to D1
+        // Poll for queries FIRST (must be responsive)
+        let poll = client
+            .get(format!(
+                "{}/api/v1/agents/poll?agent_id={}",
+                cloud_url, agent_id
+            ))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await;
+
+        if let Ok(resp) = poll {
+            let status_code = resp.status();
+            if status_code.is_success() {
+                let body: serde_json::Value = resp.json().await.unwrap_or_default();
+                let queries_arr = body["queries"].as_array();
+                if let Some(queries) = queries_arr {
+                    for query in queries {
+                        let query_id = query["id"].as_str().unwrap_or("").to_string();
+                        let tool = query["tool"].as_str().unwrap_or("");
+                        let input: serde_json::Value =
+                            serde_json::from_str(query["input"].as_str().unwrap_or("{}"))
+                                .unwrap_or_default();
+
+                        println!("[query] {} ({})", tool, query_id);
+
+                        let result = execute_tool(tool, &input);
+
+                        let _ = client
+                            .post(format!("{}/api/v1/agents/result", cloud_url))
+                            .header("Authorization", format!("Bearer {}", token))
+                            .json(&serde_json::json!({
+                                "query_id": query_id,
+                                "result": result,
+                            }))
+                            .send()
+                            .await;
+
+                        println!("[done]  {}", tool);
+                    }
+                }
+            } else {
+                eprintln!("[poll] HTTP {}", status_code);
+            }
+        } else if let Err(e) = poll {
+            eprintln!("[poll] error: {}", e);
+        }
+
+        // Git watch: detect pushes, reindex, upload to D1 (runs AFTER poll)
         if last_git_watch.elapsed().as_secs() >= GIT_WATCH_INTERVAL_SECS {
             for repo in &repos {
                 let repo_str = repo.to_string_lossy().to_string();
@@ -256,47 +303,6 @@ pub async fn start(name: Option<String>) {
                 .send()
                 .await;
             last_heartbeat = std::time::Instant::now();
-        }
-
-        // Poll for queries
-        let poll = client
-            .get(format!(
-                "{}/api/v1/agents/poll?agent_id={}",
-                cloud_url, agent_id
-            ))
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await;
-
-        if let Ok(resp) = poll {
-            if resp.status().is_success() {
-                let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                if let Some(queries) = body["queries"].as_array() {
-                    for query in queries {
-                        let query_id = query["id"].as_str().unwrap_or("").to_string();
-                        let tool = query["tool"].as_str().unwrap_or("");
-                        let input: serde_json::Value =
-                            serde_json::from_str(query["input"].as_str().unwrap_or("{}"))
-                                .unwrap_or_default();
-
-                        println!("[query] {} ({})", tool, query_id);
-
-                        let result = execute_tool(tool, &input);
-
-                        let _ = client
-                            .post(format!("{}/api/v1/agents/result", cloud_url))
-                            .header("Authorization", format!("Bearer {}", token))
-                            .json(&serde_json::json!({
-                                "query_id": query_id,
-                                "result": result,
-                            }))
-                            .send()
-                            .await;
-
-                        println!("[done]  {}", tool);
-                    }
-                }
-            }
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
