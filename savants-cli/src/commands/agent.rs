@@ -50,6 +50,9 @@ pub async fn start(name: Option<String>) {
     if which("docker") {
         capabilities.push("docker_status".to_string());
     }
+    if which("execsnoop") || which("tcpretrans") || which("bpftrace") {
+        capabilities.push("ebpf_snapshot".to_string());
+    }
     if which("aws") || std::env::var("AWS_ACCESS_KEY_ID").is_ok() {
         capabilities.push("aws_health".to_string());
     }
@@ -327,8 +330,131 @@ fn execute_tool(tool: &str, input: &serde_json::Value) -> serde_json::Value {
         "host_health" => host_health(),
         "pod_status" => pod_status(input),
         "pod_logs" => pod_logs(input),
+        "ebpf_snapshot" => ebpf_snapshot(input),
         _ => serde_json::json!({"error": format!("Unknown tool: {}", tool)}),
     }
+}
+
+/// Run eBPF tools briefly and return a snapshot of kernel-level activity.
+/// Uses bcc-tools (execsnoop, tcpretrans, cachestat, opensnoop).
+fn ebpf_snapshot(input: &serde_json::Value) -> serde_json::Value {
+    let duration = input["seconds"].as_u64().unwrap_or(5);
+    let max_secs = std::cmp::min(duration, 30); // cap at 30s
+    let mut results: HashMap<String, serde_json::Value> = HashMap::new();
+
+    // execsnoop: new processes (5s capture)
+    if which("execsnoop") {
+        if let Ok(out) = std::process::Command::new("sudo")
+            .args(["timeout", &format!("{}s", max_secs), "execsnoop"])
+            .output()
+        {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let procs: Vec<serde_json::Value> = raw.lines().skip(1).take(50).map(|l| {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                serde_json::json!({
+                    "comm": parts.first().unwrap_or(&"?"),
+                    "pid": parts.get(1).unwrap_or(&"?"),
+                    "ppid": parts.get(2).unwrap_or(&"?"),
+                    "ret": parts.get(3).unwrap_or(&"?"),
+                    "args": parts.get(4..).map(|a| a.join(" ")).unwrap_or_default(),
+                })
+            }).collect();
+            results.insert("new_processes".into(), serde_json::json!({
+                "count": procs.len(),
+                "duration_sec": max_secs,
+                "processes": procs,
+            }));
+        }
+    }
+
+    // tcpretrans: TCP retransmissions (5s capture)
+    if which("tcpretrans") {
+        if let Ok(out) = std::process::Command::new("sudo")
+            .args(["timeout", &format!("{}s", max_secs), "tcpretrans"])
+            .output()
+        {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let retrans: Vec<serde_json::Value> = raw.lines().skip(1).take(50).map(|l| {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                serde_json::json!({
+                    "time": parts.first().unwrap_or(&"?"),
+                    "pid": parts.get(1).unwrap_or(&"?"),
+                    "ip": parts.get(2).unwrap_or(&"?"),
+                    "src": parts.get(3).unwrap_or(&"?"),
+                    "dst": parts.get(4).unwrap_or(&"?"),
+                    "state": parts.get(5).unwrap_or(&"?"),
+                })
+            }).collect();
+            results.insert("tcp_retransmits".into(), serde_json::json!({
+                "count": retrans.len(),
+                "duration_sec": max_secs,
+                "retransmits": retrans,
+            }));
+        }
+    }
+
+    // cachestat: filesystem cache stats (5s capture)
+    if which("cachestat") {
+        if let Ok(out) = std::process::Command::new("sudo")
+            .args(["timeout", &format!("{}s", max_secs), "cachestat", "1"])
+            .output()
+        {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let samples: Vec<serde_json::Value> = raw.lines().skip(1).take(10).filter_map(|l| {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                if parts.len() >= 5 {
+                    Some(serde_json::json!({
+                        "hits": parts.get(0).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0),
+                        "misses": parts.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0),
+                        "dirties": parts.get(2).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0),
+                        "read_hit_pct": parts.get(3).unwrap_or(&"?"),
+                        "write_hit_pct": parts.get(4).unwrap_or(&"?"),
+                    }))
+                } else { None }
+            }).collect();
+            results.insert("cache_stats".into(), serde_json::json!({
+                "samples": samples,
+                "duration_sec": max_secs,
+            }));
+        }
+    }
+
+    // opensnoop: file opens (5s capture)
+    if which("opensnoop") {
+        if let Ok(out) = std::process::Command::new("sudo")
+            .args(["timeout", &format!("{}s", max_secs), "opensnoop"])
+            .output()
+        {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let opens: Vec<serde_json::Value> = raw.lines().skip(1).take(50).map(|l| {
+                let parts: Vec<&str> = l.split_whitespace().collect();
+                serde_json::json!({
+                    "pid": parts.first().unwrap_or(&"?"),
+                    "comm": parts.get(1).unwrap_or(&"?"),
+                    "fd": parts.get(2).unwrap_or(&"?"),
+                    "err": parts.get(3).unwrap_or(&"?"),
+                    "path": parts.get(4..).map(|a| a.join(" ")).unwrap_or_default(),
+                })
+            }).collect();
+            results.insert("file_opens".into(), serde_json::json!({
+                "count": opens.len(),
+                "duration_sec": max_secs,
+                "opens": opens,
+            }));
+        }
+    }
+
+    let tools_available: Vec<&str> = ["execsnoop", "tcpretrans", "cachestat", "opensnoop"]
+        .iter().filter(|t| which(t)).copied().collect();
+    let tools_missing: Vec<&str> = ["execsnoop", "tcpretrans", "cachestat", "opensnoop", "biolatency", "biosnoop", "ext4slower", "tcplife"]
+        .iter().filter(|t| !which(t)).copied().collect();
+
+    serde_json::json!({
+        "tools_available": tools_available,
+        "tools_missing": tools_missing,
+        "duration_sec": max_secs,
+        "data": results,
+    })
 }
 
 fn host_health() -> serde_json::Value {

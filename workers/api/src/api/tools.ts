@@ -588,6 +588,18 @@ const TOOL_LIST: ToolDefinition[] = [
   },
   // ── Agent-backed infrastructure tools (queries remote agents) ──
   {
+    name: "ebpf_snapshot",
+    description: "Kernel-level eBPF tracing: captures new processes (execsnoop), TCP retransmits (tcpretrans), filesystem cache stats (cachestat), and file opens (opensnoop) for a brief window. Enterprise-tier deep observability.",
+    input_schema: {
+      type: "object",
+      properties: {
+        agent: { type: "string", description: "Agent name (optional)" },
+        seconds: { type: "integer", description: "Capture duration in seconds (default 5, max 30)" },
+      },
+    },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 100, tier: "cloud" as const },
+  },
+  {
     name: "host_health",
     description: "Remote system health: CPU, memory, load, disk, failed services. Queries a savants agent running on the target machine. Use for production server health checks.",
     input_schema: {
@@ -784,7 +796,7 @@ tools.post("/call", async (c) => {
     }
   }
   // ── Agent-backed infra tools (route to remote agent) ──
-  else if (["host_health", "pod_status", "pod_logs"].includes(body.tool)) {
+  else if (["host_health", "pod_status", "pod_logs", "ebpf_snapshot"].includes(body.tool)) {
     try {
       const agentName = (body.input.agent as string) || undefined;
 
