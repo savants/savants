@@ -9,6 +9,7 @@ import { executeGraphTool, GRAPH_TOOL_NAMES } from "./graph-tools";
 import { toolFindCauses } from "./causal";
 import { executeSentryTool, SENTRY_TOOL_NAMES } from "./sentry-tools";
 import { executeGitHubTool, GITHUB_TOOL_NAMES } from "./github-tools";
+import { executeLinearTool, LINEAR_TOOL_NAMES } from "./linear-tools";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -499,6 +500,23 @@ const TOOL_LIST: ToolDefinition[] = [
     input_schema: { type: "object", properties: { repo: { type: "string" }, query: { type: "string" } } },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" as const },
   })),
+  // ── Linear tools (replaces Linear MCP) ──
+  ...LINEAR_TOOL_NAMES.map(name => ({
+    name,
+    description: {
+      search_linear_issues: "Search Linear issues by text query. Graph-enriched.",
+      get_linear_issue: "Get full Linear issue with comments, relations, and code graph context.",
+      create_linear_issue: "Create a new Linear issue.",
+      update_linear_issue: "Update issue status, assignee, priority.",
+      add_linear_comment: "Add a comment to a Linear issue.",
+      list_linear_projects: "List all Linear projects with progress and leads.",
+      list_linear_teams: "List teams and their members.",
+      get_active_cycle: "Get the current active sprint/cycle with all issues.",
+      list_linear_issues: "List issues filtered by team, status, or assignee.",
+    }[name] || name,
+    input_schema: { type: "object", properties: { query: { type: "string" }, issue_id: { type: "string" } } },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" as const },
+  })),
   // ── Sentry tools (replaces Sentry MCP) ──
   {
     name: "get_sentry_issue",
@@ -661,6 +679,15 @@ tools.post("/call", async (c) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sentry tool failed";
       return c.json({ error: "sentry_tool_error", message, status: 500 }, 500);
+    }
+  }
+  // ── Linear tools (replaces Linear MCP) ──
+  else if (LINEAR_TOOL_NAMES.includes(body.tool)) {
+    try {
+      proxyResult = await executeLinearTool(c.env.DB, auth.orgId, body.tool, body.input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Linear tool failed";
+      return c.json({ error: "linear_tool_error", message, status: 500 }, 500);
     }
   }
   // ── GitHub tools (replaces GitHub MCP) ──

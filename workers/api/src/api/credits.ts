@@ -13,6 +13,16 @@ export const TOOL_CREDITS: Record<string, number> = {
   find_causes: 20,
   unanswered_questions: 50,
   // Sentry tools
+  // Linear tools
+  search_linear_issues: 1,
+  get_linear_issue: 3,
+  create_linear_issue: 3,
+  update_linear_issue: 1,
+  add_linear_comment: 1,
+  list_linear_projects: 1,
+  list_linear_teams: 1,
+  get_active_cycle: 1,
+  list_linear_issues: 1,
   // GitHub tools
   search_github_issues: 1,
   search_github_code: 1,
