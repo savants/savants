@@ -554,6 +554,9 @@ struct Finding {
 fn watch_health() -> Vec<Finding> {
     let mut findings = Vec::new();
 
+    // ── Network + DNS health ──
+    findings.extend(watch_network());
+
     // ── Security checks ──
     findings.extend(watch_security());
 
@@ -971,6 +974,186 @@ fn watch_cloudflare() -> Vec<Finding> {
                         metadata: serde_json::json!({}),
                     });
                 }
+            }
+        }
+    }
+
+    findings
+}
+
+// ── Network + DNS watch ──
+
+fn watch_network() -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // 1. DNS resolution health - test actual resolution
+    let dns_targets = ["google.com", "cloudflare.com", "github.com"];
+    let mut dns_failures = 0;
+    for target in &dns_targets {
+        let result = std::process::Command::new("getent")
+            .args(["hosts", target])
+            .output();
+        match result {
+            Ok(out) if !out.status.success() => dns_failures += 1,
+            Err(_) => dns_failures += 1,
+            _ => {}
+        }
+    }
+    if dns_failures > 0 {
+        findings.push(Finding {
+            key: "dns_resolution_failing".into(),
+            severity: if dns_failures >= 2 { "critical" } else { "warning" }.into(),
+            category: "network".into(),
+            title: format!("DNS resolution failing ({}/{} targets)", dns_failures, dns_targets.len()),
+            message: format!("Failed to resolve {} of {} test domains. DNS infrastructure may be degraded.", dns_failures, dns_targets.len()),
+            metadata: serde_json::json!({"failures": dns_failures, "targets": dns_targets.len()}),
+        });
+    }
+
+    // 2. Check /etc/resolv.conf for problematic config
+    if let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf") {
+        let nameservers: Vec<&str> = resolv.lines()
+            .filter(|l| l.starts_with("nameserver"))
+            .map(|l| l.split_whitespace().nth(1).unwrap_or("?"))
+            .collect();
+
+        // Check for Tailscale DNS as sole nameserver (single point of failure)
+        if nameservers.len() == 1 && nameservers[0] == "100.100.100.100" {
+            findings.push(Finding {
+                key: "dns_single_tailscale".into(),
+                severity: "warning".into(),
+                category: "network".into(),
+                title: "Single DNS nameserver: Tailscale MagicDNS".into(),
+                message: "Only nameserver is 100.100.100.100 (Tailscale). If Tailscale coordination fails, all DNS resolution stops. Add a fallback like 1.1.1.1 or 8.8.8.8.".into(),
+                metadata: serde_json::json!({"nameservers": nameservers}),
+            });
+        }
+    }
+
+    // 3. WiFi as primary interface (server should use ethernet)
+    if let Ok(proc_net) = std::fs::read_to_string("/proc/net/dev") {
+        let mut wifi_bytes: u64 = 0;
+        let mut eth_bytes: u64 = 0;
+        let mut wifi_name = String::new();
+        let mut eth_name = String::new();
+
+        for line in proc_net.lines().skip(2) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 2 { continue; }
+            let iface = parts[0].trim_end_matches(':');
+            let rx_bytes: u64 = parts[1].parse().unwrap_or(0);
+
+            if iface.starts_with("wl") || iface.starts_with("wlan") {
+                wifi_bytes = rx_bytes;
+                wifi_name = iface.to_string();
+            } else if iface.starts_with("en") || iface.starts_with("eth") {
+                eth_bytes = rx_bytes;
+                eth_name = iface.to_string();
+            }
+        }
+
+        if wifi_bytes > 0 && wifi_bytes > eth_bytes * 2 {
+            findings.push(Finding {
+                key: "wifi_primary_interface".into(),
+                severity: "warning".into(),
+                category: "network".into(),
+                title: format!("WiFi ({}) carrying more traffic than ethernet ({})", wifi_name, eth_name),
+                message: format!(
+                    "WiFi has received {} GB vs ethernet {} GB. Servers should use wired connections for reliability. WiFi power-save mode causes intermittent packet drops.",
+                    wifi_bytes / 1_073_741_824, eth_bytes / 1_073_741_824
+                ),
+                metadata: serde_json::json!({"wifi": wifi_name, "wifi_gb": wifi_bytes / 1_073_741_824, "eth": eth_name, "eth_gb": eth_bytes / 1_073_741_824}),
+            });
+        }
+
+        // Check for WiFi DORMANT state
+        if let Ok(output) = std::process::Command::new("ip")
+            .args(["link", "show"])
+            .output()
+        {
+            let raw = String::from_utf8_lossy(&output.stdout);
+            for line in raw.lines() {
+                if line.contains("DORMANT") && (line.contains("wl") || line.contains("wlan")) {
+                    let iface = line.split(':').nth(1).unwrap_or("?").trim().split('@').next().unwrap_or("?");
+                    findings.push(Finding {
+                        key: format!("wifi_dormant_{}", iface),
+                        severity: "warning".into(),
+                        category: "network".into(),
+                        title: format!("WiFi {} in DORMANT power-save mode", iface),
+                        message: "WiFi interface is in power-save mode which causes intermittent latency spikes and packet drops. Disable power management: iw dev <iface> set power_save off".into(),
+                        metadata: serde_json::json!({"interface": iface}),
+                    });
+                }
+            }
+        }
+    }
+
+    // 4. Tailscale health check
+    if which("tailscale") {
+        if let Ok(output) = std::process::Command::new("tailscale")
+            .args(["status", "--json"])
+            .output()
+        {
+            if output.status.success() {
+                let raw = String::from_utf8_lossy(&output.stdout);
+                if let Ok(status) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    // Check health warnings
+                    if let Some(health) = status["Health"].as_array() {
+                        for warning in health {
+                            if let Some(msg) = warning.as_str() {
+                                findings.push(Finding {
+                                    key: format!("tailscale_health_{}", &msg[..20.min(msg.len())]),
+                                    severity: "warning".into(),
+                                    category: "network".into(),
+                                    title: "Tailscale health warning".into(),
+                                    message: msg.to_string(),
+                                    metadata: serde_json::json!({}),
+                                });
+                            }
+                        }
+                    }
+
+                    // Check if self is online
+                    if let Some(self_status) = status["Self"]["Online"].as_bool() {
+                        if !self_status {
+                            findings.push(Finding {
+                                key: "tailscale_offline".into(),
+                                severity: "critical".into(),
+                                category: "network".into(),
+                                title: "Tailscale node is offline".into(),
+                                message: "This node shows as offline in Tailscale. VPN connectivity and MagicDNS are degraded.".into(),
+                                metadata: serde_json::json!({}),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Network interface errors/drops
+    if let Ok(proc_net) = std::fs::read_to_string("/proc/net/dev") {
+        for line in proc_net.lines().skip(2) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 12 { continue; }
+            let iface = parts[0].trim_end_matches(':');
+            if iface == "lo" || iface.starts_with("veth") || iface.starts_with("br-") || iface.starts_with("docker") || iface.starts_with("flannel") || iface.starts_with("cni") { continue; }
+
+            let rx_errors: u64 = parts[3].parse().unwrap_or(0);
+            let rx_drops: u64 = parts[4].parse().unwrap_or(0);
+            let tx_errors: u64 = parts[11].parse().unwrap_or(0);
+            let tx_drops: u64 = parts[12].parse().unwrap_or(0);
+
+            let total_issues = rx_errors + rx_drops + tx_errors + tx_drops;
+            if total_issues > 100 {
+                findings.push(Finding {
+                    key: format!("iface_errors_{}", iface),
+                    severity: if total_issues > 10000 { "critical" } else { "warning" }.into(),
+                    category: "network".into(),
+                    title: format!("Network errors on {}: {} total", iface, total_issues),
+                    message: format!("{}: rx_errors={}, rx_drops={}, tx_errors={}, tx_drops={}", iface, rx_errors, rx_drops, tx_errors, tx_drops),
+                    metadata: serde_json::json!({"interface": iface, "rx_errors": rx_errors, "rx_drops": rx_drops, "tx_errors": tx_errors, "tx_drops": tx_drops}),
+                });
             }
         }
     }
