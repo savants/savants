@@ -7,6 +7,7 @@ import { deductCredits, TOOL_CREDITS } from "./credits";
 import { audit, requestMeta } from "../lib/audit";
 import { executeGraphTool, GRAPH_TOOL_NAMES } from "./graph-tools";
 import { toolFindCauses } from "./causal";
+import { executeSentryTool, SENTRY_TOOL_NAMES } from "./sentry-tools";
 
 type HonoEnv = { Bindings: Env; Variables: { auth: AuthContext } };
 
@@ -473,6 +474,43 @@ const TOOL_LIST: ToolDefinition[] = [
     },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 200, tier: "cloud" },
   },
+  // ── Sentry tools (replaces Sentry MCP) ──
+  {
+    name: "get_sentry_issue",
+    description: "Get full Sentry issue details: stack trace, breadcrumbs, tags, assigned user, occurrence count. Use with an issue ID or short ID.",
+    input_schema: { type: "object", properties: { issue_id: { type: "string", description: "Sentry issue ID or short ID (e.g. PROJ-123)" } }, required: ["issue_id"] },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 30, tier: "cloud" },
+  },
+  {
+    name: "search_sentry_issues",
+    description: "Search Sentry issues by query. Supports Sentry search syntax: is:unresolved, assigned:me, level:error, etc.",
+    input_schema: { type: "object", properties: { query: { type: "string", description: "Search query (e.g. 'is:unresolved TypeError')" }, project: { type: "string", description: "Project slug (optional)" } }, required: ["query"] },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" },
+  },
+  {
+    name: "search_sentry_events",
+    description: "Search raw Sentry events across all projects. Find specific error occurrences.",
+    input_schema: { type: "object", properties: { query: { type: "string", description: "Event search query" }, project: { type: "string", description: "Project slug (optional)" } }, required: ["query"] },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" },
+  },
+  {
+    name: "update_sentry_issue",
+    description: "Resolve, unresolve, ignore, or assign a Sentry issue. Close the loop after fixing a bug.",
+    input_schema: { type: "object", properties: { issue_id: { type: "string", description: "Issue ID" }, status: { type: "string", description: "resolved, unresolved, or ignored" }, assigned_to: { type: "string", description: "Username or email to assign to" } }, required: ["issue_id"] },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" },
+  },
+  {
+    name: "find_sentry_releases",
+    description: "List recent Sentry releases with deploy dates, new error counts, and commit counts. See what's deployed.",
+    input_schema: { type: "object", properties: { project: { type: "string", description: "Project slug (optional)" } } },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" },
+  },
+  {
+    name: "get_sentry_issue_tags",
+    description: "Get tag value distribution for a Sentry issue. See which browsers, OS, releases, or users are affected.",
+    input_schema: { type: "object", properties: { issue_id: { type: "string", description: "Issue ID" }, tag: { type: "string", description: "Tag name: browser, os, release, environment, user, etc." } }, required: ["issue_id", "tag"] },
+    pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" },
+  },
   // ── Agent-backed infrastructure tools (queries remote agents) ──
   {
     name: "host_health",
@@ -589,6 +627,15 @@ tools.post("/call", async (c) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Causal analysis failed";
       return c.json({ error: "causal_error", message, status: 500 }, 500);
+    }
+  }
+  // ── Sentry tools (replaces Sentry MCP) ──
+  else if (SENTRY_TOOL_NAMES.includes(body.tool)) {
+    try {
+      proxyResult = await executeSentryTool(c.env.DB, auth.orgId, body.tool, body.input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Sentry tool failed";
+      return c.json({ error: "sentry_tool_error", message, status: 500 }, 500);
     }
   }
   // ── Handle diagnose_error directly (uses all available sources) ──

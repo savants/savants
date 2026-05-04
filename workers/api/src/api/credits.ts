@@ -12,6 +12,13 @@ export const TOOL_CREDITS: Record<string, number> = {
   diagnose: 25,
   find_causes: 20,
   unanswered_questions: 50,
+  // Sentry tools
+  get_sentry_issue: 3,
+  search_sentry_issues: 1,
+  search_sentry_events: 1,
+  update_sentry_issue: 1,
+  find_sentry_releases: 1,
+  get_sentry_issue_tags: 1,
   pr_risk: 20,
   radar: 10,
   // Graph tools (D1 queries - cheap)
