@@ -1,0 +1,23 @@
+[package]
+name = "savants-ebpf-probes"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aya-ebpf = "0.1"
+aya-log-ebpf = "0.1"
+
+[[bin]]
+name = "tcp-retransmit"
+path = "src/tcp_retransmit.rs"
+
+[profile.dev]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+
+[profile.release]
+lto = true
+panic = "abort"
+opt-level = 3

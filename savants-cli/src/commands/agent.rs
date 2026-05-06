@@ -133,22 +133,36 @@ pub async fn start(name: Option<String>) {
         .unwrap_or_default();
 
     // ── eBPF: try to load probes (auto-fallback if unavailable) ──
-    let ebpf_loaded = if crate::ebpf_loader::can_load() {
-        match crate::ebpf_loader::load_and_attach() {
-            Ok(_) => {
-                println!("  eBPF: tcp_retransmit probe loaded (real-time kernel tracing)");
-                true
+    // Must store the handle to keep the BPF program alive and read maps.
+    #[cfg(feature = "ebpf")]
+    let mut ebpf_handle: Option<crate::ebpf_loader::BpfHandle> = None;
+    #[cfg(feature = "ebpf")]
+    {
+        if crate::ebpf_loader::can_load() {
+            match crate::ebpf_loader::load_and_attach() {
+                Ok(handle) => {
+                    println!("  eBPF: tcp_retransmit probe loaded (real-time kernel tracing)");
+                    ebpf_handle = Some(handle);
+                }
+                Err(e) => {
+                    println!("  eBPF: load failed ({}) - /proc fallback active", e);
+                }
             }
-            Err(e) => {
-                println!("  eBPF: load failed ({}) - /proc fallback active", e);
-                false
-            }
+        } else {
+            println!("  eBPF: unavailable (no CAP_BPF) - /proc fallback active");
         }
-    } else {
-        println!("  eBPF: unavailable (no CAP_BPF) - /proc fallback active");
-        false
-    };
-    let _ = ebpf_loaded;
+    }
+    #[cfg(not(feature = "ebpf"))]
+    {
+        if crate::ebpf_loader::can_load() {
+            match crate::ebpf_loader::load_and_attach() {
+                Ok(_) => {}
+                Err(e) => println!("  eBPF: {} - /proc fallback active", e),
+            }
+        } else {
+            println!("  eBPF: unavailable (no CAP_BPF) - /proc fallback active");
+        }
+    }
 
     println!("  Polling for queries...\n");
 
@@ -161,7 +175,42 @@ pub async fn start(name: Option<String>) {
     loop {
         // Proactive health watch
         if last_watch.elapsed().as_secs() >= WATCH_INTERVAL_SECS {
-            let findings = watch_health();
+            let mut findings = watch_health();
+
+            // Read eBPF retransmit map if loaded
+            #[cfg(feature = "ebpf")]
+            if let Some(ref mut handle) = ebpf_handle {
+                match handle.read_snapshot() {
+                    Ok(snap) if snap.total > 0 => {
+                        let severity = if snap.is_link_issue { "critical" } else if snap.total > 100 { "warning" } else { "info" };
+                        findings.push(Finding {
+                            key: "ebpf_tcp_retransmit".into(),
+                            severity: severity.into(),
+                            category: "network".into(),
+                            title: format!("eBPF: {} retransmits to {} destinations", snap.total, snap.dest_count),
+                            message: format!(
+                                "{}. Top destinations: {}",
+                                snap.diagnosis,
+                                snap.by_dest.iter().take(5)
+                                    .map(|(ip, c)| format!("{}({})", ip, c))
+                                    .collect::<Vec<_>>().join(", ")
+                            ),
+                            metadata: serde_json::json!({
+                                "total": snap.total,
+                                "dest_count": snap.dest_count,
+                                "is_link_issue": snap.is_link_issue,
+                                "link_confidence": snap.link_confidence,
+                                "by_dest": snap.by_dest,
+                                "source": "ebpf/tcp_retransmit_skb",
+                            }),
+                        });
+                    }
+                    Ok(_) => {} // no retransmits, healthy
+                    Err(e) => {
+                        eprintln!("[ebpf] map read error: {}", e);
+                    }
+                }
+            }
             for finding in &findings {
                 // Only notify once per issue (until it clears)
                 if !known_issues.contains(&finding.key) {
@@ -1780,6 +1829,65 @@ fn watch_logs() -> Vec<Finding> {
                             "count": new_lines.len(),
                             "source": "dmesg",
                             "lines": new_lines.iter().rev().take(20).cloned().collect::<Vec<&str>>(),
+                        }),
+                    });
+                }
+            }
+            let _ = std::fs::write(&cache_path, new_count.to_string());
+        }
+    }
+
+    // 2b. dmesg: network/driver events at ALL levels (WiFi re-auth, driver errors, link state)
+    // These are often the TRUE root cause that err-level misses.
+    if let Ok(out) = std::process::Command::new("dmesg")
+        .args(["--facility", "kern", "--ctime", "--nopager"])
+        .output()
+    {
+        if out.status.success() {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let cache_path = dirs::home_dir()
+                .unwrap_or_default()
+                .join(".savants")
+                .join("dmesg_net_count");
+            let prev_count: usize = std::fs::read_to_string(&cache_path)
+                .ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+
+            let all_lines: Vec<&str> = raw.lines().collect();
+            let new_count = all_lines.len();
+
+            if new_count > prev_count {
+                // Filter new lines for network/driver events
+                let net_events: Vec<&str> = all_lines[prev_count..].iter()
+                    .filter(|l| {
+                        let lower = l.to_lowercase();
+                        lower.contains("authenticate") || lower.contains("deauth")
+                        || lower.contains("disassoc") || lower.contains("associated")
+                        || lower.contains("iwlwifi") || lower.contains("link is")
+                        || lower.contains("carrier") || lower.contains("link down")
+                        || lower.contains("link up") || lower.contains("nic link")
+                        || lower.contains("netdev watchdog") || lower.contains("tx timeout")
+                        || lower.contains("firmware") && (lower.contains("error") || lower.contains("crash"))
+                    })
+                    .cloned()
+                    .collect();
+
+                if !net_events.is_empty() {
+                    findings.push(Finding {
+                        key: "dmesg_network_events".into(),
+                        severity: if net_events.iter().any(|l| l.to_lowercase().contains("deauth") || l.to_lowercase().contains("disassoc") || l.to_lowercase().contains("tx timeout")) {
+                            "critical"
+                        } else { "warning" }.into(),
+                        category: "network".into(),
+                        title: format!("{} network/driver events in dmesg", net_events.len()),
+                        message: format!(
+                            "{} kernel network events detected. These often precede connectivity failures:\n{}",
+                            net_events.len(),
+                            net_events.iter().take(10).cloned().collect::<Vec<_>>().join("\n")
+                        ),
+                        metadata: serde_json::json!({
+                            "count": net_events.len(),
+                            "source": "dmesg/kern",
+                            "lines": net_events.iter().take(20).cloned().collect::<Vec<&str>>(),
                         }),
                     });
                 }

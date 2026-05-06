@@ -12,7 +12,7 @@
 ASTRA_IP ?= 100.95.164.99
 BIN = savants-cli/target/release/savants
 INSTALL_DIR = $(HOME)/.savants/bin
-CLANG = $(shell which clang 2>/dev/null || echo /nix/store/5r9g188hm4lv9yzb6inm4j0y5jb0d4qi-clang-19.1.7/bin/clang)
+CLANG = $(shell which clang 2>/dev/null || find /nix/store -maxdepth 3 -name "clang" -type f 2>/dev/null | head -1)
 TOKEN = $(shell python3 -c "import json;print(json.load(open('$(HOME)/.savants/state.json')).get('cloud_token',''))" 2>/dev/null)
 
 .PHONY: build ebpf bpf-compile deploy agent-start agent-stop agent-status agent-logs setup install mcp clean

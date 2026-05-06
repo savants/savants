@@ -57,13 +57,56 @@ pub fn load_and_attach() -> Result<BpfHandle, String> {
         found.ok_or("Program 'trace_retransmit' not found in BPF object")?
     };
 
-    Ok(BpfHandle { _obj: obj, _link: link })
+    Ok(BpfHandle { obj, _link: link })
 }
 
 #[cfg(feature = "ebpf")]
 pub struct BpfHandle {
-    _obj: libbpf_rs::Object,
+    obj: libbpf_rs::Object,
     _link: libbpf_rs::Link,
+}
+
+#[cfg(feature = "ebpf")]
+impl BpfHandle {
+    pub fn read_snapshot(&self) -> Result<RetransmitSnapshot, String> {
+        use libbpf_rs::MapCore;
+        use std::ffi::OsStr;
+
+        let map = self.obj.maps()
+            .find(|m| m.name() == OsStr::new("retransmits"))
+            .ok_or("Map 'retransmits' not found")?;
+
+        let mut by_dest = Vec::new();
+        let mut total: u64 = 0;
+
+        for key in map.keys() {
+            if let Ok(Some(val)) = map.lookup(&key, libbpf_rs::MapFlags::ANY) {
+                if key.len() == 4 && val.len() == 8 {
+                    let ip_raw = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+                    let count = u64::from_ne_bytes([val[0], val[1], val[2], val[3], val[4], val[5], val[6], val[7]]);
+                    let ip = Ipv4Addr::from(ip_raw);
+                    total += count;
+                    by_dest.push((ip.to_string(), count));
+                }
+            }
+        }
+
+        by_dest.sort_by(|a, b| b.1.cmp(&a.1));
+        let dest_count = by_dest.len();
+        let is_link_issue = dest_count >= 3;
+        let link_confidence = match dest_count {
+            0 => 0.0, 1 => 0.1, 2 => 0.4, 3..=4 => 0.8, _ => 0.95,
+        };
+        let diagnosis = if is_link_issue {
+            format!("LOCAL LINK: {} destinations with retransmits - ISP/WAN issue", dest_count)
+        } else if dest_count == 1 {
+            format!("REMOTE: retransmits only to {}", by_dest[0].0)
+        } else {
+            "Healthy".into()
+        };
+
+        Ok(RetransmitSnapshot { total, by_dest, dest_count, is_link_issue, link_confidence, diagnosis })
+    }
 }
 
 #[cfg(not(feature = "ebpf"))]
