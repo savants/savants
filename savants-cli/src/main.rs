@@ -29,6 +29,8 @@ mod sentry;
 mod slack;
 mod update_check;
 mod utils;
+mod kernel_probes;
+mod ebpf_loader;
 
 pub use utils::find_in_path;
 

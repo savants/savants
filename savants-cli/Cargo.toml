@@ -23,7 +23,7 @@ futures = "0.3"
 tracing = "0.1"
 regex = "1"
 chrono = "0.4"
-nix = { version = "0.27", features = ["fs"] }
+nix = { version = "0.27", features = ["fs", "user"] }
 sha2 = "0.10"
 gethostname = "0.4"
 rand = "0.8"
@@ -38,6 +38,7 @@ tree-sitter-rust = "0.21"
 walkdir = "2"
 glob = "0.3"
 fastembed = { version = "5", optional = true }
+libbpf-rs = { version = "0.24", optional = true }
 
 [profile.release]
 opt-level = 3
@@ -47,3 +48,4 @@ lto = true
 codegen-units = 1
 [features]
 embeddings = ["fastembed"]
+ebpf = ["libbpf-rs"]

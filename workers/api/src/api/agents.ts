@@ -437,6 +437,95 @@ agents.post("/notify", async (c) => {
     console.error("[notify] audit_log insert failed:", err instanceof Error ? err.message : err);
   }
 
+  // ── Causal event correlation (generic, no hardcoded chains) ──
+  // Pure temporal co-occurrence: if multiple findings fire in the same window,
+  // the earliest one is the probable root cause. No assumptions about what
+  // depends on what - the timestamps tell the story.
+  //
+  // The graph (graph_events + edges) accumulates these correlations over time.
+  // After enough incidents, find_causes can identify recurring patterns
+  // (e.g., "every time event X fires, event Y follows within 60s")
+  // without us ever hardcoding that X causes Y.
+  const CORRELATION_WINDOW_SEC = 300; // 5 minutes
+
+  try {
+    const windowStart = now - CORRELATION_WINDOW_SEC;
+
+    // Find all findings from this agent in the correlation window
+    const recentFindings = await c.env.DB.prepare(`
+      SELECT id, metadata, created_at FROM audit_log
+      WHERE org_id = ?1 AND action = 'agent.notify' AND actor_id = ?2 AND created_at > ?3
+      ORDER BY created_at ASC LIMIT 50
+    `).bind(auth.orgId, body.agent_id, windowStart).all();
+
+    // Build timeline of co-occurring events
+    const timeline: Array<{ key: string; category: string; severity: string; time: number; audit_id: string }> = [];
+    for (const row of recentFindings.results as any[]) {
+      try {
+        const meta = JSON.parse(row.metadata || "{}");
+        if (meta.key && meta.key !== body.key) {
+          timeline.push({
+            key: meta.key,
+            category: meta.category || "unknown",
+            severity: meta.severity || "info",
+            time: (row as any).created_at,
+            audit_id: (row as any).id,
+          });
+        }
+      } catch {}
+    }
+
+    // If there are co-occurring events, create a correlated graph_event
+    if (timeline.length > 0) {
+      // The earliest event in the window is the probable root cause
+      const earliest = timeline[0];
+      const eventId = crypto.randomUUID();
+
+      const projectRow = await c.env.DB.prepare(
+        "SELECT id FROM projects WHERE org_id = ?1 ORDER BY updated_at DESC LIMIT 1"
+      ).bind(auth.orgId).first<{ id: string }>();
+
+      if (projectRow) {
+        // Store this event with its temporal correlations
+        await c.env.DB.prepare(`
+          INSERT INTO graph_events (id, project_id, node_id, type, severity, title, description, source_type, source_id, occurred_at, metadata)
+          VALUES (?1, ?2, ?3, 'infrastructure', ?4, ?5, ?6, 'agent', ?7, ?8, ?9)
+        `).bind(
+          eventId,
+          projectRow.id,
+          body.agent_id,
+          body.severity,
+          body.title,
+          body.message,
+          body.agent_id,
+          now,
+          JSON.stringify({
+            key: body.key,
+            category: body.category,
+            agent_name: body.agent_name,
+            // Temporal correlation: all events in the same window
+            correlated_events: timeline.map(e => ({
+              key: e.key,
+              category: e.category,
+              severity: e.severity,
+              seconds_before: now - e.time,
+            })),
+            // The earliest event is the probable root cause (no assumption about what it is)
+            probable_root: {
+              key: earliest.key,
+              category: earliest.category,
+              seconds_before: now - earliest.time,
+            },
+            correlation_window_sec: CORRELATION_WINDOW_SEC,
+            event_count: timeline.length + 1, // including this event
+          }),
+        ).run();
+      }
+    }
+  } catch (err) {
+    console.error("[notify] causal correlation failed:", err instanceof Error ? err.message : err);
+  }
+
   // Route to notification channels
   const integrations = await c.env.DB.prepare(
     "SELECT type, config FROM integrations WHERE org_id = ?1 AND type IN ('slack', 'gotify', 'pagerduty', 'webhook')"

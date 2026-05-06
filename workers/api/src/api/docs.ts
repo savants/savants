@@ -258,6 +258,15 @@ function getRegistry(): RegistryEntry[] {
       crawl_url: "https://docs.aws.amazon.com/",
     },
     {
+      name: "mongodb",
+      description: "MongoDB & Atlas documentation - queries, aggregation, Atlas clusters, indexes, drivers",
+      url: "https://www.mongodb.com/docs",
+      latest: "8.0",
+      versions: [{ version: "7.0", page_count: 0 }, { version: "8.0", page_count: 0 }],
+      status: "planned",
+      crawl_url: "https://www.mongodb.com/docs/manual/",
+    },
+    {
       name: "cloudflare",
       description: "Cloudflare documentation - Workers, D1, R2, Pages, KV",
       url: "https://developers.cloudflare.com",

@@ -50,7 +50,7 @@ pub async fn start(name: Option<String>) {
     let version = env!("CARGO_PKG_VERSION").to_string();
 
     // Detect capabilities
-    let mut capabilities = vec!["host_health".to_string(), "security_scan".to_string()];
+    let mut capabilities = vec!["host_health".to_string(), "host_story".to_string(), "security_scan".to_string()];
     if which("kubectl") {
         capabilities.push("pod_status".to_string());
         capabilities.push("pod_logs".to_string());
@@ -131,6 +131,24 @@ pub async fn start(name: Option<String>) {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
+
+    // ── eBPF: try to load probes (auto-fallback if unavailable) ──
+    let ebpf_loaded = if crate::ebpf_loader::can_load() {
+        match crate::ebpf_loader::load_and_attach() {
+            Ok(_) => {
+                println!("  eBPF: tcp_retransmit probe loaded (real-time kernel tracing)");
+                true
+            }
+            Err(e) => {
+                println!("  eBPF: load failed ({}) - /proc fallback active", e);
+                false
+            }
+        }
+    } else {
+        println!("  eBPF: unavailable (no CAP_BPF) - /proc fallback active");
+        false
+    };
+    let _ = ebpf_loaded;
 
     println!("  Polling for queries...\n");
 
@@ -337,11 +355,143 @@ pub fn status() {
 fn execute_tool(tool: &str, input: &serde_json::Value) -> serde_json::Value {
     match tool {
         "host_health" => host_health(),
+        "host_story" => host_story(input),
         "pod_status" => pod_status(input),
         "pod_logs" => pod_logs(input),
         "ebpf_snapshot" => ebpf_snapshot(input),
         _ => serde_json::json!({"error": format!("Unknown tool: {}", tool)}),
     }
+}
+
+/// Post-mortem analysis: scan journald for a time window and return
+/// a structured timeline of events grouped by service and severity.
+/// Builds the event story from historical data for debugging past incidents.
+///
+/// Note: eBPF probes (runqlat, tcpretrans, biolatency) only capture real-time
+/// data - they are NOT available for past incidents. For post-mortem analysis,
+/// this tool uses journald logs which retain days/weeks of history depending
+/// on disk space and journal configuration.
+fn host_story(input: &serde_json::Value) -> serde_json::Value {
+    let since = input["since"].as_str().unwrap_or("30 minutes ago");
+    let until = input["until"].as_str().unwrap_or("now");
+    let service = input["service"].as_str(); // optional: filter to one service
+
+    let mut args = vec![
+        "--since", since, "--until", until,
+        "--no-pager", "-o", "short", "--quiet", "--no-hostname",
+    ];
+    if let Some(svc) = service {
+        args.push("-u");
+        args.push(svc);
+    }
+
+    let output = match std::process::Command::new("journalctl").args(&args).output() {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+        Ok(out) => return serde_json::json!({"error": format!("journalctl failed: {}", String::from_utf8_lossy(&out.stderr))}),
+        Err(e) => return serde_json::json!({"error": format!("Cannot run journalctl: {}", e)}),
+    };
+
+    let failure_patterns = [
+        "deadline exceeded", "timed out", "i/o timeout", "connection reset",
+        "connection refused", "unreachable", "failed", "error", "panic",
+        "oom", "killed", "segfault", "denied", "refused", "503", "502",
+        "no route", "network is unreachable", "broken pipe",
+    ];
+
+    // Group events by service and minute
+    let mut by_service: HashMap<String, Vec<String>> = HashMap::new();
+    let mut timeline: Vec<serde_json::Value> = Vec::new();
+    let mut total_lines = 0;
+    let mut error_lines = 0;
+
+    for line in output.lines() {
+        total_lines += 1;
+        let lower = line.to_lowercase();
+        let is_error = failure_patterns.iter().any(|p| lower.contains(p));
+
+        if is_error {
+            error_lines += 1;
+            // Format: "May 05 17:19:07 unit[pid]: message" - unit is at index 3
+            let unit = line.split_whitespace().nth(3)
+                .unwrap_or("unknown")
+                .split('[').next()
+                .unwrap_or("unknown")
+                .trim_end_matches(':')
+                .to_string();
+            by_service.entry(unit).or_default().push(line.to_string());
+        }
+    }
+
+    // Build per-service summaries
+    let mut services: Vec<serde_json::Value> = Vec::new();
+    let mut service_list: Vec<(&String, &Vec<String>)> = by_service.iter().collect();
+    service_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+    for (svc, lines) in service_list.iter().take(20) {
+        // Extract time of first and last error
+        let first_time = lines.first().and_then(|l| l.get(..15)).unwrap_or("?");
+        let last_time = lines.last().and_then(|l| l.get(..15)).unwrap_or("?");
+
+        services.push(serde_json::json!({
+            "service": svc,
+            "error_count": lines.len(),
+            "first_error": first_time,
+            "last_error": last_time,
+            "sample_lines": lines.iter().take(5).cloned().collect::<Vec<String>>(),
+        }));
+    }
+
+    // Build minute-by-minute timeline
+    let mut by_minute: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for line in output.lines() {
+        let lower = line.to_lowercase();
+        if failure_patterns.iter().any(|p| lower.contains(p)) {
+            let minute = line.get(..12).unwrap_or("?").to_string();
+            *by_minute.entry(minute).or_default() += 1;
+        }
+    }
+
+    for (minute, count) in &by_minute {
+        timeline.push(serde_json::json!({"time": minute, "errors": count}));
+    }
+
+    // Determine probable root cause: service with the EARLIEST first error
+    // The first thing to break is usually the trigger for everything else.
+    let root_cause = if !service_list.is_empty() {
+        let mut earliest_svc = &service_list[0];
+        let mut earliest_time = service_list[0].1.first().and_then(|l| l.get(..15)).unwrap_or("z");
+        for item in &service_list {
+            if let Some(first_line) = item.1.first() {
+                let time = first_line.get(..15).unwrap_or("z");
+                if time < earliest_time {
+                    earliest_time = time;
+                    earliest_svc = item;
+                }
+            }
+        }
+        Some(serde_json::json!({
+            "service": earliest_svc.0,
+            "first_error_time": earliest_time,
+            "total_errors": earliest_svc.1.len(),
+            "first_error_line": earliest_svc.1.first().map(|l| &l[..l.len().min(120)]),
+            "reasoning": "First service to report errors - likely the trigger for cascading failures",
+        }))
+    } else { None };
+
+    serde_json::json!({
+        "window": {"since": since, "until": until},
+        "data_source": "journald (historical logs, not real-time eBPF)",
+        "note": "eBPF probes only capture real-time data. For post-mortem analysis, journald provides the historical record.",
+        "summary": {
+            "total_log_lines": total_lines,
+            "error_lines": error_lines,
+            "services_affected": by_service.len(),
+            "error_rate_pct": if total_lines > 0 { error_lines as f64 / total_lines as f64 * 100.0 } else { 0.0 },
+        },
+        "services": services,
+        "timeline": timeline,
+        "probable_root_cause": root_cause,
+    })
 }
 
 /// Run eBPF tools briefly and return a snapshot of kernel-level activity.
@@ -559,14 +709,44 @@ fn host_health() -> serde_json::Value {
             let tx_bytes: u64 = parts[9].parse().unwrap_or(0);
             let rx_drops: u64 = parts[4].parse().unwrap_or(0);
             let tx_drops: u64 = parts[12].parse().unwrap_or(0);
-            interfaces.push(serde_json::json!({
+            // sysfs: operstate and power management (no external tools needed)
+            let operstate = std::fs::read_to_string(format!("/sys/class/net/{}/operstate", iface))
+                .unwrap_or_default().trim().to_string();
+            let dev_power = std::fs::read_to_string(format!("/sys/class/net/{}/device/power/control", iface))
+                .unwrap_or_default().trim().to_string();
+            let carrier = std::fs::read_to_string(format!("/sys/class/net/{}/carrier", iface))
+                .unwrap_or_default().trim().to_string();
+            let speed = std::fs::read_to_string(format!("/sys/class/net/{}/speed", iface))
+                .unwrap_or_default().trim().to_string();
+            let iface_type = if iface.starts_with("wl") { "wifi" } else if iface.starts_with("en") || iface.starts_with("eth") { "ethernet" } else if iface.starts_with("tailscale") { "vpn" } else { "other" };
+            let mut iface_json = serde_json::json!({
                 "name": iface,
                 "rx_gb": rx_bytes / 1_073_741_824,
                 "tx_gb": tx_bytes / 1_073_741_824,
                 "rx_drops": rx_drops,
                 "tx_drops": tx_drops,
-                "type": if iface.starts_with("wl") { "wifi" } else if iface.starts_with("en") || iface.starts_with("eth") { "ethernet" } else if iface.starts_with("tailscale") { "vpn" } else { "other" },
-            }));
+                "type": iface_type,
+                "operstate": operstate,
+                "carrier": carrier,
+            });
+            if !dev_power.is_empty() {
+                iface_json["device_power_control"] = dev_power.clone().into();
+            }
+            if !speed.is_empty() && speed != "-1" {
+                iface_json["speed_mbps"] = speed.into();
+            }
+            // For WiFi: check power_save via sysfs (auto = power-save likely on)
+            if iface_type == "wifi" {
+                let ps = if let Ok(output) = std::process::Command::new("iw")
+                    .args(["dev", iface, "get", "power_save"]).output() {
+                    let raw = String::from_utf8_lossy(&output.stdout);
+                    if raw.contains("on") { "on" } else { "off" }.to_string()
+                } else {
+                    if dev_power == "auto" { "on (sysfs)" } else { "off (sysfs)" }.to_string()
+                };
+                iface_json["power_save"] = ps.into();
+            }
+            interfaces.push(iface_json);
         }
     }
     if !interfaces.is_empty() {
@@ -927,6 +1107,12 @@ struct Finding {
 
 fn watch_health() -> Vec<Finding> {
     let mut findings = Vec::new();
+
+    // ── Kernel probes (process exec, network connections, FD pressure) ──
+    findings.extend(watch_kernel());
+
+    // ── System logs (journald + dmesg) ──
+    findings.extend(watch_logs());
 
     // ── Network + DNS health ──
     findings.extend(watch_network());
@@ -1357,6 +1543,436 @@ fn watch_cloudflare() -> Vec<Finding> {
 
 // ── Network + DNS watch ──
 
+// ── Log + state watcher ──
+// Design principle: NEVER hardcode what to look for.
+// 1. Collect ALL journald errors (the raw lines)
+// 2. Collect ALL sysfs state for network interfaces
+// 3. Detect deltas in /proc counters
+// 4. Send everything to cloud - temporal correlation handles the rest
+// The cloud side + LLM interprets what went wrong. The agent just collects.
+
+// ── Kernel probes ──
+// Process exec, network connections, listeners, FD pressure.
+// Pure /proc + /sys - works on every Linux including NixOS.
+// Converts kernel_probes::KernelEvent into Finding for unified reporting.
+
+fn watch_kernel() -> Vec<Finding> {
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    // Report probe capability status - degraded mode if no eBPF
+    let has_ebpf = crate::kernel_probes::ebpf_available();
+    let probes = crate::kernel_probes::available_probes();
+    let unavailable: Vec<&str> = probes.iter()
+        .filter(|(_, tier, avail)| *tier == "always" && !avail)
+        .map(|(name, _, _)| *name)
+        .collect();
+
+    let mut findings = Vec::new();
+
+    if !has_ebpf {
+        findings.push(Finding {
+            key: "probe_mode_degraded".into(),
+            severity: "info".into(),
+            category: "agent".into(),
+            title: "Running in /proc fallback mode (no eBPF)".into(),
+            message: format!(
+                "eBPF not available (BTF missing or no CAP_BPF). Using /proc polling at 60s resolution. \
+                Missing real-time probes: runqlat (CPU queue latency), tcprtt (TCP round-trip). \
+                To enable full resolution: ensure /sys/kernel/btf/vmlinux exists and agent has CAP_BPF.",
+            ),
+            metadata: serde_json::json!({
+                "ebpf_available": false,
+                "mode": "procfs_fallback",
+                "resolution_sec": 60,
+                "missing_probes": ["runqlat", "tcprtt"],
+                "degraded_probes": ["biolatency", "cachestat", "tcpretrans", "oomkill"],
+            }),
+        });
+    }
+
+    if !unavailable.is_empty() {
+        findings.push(Finding {
+            key: "probes_unavailable".into(),
+            severity: "warning".into(),
+            category: "agent".into(),
+            title: format!("{} Tier-1 probes unavailable", unavailable.len()),
+            message: format!(
+                "Cannot run probes: {}. These provide critical performance data. \
+                Check that /proc and /sys are mounted.",
+                unavailable.join(", ")
+            ),
+            metadata: serde_json::json!({"unavailable": unavailable}),
+        });
+    }
+
+    let events = crate::kernel_probes::poll_all(&hostname);
+
+    // Aggregate by template key (probe + comm), not per-PID.
+    // "5 new curl processes" is one finding, not 5.
+    let mut grouped: std::collections::HashMap<String, Vec<&crate::kernel_probes::KernelEvent>> =
+        std::collections::HashMap::new();
+
+    for event in &events {
+        if event.severity == "ignore" { continue; }
+
+        // Template key: probe + comm (no PID, no port, no IP)
+        // This groups all "process_exec curl" events together
+        let template = format!("kernel_{}_{}",
+            event.probe,
+            if event.comm.is_empty() { "unknown" } else { &event.comm }
+        );
+        grouped.entry(template).or_default().push(event);
+    }
+
+    for (key, group) in &grouped {
+        let first = group[0];
+        let count = group.len();
+
+        // Only report warning+ severity, or info with count > 1 (anomalous volume)
+        let severity = if group.iter().any(|e| e.severity == "critical") { "critical" }
+            else if group.iter().any(|e| e.severity == "high") { "high" }
+            else if group.iter().any(|e| e.severity == "warning") { "warning" }
+            else if count > 10 { "warning" } // unusually high volume = worth reporting
+            else { "info" };
+
+        // Only send info-level if it's interesting (containers, suspicious)
+        if severity == "info" && first.container_id.is_none() && count <= 3 {
+            continue; // boring host process, skip
+        }
+
+        let category = match first.probe.as_str() {
+            "process_exec" => "process",
+            "network_connect" | "network_listen" => "network",
+            "fd_pressure" => "system",
+            _ => "kernel",
+        };
+
+        let title = if count == 1 {
+            format!("[{}] {}", first.probe, first.comm)
+        } else {
+            format!("[{}] {} (x{})", first.probe, first.comm, count)
+        };
+
+        // Include samples (up to 5) in metadata for the cloud to correlate
+        let samples: Vec<serde_json::Value> = group.iter().take(5).map(|e| {
+            serde_json::json!({
+                "pid": e.pid, "ppid": e.ppid, "uid": e.uid,
+                "container_id": e.container_id,
+                "namespace": e.namespace,
+                "pod": e.pod,
+                "detail": e.detail,
+            })
+        }).collect();
+
+        findings.push(Finding {
+            key: key.clone(),
+            severity: severity.into(),
+            category: category.into(),
+            title,
+            message: format!(
+                "{} {} events in last interval. comm={} container={} ns={}",
+                count, first.probe, first.comm,
+                first.container_id.as_deref().unwrap_or("-"),
+                first.namespace.as_deref().unwrap_or("-"),
+            ),
+            metadata: serde_json::json!({
+                "probe": first.probe,
+                "count": count,
+                "severity": severity,
+                "samples": samples,
+                "source": "/proc",
+            }),
+        });
+    }
+
+    findings
+}
+
+fn watch_logs() -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // 1. ALL journald errors from the last watch interval - no filtering by pattern
+    if let Ok(out) = std::process::Command::new("journalctl")
+        .args(["--since", "2 minutes ago", "--priority", "err", "--no-pager",
+               "-o", "short", "--quiet", "--no-hostname"])
+        .output()
+    {
+        if out.status.success() {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+            if !lines.is_empty() {
+                // Group by systemd unit (the process name before the colon)
+                let mut by_unit: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+                for line in &lines {
+                    // Format: "May 05 17:31:11 unit[pid]: message"
+                    let unit = line.split(']').next()
+                        .and_then(|s| s.split_whitespace().last())
+                        .unwrap_or("unknown")
+                        .split('[').next()
+                        .unwrap_or("unknown")
+                        .to_string();
+                    by_unit.entry(unit).or_default().push(line.to_string());
+                }
+
+                // One finding per unit with errors - raw log lines included
+                for (unit, unit_lines) in &by_unit {
+                    let severity = if unit_lines.len() > 10 { "critical" } else { "warning" };
+                    findings.push(Finding {
+                        key: format!("journal_errors_{}", unit),
+                        severity: severity.into(),
+                        category: "system".into(),
+                        title: format!("{}: {} errors in 2 min", unit, unit_lines.len()),
+                        message: format!(
+                            "{} error-level messages from {}. Recent:\n{}",
+                            unit_lines.len(),
+                            unit,
+                            unit_lines.iter().rev().take(5)
+                                .cloned().collect::<Vec<_>>().join("\n")
+                        ),
+                        metadata: serde_json::json!({
+                            "unit": unit,
+                            "count": unit_lines.len(),
+                            "source": "journalctl",
+                            "sample_lines": unit_lines.iter().rev().take(10)
+                                .cloned().collect::<Vec<String>>(),
+                        }),
+                    });
+                }
+            }
+        }
+    }
+
+    // 2. dmesg: ALL kernel errors - read raw, don't interpret
+    if let Ok(out) = std::process::Command::new("dmesg")
+        .args(["--level", "err,crit,alert,emerg", "--ctime", "--nopager"])
+        .output()
+    {
+        if out.status.success() {
+            let raw = String::from_utf8_lossy(&out.stdout);
+            // dmesg with --ctime gives human-readable timestamps
+            // We cache the last line count to only report new messages
+            let cache_path = dirs::home_dir()
+                .unwrap_or_default()
+                .join(".savants")
+                .join("dmesg_line_count");
+            let prev_count: usize = std::fs::read_to_string(&cache_path)
+                .ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+
+            let all_lines: Vec<&str> = raw.lines().collect();
+            let new_count = all_lines.len();
+
+            if new_count > prev_count {
+                let new_lines: Vec<&str> = all_lines[prev_count..].to_vec();
+                if !new_lines.is_empty() {
+                    findings.push(Finding {
+                        key: "dmesg_new_errors".into(),
+                        severity: "warning".into(),
+                        category: "kernel".into(),
+                        title: format!("{} new kernel errors", new_lines.len()),
+                        message: format!(
+                            "{} new error/crit/alert messages in kernel ring buffer:\n{}",
+                            new_lines.len(),
+                            new_lines.iter().rev().take(10).cloned().collect::<Vec<_>>().join("\n")
+                        ),
+                        metadata: serde_json::json!({
+                            "count": new_lines.len(),
+                            "source": "dmesg",
+                            "lines": new_lines.iter().rev().take(20).cloned().collect::<Vec<&str>>(),
+                        }),
+                    });
+                }
+            }
+            let _ = std::fs::write(&cache_path, new_count.to_string());
+        }
+    }
+
+    // 3. Network interface state changes via sysfs (zero external tool dependencies)
+    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+        for entry in entries.flatten() {
+            let iface = entry.file_name().to_string_lossy().to_string();
+            if iface == "lo" || iface.starts_with("veth") || iface.starts_with("br-")
+                || iface.starts_with("docker") || iface.starts_with("cni") { continue; }
+
+            let operstate = std::fs::read_to_string(format!("/sys/class/net/{}/operstate", iface))
+                .unwrap_or_default().trim().to_string();
+            let carrier = std::fs::read_to_string(format!("/sys/class/net/{}/carrier", iface))
+                .ok().map(|s| s.trim().to_string()).unwrap_or_default();
+
+            // Any interface that's not "up" and should be (has carrier history) is noteworthy
+            if operstate == "down" || operstate == "dormant" || operstate == "lowerlayerdown" {
+                // Check if this is a "real" interface (not a tunnel/bridge with no traffic)
+                let rx_bytes: u64 = std::fs::read_to_string(format!("/sys/class/net/{}/statistics/rx_bytes", iface))
+                    .ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+                if rx_bytes > 0 {
+                    findings.push(Finding {
+                        key: format!("iface_state_{}", iface),
+                        severity: if operstate == "down" { "critical" } else { "warning" }.into(),
+                        category: "network".into(),
+                        title: format!("Interface {} operstate: {}", iface, operstate),
+                        message: format!(
+                            "Network interface {} is in '{}' state (carrier: {}). \
+                            This interface has carried {} GB of traffic. \
+                            State '{}' can cause intermittent connectivity, packet drops, and dependent service failures.",
+                            iface, operstate, if carrier == "1" { "up" } else { "down" },
+                            rx_bytes / 1_073_741_824, operstate
+                        ),
+                        metadata: serde_json::json!({
+                            "interface": iface,
+                            "operstate": operstate,
+                            "carrier": carrier,
+                            "rx_gb": rx_bytes / 1_073_741_824,
+                            "source": "sysfs",
+                        }),
+                    });
+                }
+            }
+        }
+    }
+
+    // 4. TCP retransmit spike detection (delta-based from /proc/net/snmp)
+    if let Ok(snmp) = std::fs::read_to_string("/proc/net/snmp") {
+        let mut retrans: u64 = 0;
+        let mut out_segs: u64 = 0;
+        let mut tcp_values = false;
+        for line in snmp.lines() {
+            if line.starts_with("Tcp:") && !tcp_values {
+                tcp_values = true;
+                continue;
+            }
+            if line.starts_with("Tcp:") && tcp_values {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() > 12 {
+                    out_segs = parts[10].parse().unwrap_or(0);
+                    retrans = parts[12].parse().unwrap_or(0);
+                }
+                break;
+            }
+        }
+
+        let cache_path = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".savants")
+            .join("tcp_retrans_cache");
+
+        if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+            let parts: Vec<&str> = cached.trim().split(',').collect();
+            if parts.len() == 2 {
+                let prev_retrans: u64 = parts[0].parse().unwrap_or(0);
+                let prev_segs: u64 = parts[1].parse().unwrap_or(0);
+                let delta_retrans = retrans.saturating_sub(prev_retrans);
+                let delta_segs = out_segs.saturating_sub(prev_segs);
+
+                if delta_segs > 100 && delta_retrans > 0 {
+                    let rate = delta_retrans as f64 / delta_segs as f64 * 100.0;
+                    if rate > 5.0 {
+                        findings.push(Finding {
+                            key: "tcp_retransmit_spike".into(),
+                            severity: if rate > 20.0 { "critical" } else { "warning" }.into(),
+                            category: "network".into(),
+                            title: format!("TCP retransmit spike: {:.1}%", rate),
+                            message: format!(
+                                "{} retransmits out of {} segments ({:.1}%) in last interval.",
+                                delta_retrans, delta_segs, rate
+                            ),
+                            metadata: serde_json::json!({
+                                "retransmit_rate_pct": rate,
+                                "delta_retrans": delta_retrans,
+                                "delta_segments": delta_segs,
+                                "source": "/proc/net/snmp",
+                            }),
+                        });
+                    }
+                }
+            }
+        }
+        let _ = std::fs::write(&cache_path, format!("{},{}", retrans, out_segs));
+    }
+
+    // 5. PSI (Pressure Stall Information) - detects resource starvation the OS itself reports
+    for resource in &["cpu", "memory", "io"] {
+        if let Ok(psi) = std::fs::read_to_string(format!("/proc/pressure/{}", resource)) {
+            for line in psi.lines() {
+                if line.starts_with("some ") || line.starts_with("full ") {
+                    let kind = if line.starts_with("some") { "some" } else { "full" };
+                    if let Some(avg10_str) = line.split("avg10=").nth(1) {
+                        let avg10: f64 = avg10_str.split_whitespace().next()
+                            .and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                        let threshold = if kind == "full" { 10.0 } else { 25.0 };
+                        if avg10 > threshold {
+                            findings.push(Finding {
+                                key: format!("psi_{}_{}", resource, kind),
+                                severity: if avg10 > 50.0 { "critical" } else { "warning" }.into(),
+                                category: resource.to_string(),
+                                title: format!("PSI {}/{}: {:.1}%", resource, kind, avg10),
+                                message: format!(
+                                    "Pressure Stall Information: {} {} avg10={:.1}%. \
+                                    Tasks are stalling waiting for {}.",
+                                    resource, kind, avg10, resource
+                                ),
+                                metadata: serde_json::json!({
+                                    "resource": resource, "kind": kind, "avg10": avg10,
+                                    "raw": line,
+                                    "source": format!("/proc/pressure/{}", resource),
+                                }),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Critical services that log errors at INFO level (not caught by --priority err)
+    // Many services (Tailscale, cloudflared, CoreDNS) log failures as info, not error.
+    // We scan their journals and pattern-match for failure keywords.
+    let critical_services = ["tailscaled", "cloudflared", "coredns", "k3s"];
+    let failure_patterns = [
+        "deadline exceeded", "timed out", "i/o timeout", "connection reset",
+        "connection refused", "unreachable", "failed", "error", "panic",
+        "map response long-poll timed out", "no route to host",
+    ];
+
+    for svc in &critical_services {
+        if let Ok(out) = std::process::Command::new("journalctl")
+            .args(["-u", svc, "--since", "2 minutes ago", "--no-pager", "-o", "short", "--quiet", "--no-hostname"])
+            .output()
+        {
+            if !out.status.success() { continue; }
+            let raw = String::from_utf8_lossy(&out.stdout);
+            let error_lines: Vec<&str> = raw.lines()
+                .filter(|l| {
+                    let lower = l.to_lowercase();
+                    failure_patterns.iter().any(|p| lower.contains(p))
+                })
+                .collect();
+
+            if !error_lines.is_empty() {
+                findings.push(Finding {
+                    key: format!("service_errors_{}", svc),
+                    severity: if error_lines.len() > 10 { "critical" } else if error_lines.len() > 3 { "warning" } else { "info" }.into(),
+                    category: "service".into(),
+                    title: format!("{}: {} error events in 2 min", svc, error_lines.len()),
+                    message: format!(
+                        "{} failure-pattern matches in {} logs. Recent:\n{}",
+                        error_lines.len(), svc,
+                        error_lines.iter().rev().take(5).cloned().collect::<Vec<_>>().join("\n")
+                    ),
+                    metadata: serde_json::json!({
+                        "service": svc,
+                        "count": error_lines.len(),
+                        "source": "journalctl",
+                        "sample_lines": error_lines.iter().rev().take(10).cloned().collect::<Vec<&str>>(),
+                    }),
+                });
+            }
+        }
+    }
+
+    findings
+}
+
 fn watch_network() -> Vec<Finding> {
     let mut findings = Vec::new();
 
@@ -1442,21 +2058,57 @@ fn watch_network() -> Vec<Finding> {
             });
         }
 
-        // Report WiFi power save state
+        // Report WiFi power save + operstate via sysfs (no external tools needed)
         if !wifi_name.is_empty() {
-            if let Ok(output) = std::process::Command::new("iw")
+            // Check operstate: DORMANT means 802.1X or power-save issues
+            let operstate = std::fs::read_to_string(format!("/sys/class/net/{}/operstate", wifi_name))
+                .unwrap_or_default().trim().to_string();
+            // Check kernel power management
+            let dev_power = std::fs::read_to_string(format!("/sys/class/net/{}/device/power/control", wifi_name))
+                .unwrap_or_default().trim().to_string();
+            // Try iw if available, fall back to sysfs
+            let power_save = if let Ok(output) = std::process::Command::new("iw")
                 .args(["dev", &wifi_name, "get", "power_save"])
                 .output()
             {
                 let raw = String::from_utf8_lossy(&output.stdout);
-                let power_save = if raw.contains("on") { "on" } else { "off" };
+                if raw.contains("on") { "on".to_string() } else { "off".to_string() }
+            } else {
+                // Fallback: device/power/control "auto" usually means power-save is on
+                if dev_power == "auto" { "on (sysfs)".to_string() } else { "off (sysfs)".to_string() }
+            };
+
+            let ps_on = power_save.starts_with("on");
+            let is_dormant = operstate == "dormant";
+
+            // Power save ON on a server is a problem, not informational
+            if ps_on || is_dormant {
+                findings.push(Finding {
+                    key: format!("wifi_power_save_{}", wifi_name),
+                    severity: "warning".into(),
+                    category: "network".into(),
+                    title: format!("WiFi {} power save active (operstate: {})", wifi_name, operstate),
+                    message: format!(
+                        "WiFi {} power_save={}, device/power/control={}, operstate={}. \
+                        Power save causes intermittent packet drops, DNS timeouts, and tunnel disconnections. \
+                        Fix: iw dev {} set power_save off",
+                        wifi_name, power_save, dev_power, operstate, wifi_name
+                    ),
+                    metadata: serde_json::json!({
+                        "interface": wifi_name,
+                        "power_save": power_save,
+                        "operstate": operstate,
+                        "device_power_control": dev_power,
+                    }),
+                });
+            } else {
                 findings.push(Finding {
                     key: format!("wifi_power_save_{}", wifi_name),
                     severity: "info".into(),
                     category: "network".into(),
-                    title: format!("WiFi {} power save: {}", wifi_name, power_save),
-                    message: format!("WiFi interface {} power_save is {}.", wifi_name, power_save),
-                    metadata: serde_json::json!({"interface": wifi_name, "power_save": power_save}),
+                    title: format!("WiFi {} power save: off (operstate: {})", wifi_name, operstate),
+                    message: format!("WiFi {} power_save={}, operstate={}. Good.", wifi_name, power_save, operstate),
+                    metadata: serde_json::json!({"interface": wifi_name, "power_save": power_save, "operstate": operstate}),
                 });
             }
         }

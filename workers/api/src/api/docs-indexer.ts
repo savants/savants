@@ -35,6 +35,7 @@ const SOURCES: DocSource[] = [
   { name: "react", llms_txt_url: "https://react.dev/llms.txt", description: "React Documentation" },
   { name: "nextjs", llms_txt_url: "https://nextjs.org/llms.txt", description: "Next.js Documentation" },
   { name: "fastify", llms_txt_url: "https://fastify.dev/llms.txt", llms_full_url: "https://fastify.dev/llms-full.txt", description: "Fastify Documentation" },
+  { name: "mongodb", llms_txt_url: "https://www.mongodb.com/docs/llms.txt", llms_full_url: "https://www.mongodb.com/docs/llms-full.txt", description: "MongoDB & Atlas Documentation" },
 ];
 
 // POST /api/v1/docs/index/:provider - Index a doc source from its llms.txt
