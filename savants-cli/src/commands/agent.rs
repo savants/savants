@@ -177,37 +177,70 @@ pub async fn start(name: Option<String>) {
         if last_watch.elapsed().as_secs() >= WATCH_INTERVAL_SECS {
             let mut findings = watch_health();
 
-            // Read eBPF retransmit map if loaded
+            // Read all eBPF probe maps
             #[cfg(feature = "ebpf")]
-            if let Some(ref mut handle) = ebpf_handle {
-                match handle.read_snapshot() {
-                    Ok(snap) if snap.total > 0 => {
-                        let severity = if snap.is_link_issue { "critical" } else if snap.total > 100 { "warning" } else { "info" };
+            if let Some(ref handle) = ebpf_handle {
+                let snap = handle.read_snapshot();
+
+                // TCP retransmits
+                if let Some(ref rt) = snap.retransmit {
+                    if rt.total > 0 {
+                        let sev = if rt.is_link_issue { "critical" } else if rt.total > 100 { "warning" } else { "info" };
                         findings.push(Finding {
                             key: "ebpf_tcp_retransmit".into(),
-                            severity: severity.into(),
+                            severity: sev.into(),
                             category: "network".into(),
-                            title: format!("eBPF: {} retransmits to {} destinations", snap.total, snap.dest_count),
-                            message: format!(
-                                "{}. Top destinations: {}",
-                                snap.diagnosis,
-                                snap.by_dest.iter().take(5)
-                                    .map(|(ip, c)| format!("{}({})", ip, c))
-                                    .collect::<Vec<_>>().join(", ")
-                            ),
-                            metadata: serde_json::json!({
-                                "total": snap.total,
-                                "dest_count": snap.dest_count,
-                                "is_link_issue": snap.is_link_issue,
-                                "link_confidence": snap.link_confidence,
-                                "by_dest": snap.by_dest,
-                                "source": "ebpf/tcp_retransmit_skb",
-                            }),
+                            title: format!("eBPF: {} retransmits to {} destinations", rt.total, rt.dest_count),
+                            message: format!("{}. Top: {}", rt.diagnosis,
+                                rt.by_dest.iter().take(5).map(|(ip, c)| format!("{}({})", ip, c)).collect::<Vec<_>>().join(", ")),
+                            metadata: serde_json::json!({"probe": "tcp_retransmit", "data": rt}),
                         });
                     }
-                    Ok(_) => {} // no retransmits, healthy
-                    Err(e) => {
-                        eprintln!("[ebpf] map read error: {}", e);
+                }
+
+                // Block I/O latency
+                if let Some(ref bio) = snap.biolatency {
+                    if bio.p99_us > 50_000 { // p99 > 50ms = worth reporting
+                        findings.push(Finding {
+                            key: "ebpf_biolatency".into(),
+                            severity: if bio.p99_us > 500_000 { "critical" } else { "warning" }.into(),
+                            category: "disk".into(),
+                            title: format!("eBPF: disk I/O p99={:.1}ms ({} ops)", bio.p99_us as f64 / 1000.0, bio.total),
+                            message: format!("Block I/O latency: p50={:.1}ms p99={:.1}ms max={:.1}ms over {} I/O ops",
+                                bio.p50_us as f64 / 1000.0, bio.p99_us as f64 / 1000.0, bio.max_us as f64 / 1000.0, bio.total),
+                            metadata: serde_json::json!({"probe": "biolatency", "data": bio}),
+                        });
+                    }
+                }
+
+                // CPU run queue latency
+                if let Some(ref rq) = snap.runqlat {
+                    if rq.p99_us > 10_000 { // p99 > 10ms = CPU saturation
+                        findings.push(Finding {
+                            key: "ebpf_runqlat".into(),
+                            severity: if rq.p99_us > 100_000 { "critical" } else { "warning" }.into(),
+                            category: "cpu".into(),
+                            title: format!("eBPF: CPU queue p99={:.1}ms ({} wakeups)", rq.p99_us as f64 / 1000.0, rq.total),
+                            message: format!("Run queue latency: p50={:.1}ms p99={:.1}ms. Tasks waiting for CPU.",
+                                rq.p50_us as f64 / 1000.0, rq.p99_us as f64 / 1000.0),
+                            metadata: serde_json::json!({"probe": "runqlat", "data": rq}),
+                        });
+                    }
+                }
+
+                // Packet drops
+                if let Some(ref drops) = snap.tcpdrop {
+                    if drops.total > 100 { // more than 100 drops in an interval
+                        findings.push(Finding {
+                            key: "ebpf_tcpdrop".into(),
+                            severity: if drops.total > 1000 { "critical" } else { "warning" }.into(),
+                            category: "network".into(),
+                            title: format!("eBPF: {} kernel packet drops (top: {})", drops.total, drops.top_reason),
+                            message: format!("Kernel dropped {} packets. By reason: {}",
+                                drops.total,
+                                drops.by_reason.iter().take(5).map(|(r, c)| format!("{}({})", r, c)).collect::<Vec<_>>().join(", ")),
+                            metadata: serde_json::json!({"probe": "tcpdrop", "data": drops}),
+                        });
                     }
                 }
             }
