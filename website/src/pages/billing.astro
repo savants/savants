@@ -258,8 +258,8 @@ import Base from '../layouts/Base.astro';
       currentPlan = data.plan || 'free';
       stripePortalUrl = data.stripe_portal_url || null;
 
-      const planLabels = { free: 'Free', payg: 'Pay-As-You-Go', enterprise: 'Enterprise' };
-      const planPrices = { free: '$0 / month', payg: '$99 / cluster / month', enterprise: '$999 / month' };
+      const planLabels = { free: 'Free', starter: 'Starter', pro: 'Pro', enterprise: 'Enterprise' };
+      const planPrices = { free: '$0 / month', starter: '$499 / month', pro: '$2,999 / month', enterprise: '$9,999+ / month' };
 
       let html = '<div class="plan-display">' +
         '<div class="plan-info">' +
@@ -289,11 +289,15 @@ import Base from '../layouts/Base.astro';
   }
 
   // --- Upgrade ---
-  async function upgradeCheckout() {
+  async function upgradeCheckout(plan) {
     try {
       showToast('Starting checkout...', 'success');
-      const data = await apiFetch('/billing/checkout', { method: 'POST' });
-      if (data.url) window.location.href = data.url;
+      const data = await apiFetch('/billing/checkout', {
+        method: 'POST',
+        body: JSON.stringify({ plan: plan || 'starter' }),
+      });
+      if (data.checkout_url) window.location.href = data.checkout_url;
+      else if (data.url) window.location.href = data.url;
     } catch (e) {
       showToast('Failed to start checkout: ' + e.message, 'error');
     }
@@ -355,9 +359,10 @@ import Base from '../layouts/Base.astro';
   // --- Render Plans ---
   function renderPlans() {
     const plans = [
-      { id: 'free', tier: 'Local', price: '$0', sub: 'Free forever', features: ['Unlimited local queries', 'Full codebase analysis', 'CLI access', 'Community support'] },
-      { id: 'payg', tier: 'Cloud', price: '$99', sub: 'per cluster / month', features: ['Team sharing', 'Cloud API access', 'Secret scrubbing', 'Multi-repo federation', 'Priority support'] },
-      { id: 'enterprise', tier: 'Enterprise', price: '$999', sub: 'per month', features: ['Everything in Cloud', 'SSO / SAML', 'Dedicated support', 'Custom integrations', 'SLA guarantee'] }
+      { id: 'free', tier: 'Free', price: '$0', sub: 'Local tools forever', features: ['14 local MCP tools', 'Semantic code search', 'Works offline'] },
+      { id: 'starter', tier: 'Starter', price: '$499', sub: '/month', features: ['All 86+ cloud tools', '10K graph nodes', '1 agent, 1 cluster', '10 users, 7-day history'] },
+      { id: 'pro', tier: 'Pro', price: '$2,999', sub: '/month', features: ['100K graph nodes', '5 agents, 3 clusters', '50 users, 90-day history', '9 eBPF probes, AWS/GCP'] },
+      { id: 'enterprise', tier: 'Enterprise', price: '$9,999+', sub: '/month', features: ['Unlimited everything', 'SSO/SAML, SLA', 'Dedicated support', 'Custom integrations'] }
     ];
 
     let html = '<div class="plan-cards">';
@@ -371,8 +376,10 @@ import Base from '../layouts/Base.astro';
 
       if (isCurrent) {
         html += '<button class="pc-btn current-label">Current plan</button>';
-      } else if (p.id === 'payg' && currentPlan === 'free') {
-        html += '<button class="pc-btn active" onclick="upgradeCheckout()">Upgrade</button>';
+      } else if ((p.id === 'starter' || p.id === 'pro') && currentPlan === 'free') {
+        html += '<button class="pc-btn active" onclick="upgradeCheckout(\'' + p.id + '\')">Upgrade</button>';
+      } else if (p.id === 'pro' && currentPlan === 'starter') {
+        html += '<button class="pc-btn active" onclick="upgradeCheckout(\'pro\')">Upgrade</button>';
       } else if (p.id === 'enterprise') {
         html += '<a href="mailto:sales@savants.dev?subject=Enterprise%20inquiry" class="pc-btn contact">Contact sales</a>';
       } else {
