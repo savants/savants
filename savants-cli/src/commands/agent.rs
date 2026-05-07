@@ -141,7 +141,7 @@ pub async fn start(name: Option<String>) {
         if crate::ebpf_loader::can_load() {
             match crate::ebpf_loader::load_and_attach() {
                 Ok(handle) => {
-                    println!("  eBPF: tcp_retransmit probe loaded (real-time kernel tracing)");
+                    println!("  eBPF: {} probes loaded: {}", handle.probes.len(), handle.probes.join(", "));
                     ebpf_handle = Some(handle);
                 }
                 Err(e) => {
@@ -230,7 +230,7 @@ pub async fn start(name: Option<String>) {
 
                 // Packet drops
                 if let Some(ref drops) = snap.tcpdrop {
-                    if drops.total > 100 { // more than 100 drops in an interval
+                    if drops.total > 100 {
                         findings.push(Finding {
                             key: "ebpf_tcpdrop".into(),
                             severity: if drops.total > 1000 { "critical" } else { "warning" }.into(),
@@ -240,6 +240,52 @@ pub async fn start(name: Option<String>) {
                                 drops.total,
                                 drops.by_reason.iter().take(5).map(|(r, c)| format!("{}({})", r, c)).collect::<Vec<_>>().join(", ")),
                             metadata: serde_json::json!({"probe": "tcpdrop", "data": drops}),
+                        });
+                    }
+                }
+
+                // OOM kills
+                if let Some(ref oom) = snap.oomkill {
+                    if oom.total > 0 {
+                        findings.push(Finding {
+                            key: "ebpf_oomkill".into(),
+                            severity: "critical".into(),
+                            category: "memory".into(),
+                            title: format!("eBPF: {} OOM kills detected", oom.total),
+                            message: format!("{} processes killed by OOM killer", oom.total),
+                            metadata: serde_json::json!({"probe": "oomkill", "data": oom}),
+                        });
+                    }
+                }
+
+                // TCP connection lifecycle
+                if let Some(ref life) = snap.tcplife {
+                    if life.short_lived > 50 {
+                        let top_ports: String = life.by_port.iter().take(5)
+                            .map(|(p, c)| format!(":{} ({})", p, c)).collect::<Vec<_>>().join(", ");
+                        findings.push(Finding {
+                            key: "ebpf_tcplife".into(),
+                            severity: if life.short_lived > 200 { "warning" } else { "info" }.into(),
+                            category: "network".into(),
+                            title: format!("eBPF: {} connections ({} short-lived)", life.total_conns, life.short_lived),
+                            message: format!("{} TCP connections destroyed, {} lasted <1s. Top ports: {}",
+                                life.total_conns, life.short_lived, top_ports),
+                            metadata: serde_json::json!({"probe": "tcplife", "data": life}),
+                        });
+                    }
+                }
+
+                // TCP connection resets
+                if let Some(ref resets) = snap.tcpconnlat {
+                    if resets.total > 10 {
+                        findings.push(Finding {
+                            key: "ebpf_tcp_resets".into(),
+                            severity: if resets.is_link_issue { "critical" } else { "warning" }.into(),
+                            category: "network".into(),
+                            title: format!("eBPF: {} TCP resets to {} destinations", resets.total, resets.dest_count),
+                            message: format!("{}. Top: {}", resets.diagnosis,
+                                resets.by_dest.iter().take(5).map(|(ip, c)| format!("{}({})", ip, c)).collect::<Vec<_>>().join(", ")),
+                            metadata: serde_json::json!({"probe": "tcpconnlat", "data": resets}),
                         });
                     }
                 }

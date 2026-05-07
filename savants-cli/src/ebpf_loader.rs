@@ -1,18 +1,30 @@
-//! eBPF probe loader - 4 Brendan Gregg essential probes via libbpf-rs.
+//! eBPF probe loader - 9 Brendan Gregg essential probes via libbpf-rs.
 //!
-//! Probes (all embedded at compile time):
+//! Tier 1 (24/7):
 //!   tcp_retransmit - per-dest retransmit counts (link vs server diagnosis)
 //!   biolatency    - block I/O latency histogram (disk health)
-//!   runqlat       - CPU scheduler queue latency histogram (NO /proc fallback)
-//!   tcpdrop       - kernel packet drops by reason code (root cause of drops)
+//!   runqlat       - CPU scheduler queue latency (NO /proc fallback)
+//!   tcpdrop       - kernel packet drops by reason code
+//!   oomkill       - OOM killer with victim details
+//!   execsnoop     - real-time process execution (catches short-lived procs)
+//!
+//! Tier 2 (differentiators):
+//!   tcplife       - TCP connection lifecycle (duration, port, short-lived count)
+//!   tcpconnlat    - TCP resets by destination (connection refused tracking)
+//!   capable       - Linux capability checks (container security)
 
 use std::net::Ipv4Addr;
 
-// Embedded BPF bytecode - compiled from C, zero runtime dependencies
+// Embedded BPF bytecode - all compiled from C, zero runtime dependencies
 const BPF_TCP_RETRANSMIT: &[u8] = include_bytes!("../ebpf/tcp_retransmit.bpf.o");
 const BPF_BIOLATENCY: &[u8] = include_bytes!("../ebpf/biolatency.bpf.o");
 const BPF_RUNQLAT: &[u8] = include_bytes!("../ebpf/runqlat.bpf.o");
 const BPF_TCPDROP: &[u8] = include_bytes!("../ebpf/tcpdrop.bpf.o");
+const BPF_OOMKILL: &[u8] = include_bytes!("../ebpf/oomkill.bpf.o");
+const BPF_EXECSNOOP: &[u8] = include_bytes!("../ebpf/execsnoop.bpf.o");
+const BPF_TCPLIFE: &[u8] = include_bytes!("../ebpf/tcplife.bpf.o");
+const BPF_TCPCONNLAT: &[u8] = include_bytes!("../ebpf/tcpconnlat.bpf.o");
+const BPF_CAPABLE: &[u8] = include_bytes!("../ebpf/capable.bpf.o");
 
 // Drop reason names (from kernel skb_drop_reason enum)
 const DROP_REASONS: &[&str] = &[
@@ -40,6 +52,24 @@ pub struct ProbeSnapshot {
     pub biolatency: Option<HistogramData>,
     pub runqlat: Option<HistogramData>,
     pub tcpdrop: Option<DropData>,
+    pub oomkill: Option<CounterData>,
+    pub execsnoop: Option<CounterData>,
+    pub tcplife: Option<TcpLifeData>,
+    pub tcpconnlat: Option<RetransmitData>, // reuse: per-dest reset counts
+    pub capable: Option<CounterData>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CounterData {
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TcpLifeData {
+    pub total_conns: u64,
+    pub short_lived: u64,
+    pub by_port: Vec<(u16, u64)>,
+    pub duration_hist: Option<HistogramData>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -96,10 +126,17 @@ pub fn load_and_attach() -> Result<BpfHandle, String> {
 
     // Load each probe - continue if one fails
     for (name, bytecode, tracepoints) in &[
+        // Tier 1: 24/7 probes
         ("tcp_retransmit", BPF_TCP_RETRANSMIT, vec![("trace_retransmit", "tcp", "tcp_retransmit_skb")]),
         ("biolatency", BPF_BIOLATENCY, vec![("trace_rq_issue", "block", "block_rq_issue"), ("trace_rq_complete", "block", "block_rq_complete")]),
         ("runqlat", BPF_RUNQLAT, vec![("trace_wakeup", "sched", "sched_wakeup"), ("trace_switch", "sched", "sched_switch")]),
         ("tcpdrop", BPF_TCPDROP, vec![("trace_kfree_skb", "skb", "kfree_skb")]),
+        ("oomkill", BPF_OOMKILL, vec![("trace_oom", "oom", "mark_victim")]),
+        ("execsnoop", BPF_EXECSNOOP, vec![("trace_exec", "sched", "sched_process_exec")]),
+        // Tier 2: differentiators
+        ("tcplife", BPF_TCPLIFE, vec![("trace_destroy", "tcp", "tcp_destroy_sock"), ("trace_synack", "tcp", "tcp_retransmit_synack")]),
+        ("tcpconnlat", BPF_TCPCONNLAT, vec![("trace_tcp_reset", "tcp", "tcp_receive_reset")]),
+        ("capable", BPF_CAPABLE, vec![("trace_cap_syscall", "raw_syscalls", "sys_enter")]),
     ] {
         match load_one(name, bytecode, tracepoints) {
             Ok((obj, obj_links)) => {
@@ -162,9 +199,14 @@ impl BpfHandle {
     pub fn read_snapshot(&self) -> ProbeSnapshot {
         ProbeSnapshot {
             retransmit: self.read_retransmit(),
-            biolatency: self.read_histogram("io_hist", 0),
-            runqlat: self.read_histogram("runq_hist", 1),
-            tcpdrop: self.read_drops(),
+            biolatency: self.read_histogram("io_hist", 1),   // obj index 1
+            runqlat: self.read_histogram("runq_hist", 2),     // obj index 2
+            tcpdrop: self.read_drops(),                       // obj index 3
+            oomkill: self.read_counter("oom_total", 4),       // obj index 4
+            execsnoop: self.read_counter("exec_total", 5),    // obj index 5
+            tcplife: self.read_tcplife(),                     // obj index 6
+            tcpconnlat: self.read_reset_map(),                // obj index 7
+            capable: self.read_counter("cap_total", 8),       // obj index 8
         }
     }
 
@@ -270,6 +312,81 @@ impl BpfHandle {
 
         Some(DropData { total, by_reason, top_reason })
     }
+
+    fn read_counter(&self, map_name: &str, obj_idx: usize) -> Option<CounterData> {
+        use libbpf_rs::MapCore;
+        let obj = self.objects.get(obj_idx)?;
+        let map = obj.maps().find(|m| m.name() == std::ffi::OsStr::new(map_name))?;
+        let key = 0u32.to_ne_bytes();
+        let val = map.lookup(&key, libbpf_rs::MapFlags::ANY).ok()??;
+        let total = u64::from_ne_bytes(val[..8].try_into().unwrap_or([0;8]));
+        Some(CounterData { total })
+    }
+
+    fn read_tcplife(&self) -> Option<TcpLifeData> {
+        use libbpf_rs::MapCore;
+        let obj = self.objects.get(6)?; // tcplife is index 6
+
+        // Total connections
+        let total_map = obj.maps().find(|m| m.name() == std::ffi::OsStr::new("conn_total"))?;
+        let key = 0u32.to_ne_bytes();
+        let total_conns = total_map.lookup(&key, libbpf_rs::MapFlags::ANY).ok()
+            .flatten()
+            .map(|v| u64::from_ne_bytes(v[..8].try_into().unwrap_or([0;8])))
+            .unwrap_or(0);
+
+        // Short-lived
+        let short_map = obj.maps().find(|m| m.name() == std::ffi::OsStr::new("short_conns"))?;
+        let short_lived = short_map.lookup(&key, libbpf_rs::MapFlags::ANY).ok()
+            .flatten()
+            .map(|v| u64::from_ne_bytes(v[..8].try_into().unwrap_or([0;8])))
+            .unwrap_or(0);
+
+        // By port
+        let port_map = obj.maps().find(|m| m.name() == std::ffi::OsStr::new("conn_by_port"))?;
+        let mut by_port = Vec::new();
+        for k in port_map.keys() {
+            if let Ok(Some(v)) = port_map.lookup(&k, libbpf_rs::MapFlags::ANY) {
+                if k.len() == 2 && v.len() == 8 {
+                    let port = u16::from_ne_bytes([k[0], k[1]]);
+                    let count = u64::from_ne_bytes(v[..8].try_into().unwrap_or([0;8]));
+                    by_port.push((port, count));
+                }
+            }
+        }
+        by_port.sort_by(|a, b| b.1.cmp(&a.1));
+
+        Some(TcpLifeData { total_conns, short_lived, by_port, duration_hist: self.read_histogram("conn_duration", 6) })
+    }
+
+    fn read_reset_map(&self) -> Option<RetransmitData> {
+        use libbpf_rs::MapCore;
+        let obj = self.objects.get(7)?; // tcpconnlat is index 7
+        let map = obj.maps().find(|m| m.name() == std::ffi::OsStr::new("reset_by_dest"))?;
+
+        let mut by_dest = Vec::new();
+        let mut total: u64 = 0;
+
+        for key in map.keys() {
+            if let Ok(Some(val)) = map.lookup(&key, libbpf_rs::MapFlags::ANY) {
+                if key.len() == 4 && val.len() == 8 {
+                    let ip_raw = u32::from_ne_bytes([key[0], key[1], key[2], key[3]]);
+                    let count = u64::from_ne_bytes(val[..8].try_into().unwrap_or([0;8]));
+                    total += count;
+                    by_dest.push((Ipv4Addr::from(ip_raw).to_string(), count));
+                }
+            }
+        }
+
+        by_dest.sort_by(|a, b| b.1.cmp(&a.1));
+        let dest_count = by_dest.len();
+        let is_link_issue = dest_count >= 3;
+        let diagnosis = if total == 0 { "No resets".into() }
+            else if is_link_issue { format!("RESETS to {} destinations", dest_count) }
+            else { format!("Resets to {}", by_dest.first().map(|(ip,_)| ip.as_str()).unwrap_or("?")) };
+
+        Some(RetransmitData { total, by_dest, dest_count, is_link_issue, diagnosis })
+    }
 }
 
 #[cfg(not(feature = "ebpf"))]
@@ -279,4 +396,5 @@ pub fn load_and_attach() -> Result<(), String> {
 
 pub fn bytecode_size() -> usize {
     BPF_TCP_RETRANSMIT.len() + BPF_BIOLATENCY.len() + BPF_RUNQLAT.len() + BPF_TCPDROP.len()
+    + BPF_OOMKILL.len() + BPF_EXECSNOOP.len() + BPF_TCPLIFE.len() + BPF_TCPCONNLAT.len() + BPF_CAPABLE.len()
 }
