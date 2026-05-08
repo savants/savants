@@ -59,7 +59,7 @@ jobs:
       - name: API contract validation
         run: ./scripts/contract-test.sh https://api.savants.cloud
 
-  # Layer 4: E2E golden paths (<60s)
+  # Layer 4: E2E golden paths - API + tool tests (<60s)
   e2e-tests:
     name: E2E Golden Paths
     runs-on: ubuntu-latest
@@ -69,7 +69,27 @@ jobs:
       - name: Golden path tests
         run: ./scripts/e2e-test.sh
 
-  # Layer 5: Install flow test
+  # Layer 5: Browser E2E - every page, link, button (<120s)
+  browser-e2e:
+    name: Browser E2E
+    runs-on: ubuntu-latest
+    needs: [typecheck]
+    container:
+      image: node:22-bookworm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Chromium + Playwright
+        run: |
+          apt-get update -qq && apt-get install -y -qq chromium > /dev/null 2>&1
+          npm install playwright
+
+      - name: Run browser E2E tests
+        env:
+          CHROME_PATH: /usr/bin/chromium
+        run: node scripts/e2e-dashboard.js
+
+  # Layer 6: Install flow test
   install-test:
     name: Install Flow
     runs-on: ubuntu-latest
