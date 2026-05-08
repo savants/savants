@@ -768,7 +768,8 @@ tools.post("/call", async (c) => {
         error_message: (body.input.error_message as string) || (body.input.error as string) || (body.input.query as string) || "",
         file_path: (body.input.file_path as string) || undefined,
         sentry_event_id: (body.input.sentry_event_id as string) || undefined,
-        sentry_project: (body.input.sentry_project as string) || undefined,
+        sentry_project: (body.input.sentry_project as string) || (body.input.repo as string) || undefined,
+        repo: (body.input.repo as string) || (body.input.repo_name as string) || undefined,
       });
       proxyResult = result as unknown as Record<string, unknown>;
     } catch (err) {
