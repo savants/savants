@@ -68,20 +68,40 @@ agents.post("/register", async (c) => {
   return c.json({ agent_id: agentId, status: "registered" });
 });
 
-// GET /agents - List registered agents
+// GET /agents - List registered agents (deduplicated by hostname)
 agents.get("/", async (c) => {
   const auth = c.get("auth");
   const result = await c.env.DB.prepare(
     "SELECT id, name, hostname, os, arch, capabilities, last_heartbeat, version, status FROM agents WHERE org_id = ?1 ORDER BY last_heartbeat DESC"
   ).bind(auth.orgId).all();
 
-  return c.json({
-    agents: result.results.map((a: any) => ({
-      ...a,
-      capabilities: JSON.parse(a.capabilities || "[]"),
-      online: a.last_heartbeat && (Math.floor(Date.now() / 1000) - a.last_heartbeat) < 120,
-    })),
-  });
+  const now = Math.floor(Date.now() / 1000);
+  const all = result.results.map((a: any) => ({
+    ...a,
+    capabilities: JSON.parse(a.capabilities || "[]"),
+    online: a.last_heartbeat && (now - a.last_heartbeat) < 120,
+  }));
+
+  // Deduplicate by name/hostname: keep only the most recent per host
+  const byName = new Map<string, any>();
+  for (const a of all) {
+    const key = a.name || a.hostname || a.id;
+    const existing = byName.get(key);
+    if (!existing || (a.last_heartbeat || 0) > (existing.last_heartbeat || 0)) {
+      byName.set(key, a);
+    }
+  }
+
+  return c.json({ agents: Array.from(byName.values()) });
+});
+
+// DELETE /agents/:id - Remove a stale agent registration
+agents.delete("/:id", async (c) => {
+  const auth = c.get("auth");
+  const agentId = c.req.param("id");
+  await c.env.DB.prepare("DELETE FROM agents WHERE id = ?1 AND org_id = ?2")
+    .bind(agentId, auth.orgId).run();
+  return c.json({ ok: true });
 });
 
 // POST /agents/heartbeat - Agent sends heartbeat
