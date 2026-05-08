@@ -31,18 +31,23 @@ billing.get("/", async (c) => {
   const plan = (org.plan || "free") as keyof typeof PLANS;
   const limits = PLANS[plan] || PLANS.free;
 
-  // Get current usage
-  const nodeCount = await c.env.DB.prepare(
-    "SELECT COUNT(*) as c FROM graph_nodes WHERE project_id IN (SELECT id FROM projects WHERE org_id = ?1)"
-  ).bind(auth.orgId).first<{ c: number }>();
-
-  const agentCount = await c.env.DB.prepare(
-    "SELECT COUNT(*) as c FROM agents WHERE org_id = ?1"
-  ).bind(auth.orgId).first<{ c: number }>();
-
-  const userCount = await c.env.DB.prepare(
-    "SELECT COUNT(*) as c FROM users WHERE org_id = ?1"
-  ).bind(auth.orgId).first<{ c: number }>();
+  // Get current usage (queries may fail if tables don't exist yet)
+  let nodeCount = { c: 0 }, agentCount = { c: 0 }, userCount = { c: 0 };
+  try {
+    nodeCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as c FROM graph_nodes WHERE project_id IN (SELECT id FROM projects WHERE org_id = ?1)"
+    ).bind(auth.orgId).first<{ c: number }>() || { c: 0 };
+  } catch { /* table may not exist */ }
+  try {
+    agentCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as c FROM agents WHERE org_id = ?1"
+    ).bind(auth.orgId).first<{ c: number }>() || { c: 0 };
+  } catch { /* table may not exist */ }
+  try {
+    userCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as c FROM users WHERE org_id = ?1"
+    ).bind(auth.orgId).first<{ c: number }>() || { c: 0 };
+  } catch { /* table may not exist */ }
 
   let subscription = null;
   if (org.stripe_subscription_id) {
@@ -209,12 +214,14 @@ billing.get("/limits", async (c) => {
 
   // Check node limit (-1 = unlimited)
   if (limits.nodes > 0) {
-    const nodeCount = await c.env.DB.prepare(
-      "SELECT COUNT(*) as c FROM graph_nodes WHERE project_id IN (SELECT id FROM projects WHERE org_id = ?1)"
-    ).bind(auth.orgId).first<{ c: number }>();
-    if ((nodeCount?.c || 0) > limits.nodes) {
-      return c.json({ allowed: false, reason: `Graph node limit exceeded (${nodeCount?.c}/${limits.nodes}). Upgrade at https://savants.dev/pricing` });
-    }
+    try {
+      const nodeCount = await c.env.DB.prepare(
+        "SELECT COUNT(*) as c FROM graph_nodes WHERE project_id IN (SELECT id FROM projects WHERE org_id = ?1)"
+      ).bind(auth.orgId).first<{ c: number }>();
+      if ((nodeCount?.c || 0) > limits.nodes) {
+        return c.json({ allowed: false, reason: `Graph node limit exceeded (${nodeCount?.c}/${limits.nodes}). Upgrade at https://savants.dev/pricing` });
+      }
+    } catch { /* table may not exist yet */ }
   }
 
   return c.json({ allowed: true, plan, limits });
