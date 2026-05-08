@@ -1236,6 +1236,13 @@ struct Finding {
 fn watch_health() -> Vec<Finding> {
     let mut findings = Vec::new();
 
+    // Suppress noisy findings during boot (uptime < 10 min)
+    let uptime_secs = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok())
+        .unwrap_or(9999.0);
+    let booting = uptime_secs < 600.0;
+
     // ── Kernel probes (process exec, network connections, FD pressure) ──
     findings.extend(watch_kernel());
 
@@ -1415,6 +1422,18 @@ fn watch_health() -> Vec<Finding> {
             }
         }
     }
+
+    // Boot suppression: during first 10 min, suppress noisy post-reboot findings
+    if booting {
+        let boot_noise = [
+            "service_errors_k3s", "ebpf_tcpdrop", "ebpf_tcp_resets",
+            "dmesg_new_errors", "dmesg_network_events",
+        ];
+        findings.retain(|f| !boot_noise.iter().any(|n| f.key.starts_with(n)));
+    }
+
+    // Suppress known-good noise: EFI vars (tiny filesystem, always ~93%)
+    findings.retain(|f| !f.message.contains("efivars"));
 
     findings
 }

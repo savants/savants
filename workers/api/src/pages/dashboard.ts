@@ -432,6 +432,15 @@ export function overviewPage(): string {
   const content = `
       <div id="alert-box" class="alert"></div>
 
+      <!-- Health Score Badge -->
+      <div id="health-badge" style="margin-bottom:24px;padding:20px 28px;border-radius:16px;border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;gap:16px">
+        <div id="health-dot" style="width:14px;height:14px;border-radius:50%;background:var(--muted);flex-shrink:0"></div>
+        <div style="flex:1">
+          <div id="health-title" style="font-weight:600;font-size:1rem;color:var(--fg)">Loading...</div>
+          <div id="health-subtitle" style="font-size:0.82rem;color:var(--muted);margin-top:2px"></div>
+        </div>
+      </div>
+
       <!-- Projects -->
       <div class="card" style="margin-bottom:24px">
         <div class="card-header">
@@ -473,6 +482,7 @@ export function overviewPage(): string {
           <div class="card" style="margin-bottom:24px">
             <div class="card-header">
               <div class="card-title">Recent Findings</div>
+              <label style="font-size:0.75rem;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="show-info" style="accent-color:var(--accent)"> Show info</label>
             </div>
             <div class="activity-feed" id="findings-feed">
               <div class="activity-item"><div class="skeleton" style="width:100%;height:40px;border-radius:8px"></div></div>
@@ -510,6 +520,15 @@ export function overviewPage(): string {
     el.innerHTML = r.data.projects.map(function(p) {
       var sources = p.source_count || 0;
       var members = p.member_count || 0;
+      // Show setup CTA for empty projects
+      if (sources === 0 && members === 0) {
+        return '<a href="/dashboard/project/' + (p.slug || p.id) + '" class="activity-item" style="padding:12px 0;border-bottom:1px solid var(--border);text-decoration:none;display:flex;cursor:pointer;opacity:0.6">' +
+          '<div style="flex:1">' +
+            '<div style="font-weight:600;color:var(--fg)">' + p.name + '</div>' +
+            '<div style="font-size:0.8rem;color:var(--accent);margin-top:2px">Set up this project &#8594;</div>' +
+          '</div>' +
+        '</a>';
+      }
       return '<a href="/dashboard/project/' + (p.slug || p.id) + '" class="activity-item" style="padding:12px 0;border-bottom:1px solid var(--border);text-decoration:none;display:flex;cursor:pointer">' +
         '<div style="flex:1">' +
           '<div style="font-weight:600;color:var(--fg)">' + p.name + '</div>' +
@@ -520,14 +539,23 @@ export function overviewPage(): string {
     }).join('');
   });
 
-  // Load agents
+  // Load agents (deduplicate by hostname - show only the most recent registration)
   apiFetch('/api/v1/agents').then(function(r) {
     var el = document.getElementById('agents-list');
     if (!r.ok || !r.data.agents || r.data.agents.length === 0) {
       el.innerHTML = '<div class="empty-state" style="padding:16px 0;text-align:center"><p style="font-size:0.85rem;color:var(--muted)">No agents running.</p><p style="margin-top:8px"><code style="background:var(--surface);padding:4px 8px;border-radius:4px;font-size:0.8rem">savants agent start</code></p></div>';
       return;
     }
-    el.innerHTML = r.data.agents.map(function(a) {
+    // Deduplicate: keep only the latest agent per hostname
+    var byName = {};
+    r.data.agents.forEach(function(a) {
+      var key = a.name || a.hostname || a.id;
+      if (!byName[key] || a.last_heartbeat > (byName[key].last_heartbeat || 0)) {
+        byName[key] = a;
+      }
+    });
+    var agents = Object.values(byName);
+    el.innerHTML = agents.map(function(a) {
       var online = a.online;
       var dotClass = online ? 'green' : 'gray';
       var caps = (a.capabilities || []).length;
@@ -554,31 +582,110 @@ export function overviewPage(): string {
     el.innerHTML = types.map(function(type) {
       var isOn = connected[type];
       var dotClass = isOn ? 'green' : 'gray';
-      return '<div class="activity-item" style="padding:4px 0"><div class="status-dot '+dotClass+'"></div><div class="activity-text" style="text-transform:capitalize">'+type+'</div><div style="font-size:0.75rem;color:var(--muted)">'+(isOn ? 'Connected' : '-')+'</div></div>';
+      var label = isOn ? '<span style="color:var(--success)">Connected</span>' : '<a href="/dashboard/integrations" style="font-size:0.75rem;color:var(--accent);text-decoration:none">Set up</a>';
+      return '<div class="activity-item" style="padding:4px 0"><div class="status-dot '+dotClass+'"></div><div class="activity-text" style="text-transform:capitalize">'+type+'</div><div style="font-size:0.75rem">'+label+'</div></div>';
     }).join('');
   });
 
+  // Noise suppression: known-good patterns to filter out
+  var NOISE_PATTERNS = [
+    /efivars.*9[0-9]%/i,                    // EFI vars always ~93%
+    /NOT_SPECIFIED\(\d+\)/i,                 // generic TCP cleanup
+    /169\.254\.169\.254/i,                   // cloud metadata on non-cloud host
+  ];
+
+  function humanizeTitle(title, msg) {
+    // Translate cryptic eBPF output to human language
+    if (/kernel packet drops.*NOT_SPECIFIED/i.test(msg)) {
+      var m = msg.match(/(\d+) packets/);
+      return 'Normal TCP cleanup (' + (m ? m[1] : '') + ' connections recycled)';
+    }
+    return title;
+  }
+
+  function smartTimestamp(ts) {
+    var sec = Math.round(Date.now()/1000 - ts);
+    if (sec < 10) return 'just now';
+    if (sec < 60) return sec + 's ago';
+    if (sec < 3600) return Math.round(sec/60) + 'm ago';
+    if (sec < 86400) return Math.round(sec/3600) + 'h ago';
+    return Math.round(sec/86400) + 'd ago';
+  }
+
   // Load recent agent findings
-  apiFetch('/api/v1/agents/events?limit=10').then(function(r) {
+  var allFindings = [];
+  apiFetch('/api/v1/agents/events?limit=20').then(function(r) {
     var el = document.getElementById('findings-feed');
     if (!r.ok || !r.data.events || r.data.events.length === 0) {
       el.innerHTML = '<div class="empty-state" style="padding:16px 0;text-align:center"><p style="font-size:0.85rem;color:var(--muted)">No findings yet. Agent will report issues automatically.</p></div>';
+      updateHealthBadge([]);
       return;
     }
-    el.innerHTML = r.data.events.map(function(e) {
+    allFindings = r.data.events;
+
+    // Suppress noise
+    allFindings = allFindings.filter(function(e) {
+      var text = (e.title || '') + ' ' + (e.message || '');
+      return !NOISE_PATTERNS.some(function(p) { return p.test(text); });
+    });
+
+    renderFindings();
+    updateHealthBadge(allFindings);
+  });
+
+  function renderFindings() {
+    var el = document.getElementById('findings-feed');
+    var showInfo = document.getElementById('show-info').checked;
+    var filtered = allFindings.filter(function(e) {
+      return showInfo || e.severity === 'critical' || e.severity === 'warning';
+    });
+    if (filtered.length === 0) {
+      el.innerHTML = '<div style="padding:16px 0;text-align:center;font-size:0.85rem;color:var(--muted)">All clear - no warnings or critical issues.</div>';
+      return;
+    }
+    el.innerHTML = filtered.slice(0, 10).map(function(e) {
       var icon = e.severity === 'critical' ? '&#128308;' : e.severity === 'warning' ? '&#128992;' : '&#128309;';
-      var ago = Math.round((Date.now()/1000 - e.timestamp) / 60);
-      var agoText = ago < 60 ? ago + 'm ago' : Math.round(ago/60) + 'h ago';
+      var title = humanizeTitle(e.title || '', e.message || '');
       return '<div class="activity-item" style="padding:8px 0">' +
         '<div style="font-size:1.1rem">' + icon + '</div>' +
         '<div style="flex:1">' +
-          '<div class="activity-text" style="font-size:0.85rem">' + (e.title || '').substring(0,60) + '</div>' +
+          '<div class="activity-text" style="font-size:0.85rem">' + title.substring(0,70) + '</div>' +
           '<div style="font-size:0.75rem;color:var(--muted)">' + (e.agent || '') + ' - ' + (e.category || '') + '</div>' +
         '</div>' +
-        '<div style="font-size:0.75rem;color:var(--muted)">' + agoText + '</div>' +
+        '<div style="font-size:0.75rem;color:var(--muted)">' + smartTimestamp(e.timestamp) + '</div>' +
       '</div>';
     }).join('');
-  });
+  }
+
+  document.getElementById('show-info').addEventListener('change', renderFindings);
+
+  // Health score badge
+  function updateHealthBadge(events) {
+    var dot = document.getElementById('health-dot');
+    var title = document.getElementById('health-title');
+    var sub = document.getElementById('health-subtitle');
+    var crits = events.filter(function(e) { return e.severity === 'critical'; }).length;
+    var warns = events.filter(function(e) { return e.severity === 'warning'; }).length;
+    if (crits > 0) {
+      dot.style.background = 'var(--danger)';
+      dot.style.boxShadow = '0 0 8px var(--danger)';
+      title.textContent = crits + ' critical issue' + (crits > 1 ? 's' : '') + ' detected';
+      title.style.color = 'var(--danger)';
+      sub.textContent = (warns > 0 ? warns + ' warnings. ' : '') + 'Check findings below for details.';
+    } else if (warns > 0) {
+      dot.style.background = 'var(--warning)';
+      dot.style.boxShadow = '0 0 8px var(--warning)';
+      title.textContent = warns + ' warning' + (warns > 1 ? 's' : '');
+      title.style.color = 'var(--warning)';
+      sub.textContent = 'No critical issues. Review warnings below.';
+    } else {
+      dot.style.background = 'var(--success)';
+      dot.style.boxShadow = '0 0 8px var(--success)';
+      title.textContent = 'All systems operational';
+      title.style.color = 'var(--success)';
+      sub.textContent = 'No issues detected across all agents.';
+    }
+  }
 })();
 </script>
 `;
