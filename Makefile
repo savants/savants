@@ -90,7 +90,12 @@ install: build
 mcp:
 	@savants mcp install 2>/dev/null || echo "Run 'savants mcp install' manually"
 
+# E2E test: hit every page, API, link, button. Screenshots in /tmp/e2e-*.png
+test:
+	@echo "Running E2E tests..."
+	@node scripts/e2e-dashboard.js
+
 clean:
 	@cd savants-cli && cargo clean
-	@rm -f savants-cli/ebpf/tcp_retransmit.bpf.o
+	@rm -f savants-cli/ebpf/*.bpf.o
 	@echo "Cleaned."
