@@ -11,17 +11,15 @@ jobs:
   deploy:
     name: Deploy to Cloudflare Pages
     runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Node.js 22
-        run: |
-          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-          apt-get install -y nodejs
 
       - name: Build website
         working-directory: website
         run: |
+          node --version
           npm install
           npx astro build
 
