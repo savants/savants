@@ -33,4 +33,5 @@ jobs:
         run: |
           npx wrangler pages deploy dist/ \
             --project-name=savants-dev \
-            --branch=main
+            --branch=main \
+            --commit-dirty=true
