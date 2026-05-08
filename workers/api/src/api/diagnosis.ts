@@ -305,15 +305,29 @@ function formatNode(n: any): string {
 
 function extractFunctionNames(msg: string): string[] {
   const names: string[] = [];
-  // Match camelCase/snake_case identifiers that look like function names
-  const matches = msg.match(/\b([a-z][a-zA-Z0-9_]{5,})\b/g) || [];
-  for (const m of matches) {
-    // Skip common words
-    if (["string", "number", "object", "function", "return", "import", "export",
-         "require", "module", "undefined", "tokens", "baseline", "current",
-         "company", "increase", "because", "should", "unusual"].includes(m.toLowerCase())) continue;
+
+  // Priority 1: Exact camelCase function names (has uppercase letter after lowercase)
+  const camelCase = msg.match(/\b([a-z][a-zA-Z]*[A-Z][a-zA-Z]*)\b/g) || [];
+  for (const m of camelCase) {
+    if (m.length >= 6 && !names.includes(m)) names.push(m);
+  }
+
+  // Priority 2: snake_case identifiers with underscores
+  const snakeCase = msg.match(/\b([a-z][a-z0-9]*(?:_[a-z0-9]+){2,})\b/g) || [];
+  for (const m of snakeCase) {
     if (!names.includes(m)) names.push(m);
   }
+
+  // Priority 3: Other long identifiers (but lower priority)
+  const other = msg.match(/\b([a-z][a-zA-Z0-9_]{7,})\b/g) || [];
+  const skip = new Set(["string", "number", "object", "function", "return", "import", "export",
+    "require", "module", "undefined", "tokens", "baseline", "current", "company", "increase",
+    "because", "should", "unusual", "candidate", "candidates", "evaluation", "external",
+    "piedmont", "anthropic", "screening", "personalize"]);
+  for (const m of other) {
+    if (!skip.has(m.toLowerCase()) && !names.includes(m)) names.push(m);
+  }
+
   return names;
 }
 
