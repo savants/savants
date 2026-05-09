@@ -103,7 +103,19 @@ impl CloudProxyServer {
                 let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
-                // Forward to cloud API
+                // Local tools: run from cached index, not cloud
+                // semantic_search works locally via embedding cache
+                // git_blame/git_log work locally via git commands
+                let local_tools = ["semantic_search", "git_blame", "git_log", "reindex", "session_stats"];
+
+                if local_tools.contains(&tool_name) {
+                    let result = self.run_local_tool(tool_name, &arguments);
+                    return Some(self.response(&req_id, json!({
+                        "content": [{"type": "text", "text": result}]
+                    })));
+                }
+
+                // Cloud tools: forward to cloud API
                 let body = json!({
                     "tool": tool_name,
                     "arguments": arguments,
@@ -178,6 +190,106 @@ impl CloudProxyServer {
         }
         serde_json::from_slice(&output.stdout)
             .map_err(|e| format!("parse failed: {}", e))
+    }
+
+    /// Run a code tool locally using the cached index.
+    fn run_local_tool(&self, tool_name: &str, args: &Value) -> String {
+        let repo_path = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
+
+        // Detect repo name from git remote or directory name
+        let repo_name = args.get("repo")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                if let Ok(output) = std::process::Command::new("git")
+                    .args(["remote", "get-url", "origin"])
+                    .current_dir(&repo_path)
+                    .output()
+                {
+                    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if let Some(name) = url.rsplit('/').next() {
+                        return name.trim_end_matches(".git").to_string();
+                    }
+                }
+                std::path::Path::new(&repo_path)
+                    .file_name().unwrap_or_default()
+                    .to_string_lossy().to_string()
+            });
+
+        match tool_name {
+            "semantic_search" => {
+                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+                if !crate::embedding_store::EmbeddingStore::exists(&repo_name) {
+                    return format!("No index for '{}'. Run: savants reindex", repo_name);
+                }
+
+                let store = match crate::embedding_store::EmbeddingStore::load(&repo_name) {
+                    Ok(s) => s,
+                    Err(e) => return format!("Failed to load index: {}", e),
+                };
+
+                // Generate query embedding
+                let query_emb = match crate::embeddings::EmbeddingEngine::new() {
+                    Ok(mut engine) => match engine.embed(&[query.to_string()]) {
+                        Ok(embs) if !embs.is_empty() => embs[0].clone(),
+                        Ok(_) => return format!("Embedding returned empty for '{}'", query),
+                        Err(e) => return format!("Embedding failed: {}", e),
+                    },
+                    Err(e) => return format!("Embedding engine failed: {}", e),
+                };
+
+                let results = store.search(&query_emb, limit);
+                if results.is_empty() {
+                    return format!("No results for '{}'", query);
+                }
+                let mut lines = vec![format!("=== Semantic search: '{}' ({} results) ===", query, results.len())];
+                for (idx, score) in &results {
+                    if let Some(entry) = store.entries.get(*idx) {
+                        lines.push(format!("  {}:{} {}() [{:.3}]", entry.file, entry.line, entry.name, score));
+                    }
+                }
+                lines.join("\n")
+            }
+            "git_blame" => {
+                let file = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                let start = args.get("line_start").and_then(|v| v.as_u64()).unwrap_or(1);
+                let end = args.get("line_end").and_then(|v| v.as_u64()).unwrap_or(start + 20);
+                let output = std::process::Command::new("git")
+                    .args(["blame", "-L", &format!("{},{}", start, end), "--porcelain", file])
+                    .current_dir(&repo_path)
+                    .output();
+                match output {
+                    Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+                    Err(e) => format!("git blame failed: {}", e),
+                }
+            }
+            "git_log" => {
+                let file = args.get("file").and_then(|v| v.as_str());
+                let n = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10);
+                let mut cmd_args = vec!["log", "--oneline", "-n"];
+                let n_str = n.to_string();
+                cmd_args.push(&n_str);
+                if let Some(f) = file {
+                    cmd_args.push("--");
+                    cmd_args.push(f);
+                }
+                let output = std::process::Command::new("git")
+                    .args(&cmd_args)
+                    .current_dir(&repo_path)
+                    .output();
+                match output {
+                    Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+                    Err(e) => format!("git log failed: {}", e),
+                }
+            }
+            "session_stats" => {
+                format!("Repo: {}\nPath: {}\nIndex: {}", repo_name, repo_path,
+                    if crate::embedding_store::EmbeddingStore::exists(&repo_name) { "cached" } else { "not indexed" })
+            }
+            _ => format!("Tool '{}' not available locally", tool_name),
+        }
     }
 
     fn response(&self, id: &Value, result: Value) -> Value {
