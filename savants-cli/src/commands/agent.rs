@@ -2182,6 +2182,78 @@ fn watch_logs() -> Vec<Finding> {
 fn watch_network() -> Vec<Finding> {
     let mut findings = Vec::new();
 
+    // 0. Gateway + upstream probe: WHERE are packets dying?
+    // This is the missing piece for root cause - is it WiFi, router, or ISP?
+    let gateway = std::fs::read_to_string("/proc/net/route").ok()
+        .and_then(|r| r.lines().skip(1).find(|l| {
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            parts.len() > 2 && parts[1] == "00000000" // default route
+        }).and_then(|l| {
+            let hex = l.split_whitespace().nth(2)?;
+            if hex.len() == 8 {
+                let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                let c = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let d = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                Some(format!("{}.{}.{}.{}", a, b, c, d))
+            } else { None }
+        }));
+
+    if let Some(ref gw) = gateway {
+        // Ping gateway (1 packet, 2s timeout)
+        let gw_ping = std::process::Command::new("ping")
+            .args(["-c", "1", "-W", "2", gw])
+            .output();
+        let gw_ok = gw_ping.map(|o| o.status.success()).unwrap_or(false);
+
+        // Ping external (1.1.1.1)
+        let ext_ping = std::process::Command::new("ping")
+            .args(["-c", "1", "-W", "2", "1.1.1.1"])
+            .output();
+        let ext_ok = ext_ping.map(|o| o.status.success()).unwrap_or(false);
+
+        // WiFi signal
+        let signal = std::fs::read_to_string("/proc/net/wireless").ok()
+            .and_then(|w| w.lines().last().and_then(|l| {
+                l.split_whitespace().nth(3).and_then(|s| s.trim_end_matches('.').parse::<i32>().ok())
+            }));
+
+        if !gw_ok {
+            findings.push(Finding {
+                key: "gateway_unreachable".into(),
+                severity: "critical".into(),
+                category: "network".into(),
+                title: format!("Gateway {} unreachable - WiFi/AP issue", gw),
+                message: format!(
+                    "Cannot ping gateway {}. Packets dying between this host and the access point. \
+                    WiFi signal: {} dBm. This is a local link issue, not ISP.",
+                    gw, signal.unwrap_or(0)
+                ),
+                metadata: serde_json::json!({
+                    "gateway": gw, "gateway_reachable": false, "external_reachable": false,
+                    "signal_dbm": signal, "diagnosis": "WiFi/AP issue",
+                }),
+            });
+        } else if !ext_ok {
+            findings.push(Finding {
+                key: "upstream_unreachable".into(),
+                severity: "critical".into(),
+                category: "network".into(),
+                title: "ISP/upstream unreachable - gateway OK but internet down".into(),
+                message: format!(
+                    "Gateway {} responds but 1.1.1.1 is unreachable. \
+                    Packets pass the WiFi/AP but die upstream. This is an ISP issue. \
+                    WiFi signal: {} dBm (not the problem).",
+                    gw, signal.unwrap_or(0)
+                ),
+                metadata: serde_json::json!({
+                    "gateway": gw, "gateway_reachable": true, "external_reachable": false,
+                    "signal_dbm": signal, "diagnosis": "ISP/upstream issue",
+                }),
+            });
+        }
+    }
+
     // 1. DNS resolution health - test actual resolution
     let dns_targets = ["google.com", "cloudflare.com", "github.com"];
     let mut dns_failures = 0;
