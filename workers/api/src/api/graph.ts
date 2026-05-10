@@ -384,13 +384,10 @@ graph.post("/parse-result", async (c) => {
   const projectId = project.id;
   const now = Math.floor(Date.now() / 1000);
 
-  // Clear existing code nodes for this project
-  await c.env.DB
-    .prepare("DELETE FROM graph_edges WHERE project_id = ?1")
-    .bind(projectId).run();
-  await c.env.DB
-    .prepare("DELETE FROM graph_nodes WHERE project_id = ?1 AND source_type = 'code'")
-    .bind(projectId).run();
+  // NOTE: We delete AFTER successful insert to prevent data loss on failed uploads.
+  // If the agent disconnects mid-upload, we keep the old data.
+  const staleEdgeDelete = c.env.DB.prepare("DELETE FROM graph_edges WHERE project_id = ?1").bind(projectId);
+  const staleNodeDelete = c.env.DB.prepare("DELETE FROM graph_nodes WHERE project_id = ?1 AND source_type = 'code'").bind(projectId);
 
   // Build node ID map: "file:name" -> uuid
   const nodeIdMap = new Map<string, string>();
@@ -438,12 +435,7 @@ graph.post("/parse-result", async (c) => {
     nodeCount++;
   }
 
-  // Execute node inserts in batches of 50
-  for (let i = 0; i < nodeStmts.length; i += 50) {
-    await c.env.DB.batch(nodeStmts.slice(i, i + 50));
-  }
-
-  // Insert edges from call_sites
+  // Build edge statements
   let edgeCount = 0;
   const edgeStmts = [];
   for (const cs of body.call_sites || []) {
@@ -466,7 +458,6 @@ graph.post("/parse-result", async (c) => {
   for (const entity of body.entities) {
     if (entity.kind === "import" && entity.import_source) {
       const importerId = nodeIdMap.get(`${entity.file}:${entity.name}`) || nodeIdMap.get(entity.name);
-      // Find target by import_source filename
       for (const importedName of entity.import_names || []) {
         const targetId = nodeIdMap.get(importedName);
         if (importerId && targetId && importerId !== targetId) {
@@ -482,7 +473,18 @@ graph.post("/parse-result", async (c) => {
     }
   }
 
-  // Execute edge inserts in batches
+  // Atomic transaction: delete old data + insert new data in batches
+  // First batch: delete old edges + nodes, then insert first chunk of nodes
+  // This prevents data loss if the upload fails mid-way.
+  const firstBatch = [staleEdgeDelete, staleNodeDelete, ...nodeStmts.slice(0, 48)];
+  await c.env.DB.batch(firstBatch);
+
+  // Remaining node inserts
+  for (let i = 48; i < nodeStmts.length; i += 50) {
+    await c.env.DB.batch(nodeStmts.slice(i, i + 50));
+  }
+
+  // Edge inserts
   for (let i = 0; i < edgeStmts.length; i += 50) {
     await c.env.DB.batch(edgeStmts.slice(i, i + 50));
   }
