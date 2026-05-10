@@ -114,15 +114,41 @@ pub async fn start(name: Option<String>) {
         }
     };
 
-    // Discover git repos to watch
-    let repos = discover_git_repos();
+    // Fetch cloud project list - only index repos that have a matching cloud project
+    let cloud_projects: Vec<String> = match client
+        .get(format!("{}/api/v1/projects", cloud_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            body["projects"].as_array().unwrap_or(&vec![])
+                .iter()
+                .filter_map(|p| p["slug"].as_str().or(p["name"].as_str()).map(|s| s.to_lowercase()))
+                .collect()
+        }
+        _ => vec![],
+    };
+
+    // Discover git repos and filter to only cloud-registered projects
+    let all_repos = discover_git_repos();
+    let repos: Vec<std::path::PathBuf> = all_repos.into_iter().filter(|r| {
+        let name = r.file_name().map(|f| f.to_string_lossy().to_lowercase()).unwrap_or_default();
+        cloud_projects.contains(&name)
+    }).collect();
+
     if !repos.is_empty() {
-        println!("  Watching {} repos:", repos.len());
+        println!("  Indexing {} repos (matched to cloud projects):", repos.len());
         for r in &repos {
             println!("    {}", r.display());
         }
     }
-    // Load last-known heads from cache, or empty (triggers initial index)
+    if !cloud_projects.is_empty() && repos.is_empty() {
+        println!("  Cloud projects: {:?} (no matching local repos found)", cloud_projects);
+    }
+
+    // Load last-known heads from cache, or empty (triggers initial full upload)
     let heads_cache = dirs::home_dir()
         .unwrap_or_default()
         .join(".savants")
@@ -131,6 +157,10 @@ pub async fn start(name: Option<String>) {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
+    let initial_upload = repo_heads.is_empty();
+    if initial_upload && !repos.is_empty() {
+        println!("  First run: will upload {} repos to cloud graph", repos.len());
+    }
 
     // ── eBPF: try to load probes (auto-fallback if unavailable) ──
     // Must store the handle to keep the BPF program alive and read maps.
@@ -2887,8 +2917,11 @@ fn discover_git_repos() -> Vec<std::path::PathBuf> {
     let mut repos = Vec::new();
 
     // Check common locations
+    // When running as root (for eBPF), also check SUDO_USER's home
     let home = dirs::home_dir().unwrap_or_default();
-    let search_dirs = vec![
+    let sudo_home = std::env::var("SUDO_USER").ok()
+        .map(|u| std::path::PathBuf::from(format!("/home/{}", u)));
+    let mut search_dirs = vec![
         home.join("git"),
         home.join("projects"),
         home.join("src"),
@@ -2896,6 +2929,11 @@ fn discover_git_repos() -> Vec<std::path::PathBuf> {
         std::path::PathBuf::from("/opt"),
         std::path::PathBuf::from("/srv"),
     ];
+    if let Some(ref sh) = sudo_home {
+        search_dirs.insert(0, sh.join("git"));
+        search_dirs.insert(1, sh.join("projects"));
+        search_dirs.insert(2, sh.join("src"));
+    }
 
     for dir in search_dirs {
         if !dir.exists() { continue; }
