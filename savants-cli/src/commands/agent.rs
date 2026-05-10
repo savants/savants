@@ -2179,15 +2179,46 @@ fn watch_logs() -> Vec<Finding> {
     findings
 }
 
+/// Ping a host N times, return (loss%, avg_ms, max_ms)
+fn ping_stats(host: &str, count: u32) -> (f64, f64, f64) {
+    let output = std::process::Command::new("ping")
+        .args(["-c", &count.to_string(), "-W", "2", "-i", "0.2", host])
+        .output();
+    match output {
+        Ok(o) => {
+            let raw = String::from_utf8_lossy(&o.stdout);
+            // Parse "X% packet loss"
+            let loss = raw.lines()
+                .find(|l| l.contains("packet loss"))
+                .and_then(|l| l.split_whitespace()
+                    .find(|w| w.ends_with('%'))
+                    .and_then(|w| w.trim_end_matches('%').parse::<f64>().ok()))
+                .unwrap_or(if o.status.success() { 0.0 } else { 100.0 });
+            // Parse "rtt min/avg/max/mdev = X/Y/Z/W ms"
+            let (avg, max) = raw.lines()
+                .find(|l| l.contains("rtt") || l.contains("round-trip"))
+                .and_then(|l| {
+                    let nums = l.split('=').nth(1)?.trim().split('/').collect::<Vec<_>>();
+                    let avg = nums.get(1).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0);
+                    let max = nums.get(2).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0);
+                    Some((avg, max))
+                })
+                .unwrap_or((0.0, 0.0));
+            (loss, avg, max)
+        }
+        Err(_) => (100.0, 0.0, 0.0),
+    }
+}
+
 fn watch_network() -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    // 0. Gateway + upstream probe: WHERE are packets dying?
-    // This is the missing piece for root cause - is it WiFi, router, or ISP?
+    // 0. Network path probe: gateway jitter + packet loss + WiFi channel health
+    // Uses 5 pings (not 1) to catch micro-burst loss. Measures RTT jitter.
     let gateway = std::fs::read_to_string("/proc/net/route").ok()
         .and_then(|r| r.lines().skip(1).find(|l| {
             let parts: Vec<&str> = l.split_whitespace().collect();
-            parts.len() > 2 && parts[1] == "00000000" // default route
+            parts.len() > 2 && parts[1] == "00000000"
         }).and_then(|l| {
             let hex = l.split_whitespace().nth(2)?;
             if hex.len() == 8 {
@@ -2199,58 +2230,128 @@ fn watch_network() -> Vec<Finding> {
             } else { None }
         }));
 
+    // WiFi signal + quality
+    let (signal_dbm, link_quality) = std::fs::read_to_string("/proc/net/wireless").ok()
+        .and_then(|w| w.lines().last().and_then(|l| {
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            let quality = parts.get(2).and_then(|s| s.trim_end_matches('.').parse::<i32>().ok()).unwrap_or(0);
+            let signal = parts.get(3).and_then(|s| s.trim_end_matches('.').parse::<i32>().ok()).unwrap_or(0);
+            Some((signal, quality))
+        })).unwrap_or((0, 0));
+
     if let Some(ref gw) = gateway {
-        // Ping gateway (1 packet, 2s timeout)
-        let gw_ping = std::process::Command::new("ping")
-            .args(["-c", "1", "-W", "2", gw])
-            .output();
-        let gw_ok = gw_ping.map(|o| o.status.success()).unwrap_or(false);
+        // 5 pings to gateway (catches micro-burst loss that 1 ping misses)
+        let (gw_loss, gw_avg, gw_max) = ping_stats(gw, 5);
+        let (ext_loss, ext_avg, ext_max) = ping_stats("1.1.1.1", 5);
 
-        // Ping external (1.1.1.1)
-        let ext_ping = std::process::Command::new("ping")
-            .args(["-c", "1", "-W", "2", "1.1.1.1"])
-            .output();
-        let ext_ok = ext_ping.map(|o| o.status.success()).unwrap_or(false);
-
-        // WiFi signal
-        let signal = std::fs::read_to_string("/proc/net/wireless").ok()
-            .and_then(|w| w.lines().last().and_then(|l| {
-                l.split_whitespace().nth(3).and_then(|s| s.trim_end_matches('.').parse::<i32>().ok())
-            }));
-
-        if !gw_ok {
+        if gw_loss > 0.0 {
             findings.push(Finding {
-                key: "gateway_unreachable".into(),
-                severity: "critical".into(),
+                key: "gateway_packet_loss".into(),
+                severity: if gw_loss >= 40.0 { "critical" } else { "warning" }.into(),
                 category: "network".into(),
-                title: format!("Gateway {} unreachable - WiFi/AP issue", gw),
+                title: format!("Gateway {}: {:.0}% packet loss, avg {:.1}ms max {:.1}ms", gw, gw_loss, gw_avg, gw_max),
                 message: format!(
-                    "Cannot ping gateway {}. Packets dying between this host and the access point. \
-                    WiFi signal: {} dBm. This is a local link issue, not ISP.",
-                    gw, signal.unwrap_or(0)
+                    "Packet loss to gateway {} ({:.0}%). WiFi signal: {} dBm (quality {}). \
+                    RTT avg={:.1}ms max={:.1}ms. {} \
+                    This is between your host and the WiFi AP - not the ISP.",
+                    gw, gw_loss, signal_dbm, link_quality, gw_avg, gw_max,
+                    if gw_max > 50.0 { "High jitter suggests WiFi channel congestion." }
+                    else { "Low jitter suggests AP buffer overflow." }
                 ),
                 metadata: serde_json::json!({
-                    "gateway": gw, "gateway_reachable": false, "external_reachable": false,
-                    "signal_dbm": signal, "diagnosis": "WiFi/AP issue",
+                    "gateway": gw, "loss_pct": gw_loss, "avg_ms": gw_avg, "max_ms": gw_max,
+                    "signal_dbm": signal_dbm, "link_quality": link_quality,
+                    "diagnosis": "WiFi/AP issue",
                 }),
             });
-        } else if !ext_ok {
+        } else if ext_loss > 0.0 {
             findings.push(Finding {
-                key: "upstream_unreachable".into(),
-                severity: "critical".into(),
+                key: "upstream_packet_loss".into(),
+                severity: if ext_loss >= 40.0 { "critical" } else { "warning" }.into(),
                 category: "network".into(),
-                title: "ISP/upstream unreachable - gateway OK but internet down".into(),
+                title: format!("ISP: {:.0}% packet loss (gateway OK)", ext_loss),
                 message: format!(
-                    "Gateway {} responds but 1.1.1.1 is unreachable. \
-                    Packets pass the WiFi/AP but die upstream. This is an ISP issue. \
-                    WiFi signal: {} dBm (not the problem).",
-                    gw, signal.unwrap_or(0)
+                    "Gateway {} is fine (0% loss, {:.1}ms). But {:.0}% loss to 1.1.1.1 (avg {:.1}ms, max {:.1}ms). \
+                    WiFi signal {} dBm is not the problem. This is your ISP.",
+                    gw, gw_avg, ext_loss, ext_avg, ext_max, signal_dbm
                 ),
                 metadata: serde_json::json!({
-                    "gateway": gw, "gateway_reachable": true, "external_reachable": false,
-                    "signal_dbm": signal, "diagnosis": "ISP/upstream issue",
+                    "gateway": gw, "gw_loss_pct": 0, "ext_loss_pct": ext_loss,
+                    "ext_avg_ms": ext_avg, "ext_max_ms": ext_max,
+                    "signal_dbm": signal_dbm, "diagnosis": "ISP/upstream issue",
                 }),
             });
+        } else if gw_max > 50.0 {
+            // No loss but high jitter = congestion starting
+            findings.push(Finding {
+                key: "gateway_high_jitter".into(),
+                severity: "warning".into(),
+                category: "network".into(),
+                title: format!("Gateway jitter: avg {:.1}ms max {:.1}ms", gw_avg, gw_max),
+                message: format!(
+                    "Gateway {} responds but with high jitter (max {:.1}ms). \
+                    WiFi signal {} dBm. This often precedes packet loss.",
+                    gw, gw_max, signal_dbm
+                ),
+                metadata: serde_json::json!({
+                    "gateway": gw, "avg_ms": gw_avg, "max_ms": gw_max,
+                    "signal_dbm": signal_dbm, "diagnosis": "WiFi congestion starting",
+                }),
+            });
+        }
+    }
+
+    // 0b. WiFi channel survey (if available via iw)
+    if let Ok(output) = std::process::Command::new("iw")
+        .args(["dev", "wlp170s0", "survey", "dump"])
+        .output()
+    {
+        if output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stdout);
+            // Parse the "in use" frequency's busy time percentage
+            let mut in_use = false;
+            let mut channel_busy_pct: Option<f64> = None;
+            let mut frequency = String::new();
+            for line in raw.lines() {
+                if line.contains("[in use]") {
+                    in_use = true;
+                    frequency = line.split_whitespace().nth(1).unwrap_or("?").to_string();
+                }
+                if in_use {
+                    if let Some(busy) = line.strip_prefix("\t\tchannel busy time:") {
+                        let busy_ms: f64 = busy.trim().split_whitespace().next()
+                            .and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                        if let Some(active) = raw.lines().find(|l| l.contains("channel active time:")) {
+                            let active_ms: f64 = active.trim().split_whitespace().nth(3)
+                                .and_then(|s| s.parse().ok()).unwrap_or(1.0);
+                            if active_ms > 0.0 {
+                                channel_busy_pct = Some(busy_ms / active_ms * 100.0);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if let Some(busy) = channel_busy_pct {
+                if busy > 50.0 {
+                    findings.push(Finding {
+                        key: "wifi_channel_congested".into(),
+                        severity: if busy > 80.0 { "critical" } else { "warning" }.into(),
+                        category: "network".into(),
+                        title: format!("WiFi channel {} is {:.0}% busy", frequency, busy),
+                        message: format!(
+                            "WiFi channel ({} MHz) is {:.0}% busy. This causes micro-burst packet loss \
+                            even with good signal ({} dBm). Consider switching to a less congested channel \
+                            or using the ethernet adapter.",
+                            frequency, busy, signal_dbm
+                        ),
+                        metadata: serde_json::json!({
+                            "frequency_mhz": frequency, "busy_pct": busy,
+                            "signal_dbm": signal_dbm, "diagnosis": "WiFi channel congestion",
+                        }),
+                    });
+                }
+            }
         }
     }
 
