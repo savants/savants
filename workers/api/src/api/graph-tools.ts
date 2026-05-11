@@ -791,6 +791,114 @@ export async function namespaceSummary(db: D1, projectId: string, input: { names
 }
 
 // ── Dispatcher ──
+// ── Core code tools (D1-backed) ──
+
+async function callersD1(db: D1, projectId: string, input: { function: string; depth?: number }): Promise<ToolResult> {
+  const fname = input.function;
+  const depth = input.depth || 5;
+
+  // Find the target function
+  const target = await db.prepare(
+    "SELECT id, name, file_path, line_start FROM graph_nodes WHERE project_id = ?1 AND name = ?2 AND type = 'function' LIMIT 1"
+  ).bind(projectId, fname).first<{ id: string; name: string; file_path: string; line_start: number }>();
+
+  if (!target) return { error: `Function '${fname}' not found in graph` };
+
+  // Recursive caller walk
+  const chain: string[] = [];
+  let currentId = target.id;
+  for (let i = 0; i < depth; i++) {
+    const caller = await db.prepare(`
+      SELECT n.id, n.name, n.file_path, n.line_start
+      FROM graph_edges e JOIN graph_nodes n ON n.id = e.source_node
+      WHERE e.target_node = ?1 AND e.type = 'CALLS'
+      ORDER BY n.name LIMIT 1
+    `).bind(currentId).first<{ id: string; name: string; file_path: string; line_start: number }>();
+    if (!caller) break;
+    chain.push(`${caller.name} (${caller.file_path}:${caller.line_start})`);
+    currentId = caller.id;
+  }
+
+  // All direct callers
+  const allCallers = await db.prepare(`
+    SELECT n.name, n.file_path, n.line_start
+    FROM graph_edges e JOIN graph_nodes n ON n.id = e.source_node
+    WHERE e.target_node = ?1 AND e.type = 'CALLS'
+    ORDER BY n.name LIMIT 20
+  `).bind(target.id).all();
+
+  const callerList = (allCallers.results as any[]).map(r => `${r.name} (${r.file_path}:${r.line_start})`);
+  let text = `=== Callers of ${fname} (${callerList.length}) ===\n`;
+  text += callerList.map(c => `  ${c}`).join("\n");
+  if (chain.length > 0) {
+    text += `\n\nCaller chain (${chain.length} levels up):\n  ${chain.join("\n  -> ")}`;
+  }
+  return { text };
+}
+
+async function whereUsedD1(db: D1, projectId: string, input: { symbol: string }): Promise<ToolResult> {
+  const symbol = input.symbol;
+  const node = await db.prepare(
+    "SELECT id, name, file_path FROM graph_nodes WHERE project_id = ?1 AND name = ?2 LIMIT 1"
+  ).bind(projectId, symbol).first<{ id: string; name: string; file_path: string }>();
+
+  if (!node) return { error: `Symbol '${symbol}' not found in graph` };
+
+  const callers = await db.prepare(`
+    SELECT n.name, n.file_path, n.line_start FROM graph_edges e
+    JOIN graph_nodes n ON n.id = e.source_node
+    WHERE e.target_node = ?1 ORDER BY n.file_path, n.name LIMIT 30
+  `).bind(node.id).all();
+
+  const importers = await db.prepare(`
+    SELECT n.name, n.file_path FROM graph_edges e
+    JOIN graph_nodes n ON n.id = e.source_node
+    WHERE e.target_node = ?1 AND e.type = 'IMPORTS' LIMIT 20
+  `).bind(node.id).all();
+
+  let text = `=== Where '${symbol}' is used ===\n\nCallers (${callers.results.length}):\n`;
+  text += (callers.results as any[]).map(r => `  ${r.name} (${r.file_path}:${r.line_start})`).join("\n");
+  if ((importers.results as any[]).length > 0) {
+    text += `\n\nImported by (${importers.results.length}):\n`;
+    text += (importers.results as any[]).map(r => `  ${r.name} (${r.file_path})`).join("\n");
+  }
+  return { text };
+}
+
+async function fileSkeletonD1(db: D1, projectId: string, input: { file: string }): Promise<ToolResult> {
+  const file = input.file;
+  const nodes = await db.prepare(
+    "SELECT name, type, line_start, line_end FROM graph_nodes WHERE project_id = ?1 AND file_path LIKE ?2 AND type = 'function' ORDER BY line_start"
+  ).bind(projectId, `%${file}`).all();
+
+  if (nodes.results.length === 0) return { error: `No functions found in '${file}'` };
+
+  let text = `=== ${file} ===\nFunctions:\n`;
+  text += (nodes.results as any[]).map(n => `  ${n.name}() (line ${n.line_start})`).join("\n");
+  return { text };
+}
+
+async function semanticSearchD1(db: D1, projectId: string, input: { query?: string; pattern?: string }): Promise<ToolResult> {
+  const query = input.query || input.pattern || "";
+  // D1 doesn't have vector search - fall back to LIKE matching on function names
+  const keywords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+  if (keywords.length === 0) return { error: "Query too short" };
+
+  // Search by name LIKE for each keyword
+  const results = await db.prepare(`
+    SELECT name, file_path, line_start, type FROM graph_nodes
+    WHERE project_id = ?1 AND type = 'function'
+    AND (${keywords.map((_, i) => `LOWER(name) LIKE ?${i + 2}`).join(" OR ")})
+    ORDER BY name LIMIT 15
+  `).bind(projectId, ...keywords.map(k => `%${k}%`)).all();
+
+  if (results.results.length === 0) return { text: `No results for '${query}'` };
+
+  let text = `=== Search: '${query}' (${results.results.length} results) ===\n`;
+  text += (results.results as any[]).map(r => `  ${r.file_path}:${r.line_start} ${r.name}()`).join("\n");
+  return { text };
+}
+
 export async function executeGraphTool(
   db: D1,
   projectId: string,
@@ -849,6 +957,15 @@ export async function executeGraphTool(
       return podDependencies(db, projectId, input as any);
     case "namespace_summary":
       return namespaceSummary(db, projectId, input as any);
+    // Core code tools (callers, where_used, etc)
+    case "callers":
+      return callersD1(db, projectId, input as any);
+    case "where_used":
+      return whereUsedD1(db, projectId, input as any);
+    case "file_skeleton":
+      return fileSkeletonD1(db, projectId, input as any);
+    case "semantic_search":
+      return semanticSearchD1(db, projectId, input as any);
     default:
       return { error: `Unknown graph tool: ${tool}` };
   }
@@ -862,6 +979,8 @@ export const GRAPH_TOOL_NAMES = [
   "find_references", "dependency_chain", "risk_score", "community_summary",
   "decorated_with", "pre_change_warning", "coupling_check",
   "co_change_partners", "resolves_to",
+  // Core tools (also available via cloud D1)
+  "callers", "where_used", "file_skeleton", "semantic_search",
   // K8s / infra
   "cluster_state", "list_pods", "pod_story", "host_state", "host_story",
   "deployment_info", "pod_dependencies", "namespace_summary",
