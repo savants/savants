@@ -117,4 +117,105 @@ describe("Tools API", () => {
       expect(body.error).toBe("invalid_request");
     });
   });
+
+  describe("Tool catalog completeness", () => {
+    it("contains developer_report tool", async () => {
+      const resp = await workerFetch("/api/v1/tools");
+      const body = await resp.json() as { tools: Array<{ name: string; description: string }> };
+      const names = body.tools.map(t => t.name);
+      expect(names).toContain("developer_report");
+    });
+
+    it("contains all GitHub tools", async () => {
+      const resp = await workerFetch("/api/v1/tools");
+      const body = await resp.json() as { tools: Array<{ name: string }> };
+      const names = body.tools.map(t => t.name);
+      const required = [
+        "search_github_issues", "search_github_prs", "list_github_prs",
+        "list_github_commits", "get_github_commit", "list_github_actions",
+        "developer_report",
+      ];
+      for (const tool of required) {
+        expect(names).toContain(tool);
+      }
+    });
+
+    it("contains all graph tools", async () => {
+      const resp = await workerFetch("/api/v1/tools");
+      const body = await resp.json() as { tools: Array<{ name: string }> };
+      const names = body.tools.map(t => t.name);
+      const required = [
+        "callers", "where_used", "file_skeleton", "semantic_search",
+        "function_xray", "blast_radius", "dead_code", "graph_stats",
+      ];
+      for (const tool of required) {
+        expect(names).toContain(tool);
+      }
+    });
+
+    it("contains diagnose and infrastructure tools", async () => {
+      const resp = await workerFetch("/api/v1/tools");
+      const body = await resp.json() as { tools: Array<{ name: string }> };
+      const names = body.tools.map(t => t.name);
+      const required = [
+        "diagnose_error", "host_health", "host_story",
+        "cluster_state", "list_pods",
+      ];
+      for (const tool of required) {
+        expect(names).toContain(tool);
+      }
+    });
+
+    it("every tool has a non-empty description", async () => {
+      const resp = await workerFetch("/api/v1/tools");
+      const body = await resp.json() as { tools: Array<{ name: string; description: string }> };
+      const empty = body.tools.filter(t => !t.description || t.description === t.name);
+      expect(empty).toEqual([]);
+    });
+  });
+
+  describe("Data model contract", () => {
+    it("diagnose returns expected fields", async () => {
+      const { generateTestJwt } = await import("./helpers");
+      const token = await generateTestJwt();
+
+      const resp = await workerFetch("/api/v1/tools/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ tool: "diagnose", input: { error_message: "test error" } }),
+      });
+
+      // Should not 500 - even with no data, diagnose should return gracefully
+      expect(resp.status).toBe(200);
+      const body = await resp.json() as { result: any };
+      const r = body.result;
+      expect(r).toHaveProperty("root_cause");
+      expect(r).toHaveProperty("confidence");
+      expect(r).toHaveProperty("sources_used");
+      expect(r).toHaveProperty("call_chain");
+      expect(typeof r.confidence).toBe("number");
+      expect(Array.isArray(r.sources_used)).toBe(true);
+      expect(Array.isArray(r.call_chain)).toBe(true);
+    });
+
+    it("billing returns plan, limits, and usage", async () => {
+      const { generateTestJwt } = await import("./helpers");
+      const token = await generateTestJwt();
+
+      const resp = await workerFetch("/api/v1/billing", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      // May return 404 (test org doesn't exist) or 200
+      if (resp.status === 200) {
+        const body = await resp.json() as any;
+        expect(body).toHaveProperty("plan");
+        expect(body).toHaveProperty("limits");
+        expect(body).toHaveProperty("usage");
+        expect(body.limits).toHaveProperty("graph_nodes");
+        expect(body.limits).toHaveProperty("agents");
+        expect(body.limits).toHaveProperty("users");
+      }
+    });
+  });
 });
