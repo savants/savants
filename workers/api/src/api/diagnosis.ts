@@ -117,7 +117,6 @@ export async function diagnoseError(
     }
 
     // ── Step 2: Recursive caller chain with source code context ──
-    let chainWithSource: Array<{ name: string; file: string; line: number; source: string; metadata: any }> = [];
 
     if (entryNode) {
       sources.push("code_graph");
