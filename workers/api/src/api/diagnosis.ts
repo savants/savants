@@ -46,6 +46,7 @@ export async function diagnoseError(
   let callChain: string[] = [];
   let graphCallers: string[] = [];
   let graphCallees: string[] = [];
+  let chainWithSource: Array<{ name: string; file: string; line: number; source: string; metadata: any }> = [];
 
   // Resolve project
   try {
@@ -115,18 +116,30 @@ export async function diagnoseError(
       if (node) entryNode = node;
     }
 
-    // ── Step 2: Recursive caller chain (walk UP the call graph) ──
+    // ── Step 2: Recursive caller chain with source code context ──
+    let chainWithSource: Array<{ name: string; file: string; line: number; source: string; metadata: any }> = [];
+
     if (entryNode) {
       sources.push("code_graph");
       confidence += 0.25;
 
+      // Get entry node source
+      const entryFull = await env.DB.prepare(
+        "SELECT id, name, file_path, line_start, content_summary, metadata FROM graph_nodes WHERE id = ?1"
+      ).bind(entryNode.id).first<any>();
+
+      chainWithSource.push({
+        name: entryFull.name, file: entryFull.file_path, line: entryFull.line_start,
+        source: entryFull.content_summary || "",
+        metadata: safeJson(entryFull.metadata),
+      });
       callChain = [formatNode(entryNode)];
       let currentId = entryNode.id;
 
-      // Walk up to 10 levels of callers
+      // Walk up to 10 levels of callers, collecting source for each
       for (let depth = 0; depth < 10; depth++) {
         const caller = await env.DB.prepare(`
-          SELECT n.id, n.name, n.type, n.file_path, n.line_start
+          SELECT n.id, n.name, n.type, n.file_path, n.line_start, n.content_summary, n.metadata
           FROM graph_edges e
           JOIN graph_nodes n ON n.id = e.source_node
           WHERE e.target_node = ?1 AND e.type = 'CALLS'
@@ -135,12 +148,18 @@ export async function diagnoseError(
 
         if (!caller) break;
         callChain.push(formatNode(caller));
+        chainWithSource.push({
+          name: caller.name, file: caller.file_path, line: caller.line_start,
+          source: caller.content_summary || "",
+          metadata: safeJson(caller.metadata),
+        });
         currentId = caller.id;
       }
 
-      callChain.reverse(); // Entry point first, deepest function last
+      callChain.reverse();
+      chainWithSource.reverse();
 
-      // Get all direct callers (not just the chain)
+      // Get all direct callers
       const allCallers = await env.DB.prepare(`
         SELECT n.name, n.file_path, n.line_start
         FROM graph_edges e
@@ -150,7 +169,7 @@ export async function diagnoseError(
       `).bind(entryNode.id).all();
       graphCallers = (allCallers.results as any[]).map(r => formatNode(r));
 
-      // Get callees (what the function calls)
+      // Get callees
       const allCallees = await env.DB.prepare(`
         SELECT n.name, n.file_path, n.line_start
         FROM graph_edges e
@@ -159,6 +178,24 @@ export async function diagnoseError(
         ORDER BY n.name LIMIT 10
       `).bind(entryNode.id).all();
       graphCallees = (allCallees.results as any[]).map(r => formatNode(r));
+
+      // Find related constants/config in the same file
+      const relatedNodes = await env.DB.prepare(`
+        SELECT name, type, content_summary, line_start FROM graph_nodes
+        WHERE project_id = ?1 AND file_path = ?2
+        AND (type = 'variable' OR type = 'constant' OR type = 'type' OR name LIKE '%LIMIT%' OR name LIKE '%DEFAULT%' OR name LIKE '%CONFIG%')
+        ORDER BY line_start LIMIT 10
+      `).bind(projectId, entryNode.file_path).all();
+
+      if ((relatedNodes.results as any[]).length > 0) {
+        const constants = (relatedNodes.results as any[]).map(n =>
+          `${n.name} (${n.type}, line ${n.line_start}): ${n.content_summary || ""}`
+        );
+        chainWithSource.push({
+          name: "RELATED_CONSTANTS", file: entryNode.file_path, line: 0,
+          source: constants.join("\n"), metadata: {},
+        });
+      }
     }
   }
 
@@ -235,15 +272,34 @@ export async function diagnoseError(
   let severity: "critical" | "error" | "warning" = "error";
 
   if (entryNode && callChain.length > 0) {
-    // We have graph data - build a real diagnosis
+    // Build diagnosis with source code so the LLM (Claude) can reason about logic
     rootCause = `Function: ${entryNode.name}() at ${entryNode.file_path}:${entryNode.line_start}`;
 
     if (callChain.length > 1) {
       rootCause += `\n\nCall chain (entry point to function):\n  ${callChain.join("\n  -> ")}`;
     }
 
+    // Include source code snippets for each function in the chain
+    if (chainWithSource.length > 0) {
+      rootCause += "\n\n--- Source context for each function in the chain ---";
+      for (const fn of chainWithSource) {
+        if (fn.name === "RELATED_CONSTANTS") {
+          rootCause += `\n\nRelated constants/config in ${fn.file}:\n${fn.source}`;
+        } else {
+          rootCause += `\n\n${fn.name}() at ${fn.file}:${fn.line}:`;
+          if (fn.source) rootCause += `\n  ${fn.source}`;
+          const meta = fn.metadata;
+          if (meta?.params) rootCause += `\n  params: ${meta.params}`;
+          if (meta?.has_error_handling) rootCause += ` [has error handling]`;
+          if (meta?.has_validation) rootCause += ` [has validation]`;
+        }
+      }
+      rootCause += "\n--- End source context ---";
+      confidence += 0.1; // More context = higher confidence
+    }
+
     if (graphCallers.length > 0) {
-      rootCause += `\n\nCalled by: ${graphCallers.join(", ")}`;
+      rootCause += `\n\nAll callers: ${graphCallers.join(", ")}`;
     }
 
     if (graphCallees.length > 0) {
@@ -292,7 +348,14 @@ export async function diagnoseError(
     confidence: Math.min(confidence, 1),
     sources_used: sources,
     sentry_context: sentryData ? { breadcrumbs: sentryData.breadcrumbs || [], tags: sentryData.tags || {} } : undefined,
-    graph_context: entryNode ? { callers: graphCallers, callees: graphCallees, blast_radius: graphCallers.length + graphCallees.length } : undefined,
+    graph_context: entryNode ? {
+      callers: graphCallers, callees: graphCallees,
+      blast_radius: graphCallers.length + graphCallees.length,
+      source_chain: chainWithSource.filter(f => f.name !== "RELATED_CONSTANTS").map(f => ({
+        name: f.name, file: f.file, line: f.line, source_preview: f.source,
+        params: f.metadata?.params, has_error_handling: f.metadata?.has_error_handling,
+      })),
+    } : undefined,
     tickets: tickets.length > 0 ? tickets : undefined,
   };
 }
@@ -301,6 +364,12 @@ export async function diagnoseError(
 
 function formatNode(n: any): string {
   return `${n.name}() at ${n.file_path || "?"}:${n.line_start || "?"}`;
+}
+
+function safeJson(s: any): any {
+  if (!s) return {};
+  if (typeof s === "object") return s;
+  try { return JSON.parse(s); } catch { return {}; }
 }
 
 function extractFunctionNames(msg: string): string[] {
