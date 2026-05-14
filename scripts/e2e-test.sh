@@ -48,6 +48,16 @@ test_tool "function_xray" '{"function_name":"JobDescriptionBuilder","repo":"tale
 test_tool "find_causes" '{"node_name":"cert-manager","event_type":"pod_crash"}' "probable_causes"
 test_tool "diagnose_error" '{"error_message":"[ATS Push] Failed to push role to ATS","sentry_project":"vocator-backend"}' "root_cause"
 
+# New tools: developer report, PR search, graph tools via D1
+test_tool "search_github_prs" '{"query":"VSCV","repo":"sourcecoders-ai/talent-pipeline","author":"gustavo"}' "results\|count"
+test_tool "developer_report" '{"author":"gustavo","repo":"sourcecoders-ai/talent-pipeline","since":"2026-04-01","until":"2026-05-01"}' "summary\|total_prs"
+test_tool "callers" '{"function":"evaluateCandidateAgainstRole","repo":"talent-pipeline"}' "Callers\|error"
+test_tool "where_used" '{"symbol":"calculateAndUpsertCandidatePoolScore","repo":"talent-pipeline"}' "used\|error"
+test_tool "file_skeleton" '{"file":"candidate-pool-matching.ts","repo":"talent-pipeline"}' "Functions\|error"
+
+# Diagnose with source context
+test_tool "diagnose" '{"error_message":"evaluateCandidateAgainstRole token spike","repo":"talent-pipeline"}' "call_chain\|root_cause"
+
 # Local tools
 for tool in semantic_search file_skeleton where_used callers blast_radius dead_code test_coverage hotspots entry_points git_blame git_log; do
   if printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"'$tool'","arguments":{"query":"error","repo":"savants","function":"main","symbol":"main","file":"src/main.rs","line_start":1,"repo_path":"'"$PWD"'"}}}\n' | ~/.savants/bin/savants serve 2>/dev/null | tail -1 | grep -q "content"; then
