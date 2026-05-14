@@ -402,10 +402,17 @@ pub async fn start(name: Option<String>) {
 
         // Git watch: detect pushes, reindex, upload to D1 (runs AFTER poll)
         if last_git_watch.elapsed().as_secs() >= GIT_WATCH_INTERVAL_SECS {
+            if repos.is_empty() {
+                eprintln!("[git] no repos to watch");
+            }
             for repo in &repos {
                 let repo_str = repo.to_string_lossy().to_string();
                 let current_head = git_head(repo).unwrap_or_default();
                 let previous_head = repo_heads.get(&repo_str).cloned().unwrap_or_default();
+
+                if current_head.is_empty() {
+                    eprintln!("[git] {} HEAD is empty (git_head failed)", repo.display());
+                }
 
                 if !current_head.is_empty() && current_head != previous_head {
                     let repo_name = repo.file_name()
@@ -2973,8 +2980,19 @@ fn git_head(repo: &std::path::Path) -> Option<String> {
         .stderr(std::process::Stdio::null())
         .status();
 
-    // Track origin/main (deployed code), not whatever branch is checked out
-    for branch in &["origin/main", "origin/master", "HEAD"] {
+    // Detect default branch from git, fall back to HEAD
+    let default_ref = std::process::Command::new("git")
+        .args(["-C", &repo_str, "symbolic-ref", "refs/remotes/origin/HEAD"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let refs: Vec<&str> = if !default_ref.is_empty() {
+        vec![default_ref.as_str(), "HEAD"]
+    } else {
+        vec!["HEAD"]
+    };
+    for branch in &refs {
         let output = std::process::Command::new("git")
             .args(["-C", &repo_str, "rev-parse", branch])
             .output()
