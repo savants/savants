@@ -498,6 +498,7 @@ const TOOL_LIST: ToolDefinition[] = [
       get_github_action_logs: "Get failed job details from a CI run.",
       list_github_releases: "List releases for a repo.",
       list_code_scanning_alerts: "List code scanning security alerts with graph context.",
+      developer_report: "Developer effort report: PRs merged with lines changed, story points from Jira/Linear, lines-per-point ratio. Cross-references GitHub + ticket tracker.",
     }[name] || name,
     input_schema: { type: "object", properties: { repo: { type: "string" }, query: { type: "string" } } },
     pricing: { free_monthly_calls: null, overage_per_call_cents: 10, tier: "cloud" as const },

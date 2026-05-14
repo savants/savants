@@ -130,20 +130,43 @@ async function searchCode(db: Env["DB"], orgId: string, input: { query: string; 
 }
 
 // ── search_github_prs ──
-async function searchPRs(db: Env["DB"], orgId: string, input: { query: string; repo?: string }): Promise<any> {
+async function searchPRs(db: Env["DB"], orgId: string, input: { query: string; repo?: string; author?: string; state?: string }): Promise<any> {
   const creds = await getGitHubCreds(db, orgId);
   if (!creds) return { error: "GitHub not connected" };
-  let q = `type:pr ${input.query}`;
+
+  // Build proper GitHub search query
+  let q = `is:pr ${input.query}`;
   if (input.repo) q += ` repo:${input.repo}`;
-  const data = await ghGet(creds.token, `https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=10&sort=updated`);
+  if (input.author) q += ` author:${input.author}`;
+  if (input.state) q += ` is:${input.state}`;
+
+  const data = await ghGet(creds.token, `https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=20&sort=updated`);
   if (!data) return { results: [], count: 0 };
-  return {
-    results: data.items?.map((i: any) => ({
+
+  // Enrich with PR details (additions/deletions) for each result
+  const results = [];
+  for (const i of (data.items || []).slice(0, 15)) {
+    const pr: any = {
       number: i.number, title: i.title, state: i.state, user: i.user?.login,
-      draft: i.draft, created_at: i.created_at, url: i.html_url,
-    })) || [],
-    count: data.total_count,
-  };
+      draft: i.draft, created_at: i.created_at, closed_at: i.closed_at,
+      url: i.html_url, labels: i.labels?.map((l: any) => l.name),
+    };
+
+    // Fetch PR stats (additions/deletions) from the pulls API
+    if (input.repo) {
+      const prDetail = await ghGet(creds.token, `https://api.github.com/repos/${input.repo}/pulls/${i.number}`);
+      if (prDetail) {
+        pr.additions = prDetail.additions;
+        pr.deletions = prDetail.deletions;
+        pr.changed_files = prDetail.changed_files;
+        pr.merged = prDetail.merged;
+        pr.merged_at = prDetail.merged_at;
+      }
+    }
+    results.push(pr);
+  }
+
+  return { results, count: data.total_count };
 }
 
 // ── list_github_issues ──
@@ -199,11 +222,14 @@ async function getCommit(db: Env["DB"], orgId: string, input: { repo: string; sh
 }
 
 // ── list_github_commits ──
-async function listCommits(db: Env["DB"], orgId: string, input: { repo: string; branch?: string; per_page?: number }): Promise<any> {
+async function listCommits(db: Env["DB"], orgId: string, input: { repo: string; branch?: string; author?: string; since?: string; until?: string; per_page?: number }): Promise<any> {
   const creds = await getGitHubCreds(db, orgId);
   if (!creds) return { error: "GitHub not connected" };
-  let url = `https://api.github.com/repos/${input.repo}/commits?per_page=${input.per_page || 10}`;
+  let url = `https://api.github.com/repos/${input.repo}/commits?per_page=${input.per_page || 30}`;
   if (input.branch) url += `&sha=${input.branch}`;
+  if (input.author) url += `&author=${encodeURIComponent(input.author)}`;
+  if (input.since) url += `&since=${input.since}`;
+  if (input.until) url += `&until=${input.until}`;
   const data = await ghGet(creds.token, url);
   if (!data) return { results: [] };
   return {
@@ -211,6 +237,7 @@ async function listCommits(db: Env["DB"], orgId: string, input: { repo: string; 
       sha: c.sha?.slice(0, 7), message: c.commit?.message?.split("\n")[0],
       author: c.commit?.author?.name, date: c.commit?.author?.date,
     })),
+    count: (data as any[]).length,
   };
 }
 
@@ -347,6 +374,150 @@ async function listCodeAlerts(db: Env["DB"], orgId: string, input: { repo: strin
   return { results: alerts, graph: graph || undefined };
 }
 
+// ── developer_report: cross-reference GitHub PRs with Jira story points ──
+async function developerReport(db: Env["DB"], orgId: string, input: {
+  author: string; repo: string; since?: string; until?: string;
+}): Promise<any> {
+  const creds = await getGitHubCreds(db, orgId);
+  if (!creds) return { error: "GitHub not connected" };
+
+  const author = input.author;
+  const since = input.since || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const until = input.until || new Date().toISOString().slice(0, 10);
+
+  // 1. Get all merged PRs by this author in the date range
+  const q = `is:pr is:merged repo:${input.repo} author:${author} merged:${since}..${until}`;
+  const searchData = await ghGet(creds.token,
+    `https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=50&sort=created`);
+
+  const prs: any[] = [];
+  const ticketIds = new Set<string>();
+
+  for (const item of (searchData?.items || [])) {
+    // Get PR details (additions/deletions)
+    const detail = await ghGet(creds.token, `https://api.github.com/repos/${input.repo}/pulls/${item.number}`);
+
+    // Extract Jira ticket ID from PR title or branch name
+    const ticketMatch = (item.title || "").match(/([A-Z]+-\d+)/);
+    const ticketId = ticketMatch?.[1] || null;
+    if (ticketId) ticketIds.add(ticketId);
+
+    prs.push({
+      number: item.number,
+      title: item.title,
+      ticket: ticketId,
+      created_at: item.created_at,
+      merged_at: detail?.merged_at || item.closed_at,
+      additions: detail?.additions || 0,
+      deletions: detail?.deletions || 0,
+      changed_files: detail?.changed_files || 0,
+      lines_total: (detail?.additions || 0) + (detail?.deletions || 0),
+    });
+  }
+
+  // 2. Get Jira story points for each ticket
+  const ticketDetails: Record<string, { points: number | null; summary: string; status: string }> = {};
+  const jiraIntegration = await getIntegration(db, orgId, "jira");
+  if (jiraIntegration && ticketIds.size > 0) {
+    const jiraCreds = JSON.parse(jiraIntegration.credentials || "{}");
+    const jiraConfig = JSON.parse(jiraIntegration.config || "{}");
+    if (jiraCreds.email && jiraCreds.api_token && jiraConfig.domain) {
+      const auth64 = btoa(`${jiraCreds.email}:${jiraCreds.api_token}`);
+      for (const ticketId of ticketIds) {
+        try {
+          const res = await fetch(
+            `https://${jiraConfig.domain}/rest/api/3/issue/${ticketId}?fields=summary,status,story_points,customfield_10016`,
+            { headers: { Authorization: `Basic ${auth64}` }, signal: AbortSignal.timeout(5000) }
+          );
+          if (res.ok) {
+            const issue = await res.json() as any;
+            ticketDetails[ticketId] = {
+              points: issue.fields?.story_points || issue.fields?.customfield_10016 || null,
+              summary: issue.fields?.summary || "",
+              status: issue.fields?.status?.name || "",
+            };
+          }
+        } catch {}
+      }
+    }
+  }
+
+  // Also try Linear if Jira didn't find anything
+  if (Object.keys(ticketDetails).length === 0 && ticketIds.size > 0) {
+    const linearIntegration = await getIntegration(db, orgId, "linear");
+    if (linearIntegration) {
+      const linearCreds = JSON.parse(linearIntegration.credentials || "{}");
+      if (linearCreds.api_key) {
+        for (const ticketId of ticketIds) {
+          try {
+            const res = await fetch("https://api.linear.app/graphql", {
+              method: "POST",
+              headers: { Authorization: linearCreds.api_key, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                query: `query { issueSearch(query: "${ticketId}", first: 1) { nodes { identifier title state { name } estimate } } }`,
+              }),
+              signal: AbortSignal.timeout(5000),
+            });
+            if (res.ok) {
+              const data = await res.json() as any;
+              const issue = data?.data?.issueSearch?.nodes?.[0];
+              if (issue) {
+                ticketDetails[ticketId] = {
+                  points: issue.estimate || null,
+                  summary: issue.title || "",
+                  status: issue.state?.name || "",
+                };
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  }
+
+  // 3. Build the report
+  let totalAdditions = 0, totalDeletions = 0, totalFiles = 0, totalPoints = 0;
+  const prDetails = prs.map(pr => {
+    totalAdditions += pr.additions;
+    totalDeletions += pr.deletions;
+    totalFiles += pr.changed_files;
+    const ticket = pr.ticket ? ticketDetails[pr.ticket] : null;
+    const points = ticket?.points || null;
+    if (points) totalPoints += points;
+    return {
+      ...pr,
+      story_points: points,
+      ticket_summary: ticket?.summary,
+      ticket_status: ticket?.status,
+      lines_per_point: points ? Math.round(pr.lines_total / points) : null,
+    };
+  });
+
+  // Sort by lines_total descending
+  prDetails.sort((a, b) => b.lines_total - a.lines_total);
+
+  const avgLinesPerPR = prs.length > 0 ? Math.round((totalAdditions + totalDeletions) / prs.length) : 0;
+  const avgLinesPerPoint = totalPoints > 0 ? Math.round((totalAdditions + totalDeletions) / totalPoints) : null;
+
+  return {
+    author,
+    period: { since, until },
+    summary: {
+      total_prs: prs.length,
+      total_additions: totalAdditions,
+      total_deletions: totalDeletions,
+      total_lines: totalAdditions + totalDeletions,
+      total_files_changed: totalFiles,
+      total_story_points: totalPoints || "unknown",
+      avg_lines_per_pr: avgLinesPerPR,
+      avg_lines_per_point: avgLinesPerPoint,
+      tickets_found: ticketIds.size,
+      tickets_with_points: Object.values(ticketDetails).filter(t => t.points).length,
+    },
+    prs: prDetails,
+  };
+}
+
 // ── Dispatcher ──
 
 export const GITHUB_TOOL_NAMES = [
@@ -356,6 +527,7 @@ export const GITHUB_TOOL_NAMES = [
   "create_github_pr", "merge_github_pr", "list_github_actions",
   "get_github_action_run", "get_github_action_logs",
   "list_github_releases", "list_code_scanning_alerts",
+  "developer_report",
 ];
 
 export async function executeGitHubTool(
@@ -378,6 +550,7 @@ export async function executeGitHubTool(
     case "get_github_action_logs": return getActionLogs(db, orgId, input as any);
     case "list_github_releases": return listReleases(db, orgId, input as any);
     case "list_code_scanning_alerts": return listCodeAlerts(db, orgId, input as any);
+    case "developer_report": return developerReport(db, orgId, input as any);
     default: return { error: `Unknown github tool: ${tool}` };
   }
 }
