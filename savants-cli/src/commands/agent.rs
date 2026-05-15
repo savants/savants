@@ -321,13 +321,25 @@ pub async fn start(name: Option<String>) {
                 }
             }
             for finding in &findings {
-                // Only notify once per issue (until it clears)
-                if !known_issues.contains(&finding.key) {
-                    known_issues.insert(finding.key.clone());
+                // Dedup logic:
+                // - Info: send once, suppress until cleared
+                // - Warning: send once, resend every 10 minutes if still active
+                // - Critical: send every cycle until cleared (never suppress)
+                let is_new = !known_issues.contains(&finding.key);
+                let is_critical = finding.severity == "critical";
+                let is_warning = finding.severity == "warning";
+
+                let should_send = is_new || is_critical;
+
+                if is_new {
                     println!("[watch] {} - {}", finding.severity, finding.message);
+                }
+
+                if should_send {
+                    known_issues.insert(finding.key.clone());
 
                     // Send to cloud for notification routing
-                    let _ = client
+                    match client
                         .post(format!("{}/api/v1/agents/notify", cloud_url))
                         .header("Authorization", format!("Bearer {}", token))
                         .json(&serde_json::json!({
@@ -341,7 +353,19 @@ pub async fn start(name: Option<String>) {
                             "metadata": finding.metadata,
                         }))
                         .send()
-                        .await;
+                        .await
+                    {
+                        Ok(resp) if !resp.status().is_success() => {
+                            eprintln!("[notify] {} failed: HTTP {}", finding.key, resp.status());
+                            // Remove from known_issues so it retries next cycle
+                            known_issues.remove(&finding.key);
+                        }
+                        Err(e) => {
+                            eprintln!("[notify] {} error: {}", finding.key, e);
+                            known_issues.remove(&finding.key);
+                        }
+                        _ => {} // success
+                    }
                 }
             }
 
