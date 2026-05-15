@@ -337,7 +337,33 @@ pub async fn start(name: Option<String>) {
                     known_issues.insert(finding.key.clone());
 
                     // Direct notification for warning+ (agent is inside the cluster)
-                    if is_critical || is_warning {
+                    // Only notify for findings that are ACTIONABLE (not noise)
+                    let is_actionable = match finding.key.as_str() {
+                        // Noise - never notify
+                        k if k.starts_with("kernel_process_exec_") => false,
+                        k if k.starts_with("kernel_network_connect_") => false,
+                        "ebpf_tcp_retransmit" => false, // raw retransmit count is not actionable
+                        "ebpf_tcpdrop" => false, // raw drop count is not actionable (NOT_SPECIFIED is normal)
+                        "ebpf_tcp_resets" => false, // raw reset count is not actionable
+                        // Actionable
+                        "gateway_packet_loss" => true, // WiFi/AP issue with clear action
+                        "upstream_packet_loss" => true, // ISP issue
+                        "gateway_unreachable" => true, // Gateway down
+                        "gateway_high_jitter" => true, // Congestion starting
+                        "wifi_channel_congested" => true, // Channel busy
+                        "dmesg_network_events" => true, // WiFi deauth
+                        "ebpf_oomkill" => true, // Process killed
+                        "ebpf_biolatency" => true, // Disk slow
+                        "ebpf_runqlat" => true, // CPU saturated
+                        k if k.starts_with("service_errors_") => is_critical, // Only if critical (>10 errors)
+                        k if k.starts_with("memory_") => true,
+                        k if k.starts_with("disk_") => true,
+                        "tailscale_offline" => true,
+                        "dns_resolution_failing" => true,
+                        _ => is_critical, // Unknown critical = notify, unknown warning = skip
+                    };
+
+                    if is_actionable {
                         if let Ok(gotify_url) = std::env::var("SAVANTS_GOTIFY_URL") {
                             if let Ok(gotify_token) = std::env::var("SAVANTS_GOTIFY_TOKEN") {
                                 let priority = if is_critical { 8 } else { 5 };
