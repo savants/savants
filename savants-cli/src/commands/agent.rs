@@ -321,19 +321,17 @@ pub async fn start(name: Option<String>) {
                 }
             }
             for finding in &findings {
-                // Dedup logic:
-                // - Info: send once, suppress until cleared
-                // - Warning: send once, resend every 10 minutes if still active
-                // - Critical: send every cycle until cleared (never suppress)
+                // Dedup: notify once per finding. Re-notify only if it clears then comes back.
+                // Cloud-side has its own 5-min dedup as a second layer.
                 let is_new = !known_issues.contains(&finding.key);
-                let is_critical = finding.severity == "critical";
-                let is_warning = finding.severity == "warning";
-
-                let should_send = is_new || is_critical;
 
                 if is_new {
                     println!("[watch] {} - {}", finding.severity, finding.message);
                 }
+
+                let should_send = is_new;
+                let is_critical = finding.severity == "critical";
+                let is_warning = finding.severity == "warning";
 
                 if should_send {
                     known_issues.insert(finding.key.clone());
