@@ -546,65 +546,109 @@ agents.post("/notify", async (c) => {
     console.error("[notify] causal correlation failed:", err instanceof Error ? err.message : err);
   }
 
-  // Route to notification channels
-  const integrations = await c.env.DB.prepare(
-    "SELECT type, config FROM integrations WHERE org_id = ?1 AND type IN ('slack', 'gotify', 'pagerduty', 'webhook')"
-  ).bind(auth.orgId).all();
+  // ── Notification routing with severity filtering ──
+  // Only notify on warning+ (never spam info-level postgres health checks)
+  // Critical: all channels immediately
+  // Warning: Slack + Gotify (not email/pagerduty)
+  // Info: stored in audit_log only, no external notification
 
-  const notifications: Promise<void>[] = [];
+  const severityLevel = { critical: 3, warning: 2, info: 1 }[body.severity] || 0;
+  let notifiedCount = 0;
 
-  for (const integration of integrations.results as any[]) {
-    const config = JSON.parse(integration.config || "{}");
+  if (severityLevel >= 2) { // warning or critical only
+    const integrations = await c.env.DB.prepare(
+      "SELECT type, config FROM integrations WHERE org_id = ?1 AND type IN ('slack', 'gotify', 'pagerduty', 'webhook')"
+    ).bind(auth.orgId).all();
 
-    if (integration.type === "gotify" && config.url && config.token) {
-      notifications.push(
-        fetch(`${config.url}/message`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Gotify-Key": config.token },
-          body: JSON.stringify({
-            title: `[${body.severity}] ${body.title}`,
-            message: `${body.message}\n\nAgent: ${body.agent_name}\nCategory: ${body.category}`,
-            priority: body.severity === "critical" ? 8 : 4,
-          }),
-        }).then(() => {})
-      );
-    }
+    // Dedup: don't send the same key within 5 minutes
+    const dedupKey = `${body.agent_id}:${body.key}`;
+    const recentSame = await c.env.DB.prepare(
+      "SELECT id FROM audit_log WHERE org_id = ?1 AND action = 'agent.notify' AND metadata LIKE ?2 AND created_at > ?3 LIMIT 1"
+    ).bind(auth.orgId, `%"key":"${body.key}"%`, now - 300).first();
 
-    if (integration.type === "slack" && config.webhook_url) {
-      const emoji = body.severity === "critical" ? ":rotating_light:" : ":warning:";
-      notifications.push(
-        fetch(config.webhook_url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            text: `${emoji} *${body.title}*\n${body.message}\n_Agent: ${body.agent_name}_`,
-          }),
-        }).then(() => {})
-      );
-    }
+    const shouldNotify = !recentSame; // Only notify if not sent in last 5 min
 
-    if (integration.type === "webhook" && config.url) {
-      notifications.push(
-        fetch(config.url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...(config.headers || {}) },
-          body: JSON.stringify({
-            severity: body.severity,
-            category: body.category,
-            title: body.title,
-            message: body.message,
-            agent: body.agent_name,
-            metadata: body.metadata,
-            timestamp: now,
-          }),
-        }).then(() => {})
-      );
+    if (shouldNotify) {
+      const notifications: Promise<void>[] = [];
+
+      for (const integration of integrations.results as any[]) {
+        const config = JSON.parse(integration.config || "{}");
+
+        if (integration.type === "gotify" && config.url && config.token) {
+          notifications.push(
+            fetch(`${config.url}/message`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Gotify-Key": config.token },
+              body: JSON.stringify({
+                title: `[${body.severity.toUpperCase()}] ${body.title}`,
+                message: `${body.message}\n\nAgent: ${body.agent_name}\nCategory: ${body.category}`,
+                priority: body.severity === "critical" ? 8 : body.severity === "warning" ? 5 : 2,
+              }),
+            }).then(() => { notifiedCount++; }).catch(() => {})
+          );
+        }
+
+        if (integration.type === "slack" && config.webhook_url) {
+          const emoji = body.severity === "critical" ? ":rotating_light:" : ":warning:";
+          const color = body.severity === "critical" ? "#dc2626" : "#f59e0b";
+          notifications.push(
+            fetch(config.webhook_url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                attachments: [{
+                  color,
+                  title: `${emoji} ${body.title}`,
+                  text: body.message,
+                  footer: `savants | ${body.agent_name} | ${body.category}`,
+                  ts: now,
+                }],
+              }),
+            }).then(() => { notifiedCount++; }).catch(() => {})
+          );
+        }
+
+        // PagerDuty: critical only
+        if (integration.type === "pagerduty" && config.routing_key && severityLevel >= 3) {
+          notifications.push(
+            fetch("https://events.pagerduty.com/v2/enqueue", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                routing_key: config.routing_key,
+                event_action: "trigger",
+                payload: {
+                  summary: `[${body.agent_name}] ${body.title}`,
+                  severity: "critical",
+                  source: body.agent_name,
+                  component: body.category,
+                  custom_details: { message: body.message, key: body.key },
+                },
+              }),
+            }).then(() => { notifiedCount++; }).catch(() => {})
+          );
+        }
+
+        if (integration.type === "webhook" && config.url) {
+          notifications.push(
+            fetch(config.url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...(config.headers || {}) },
+              body: JSON.stringify({
+                severity: body.severity, category: body.category,
+                title: body.title, message: body.message,
+                agent: body.agent_name, metadata: body.metadata, timestamp: now,
+              }),
+            }).then(() => { notifiedCount++; }).catch(() => {})
+          );
+        }
+      }
+
+      await Promise.allSettled(notifications);
     }
   }
 
-  await Promise.allSettled(notifications);
-
-  return c.json({ ok: true, notified: integrations.results.length });
+  return c.json({ ok: true, notified: notifiedCount, severity: body.severity, filtered: severityLevel < 2 });
 });
 
 export default agents;
