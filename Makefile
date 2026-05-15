@@ -52,7 +52,9 @@ ship: ebpf deploy agent-restart
 # Start agent as root (required for eBPF)
 agent-start:
 	@echo "Starting agent..."
-	@sudo bash -c "export SAVANTS_TOKEN='$(TOKEN)' && \
+	@sudo bash -c "export SAVANTS_TOKEN='$(TOKEN)' \
+		SAVANTS_GOTIFY_URL='http://10.43.16.5:80' \
+		SAVANTS_GOTIFY_TOKEN='AcUC9NcjcMGLXtm' && \
 		/home/miguel/.savants/bin/savants agent run > /tmp/savants-agent.log 2>&1 &"
 	@sleep 3
 	@grep -E "eBPF|Polling" /tmp/savants-agent.log 2>/dev/null || true

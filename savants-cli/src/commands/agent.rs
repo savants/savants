@@ -338,7 +338,27 @@ pub async fn start(name: Option<String>) {
                 if should_send {
                     known_issues.insert(finding.key.clone());
 
-                    // Send to cloud for notification routing
+                    // Direct notification for warning+ (agent is inside the cluster)
+                    if is_critical || is_warning {
+                        if let Ok(gotify_url) = std::env::var("SAVANTS_GOTIFY_URL") {
+                            if let Ok(gotify_token) = std::env::var("SAVANTS_GOTIFY_TOKEN") {
+                                let priority = if is_critical { 8 } else { 5 };
+                                let _ = client
+                                    .post(format!("{}/message", gotify_url))
+                                    .header("X-Gotify-Key", &gotify_token)
+                                    .json(&serde_json::json!({
+                                        "title": format!("[{}] {}", finding.severity.to_uppercase(), finding.title),
+                                        "message": format!("{}\n\nAgent: {}\nCategory: {}", finding.message, agent_name, finding.category),
+                                        "priority": priority,
+                                    }))
+                                    .send()
+                                    .await
+                                    .ok();
+                            }
+                        }
+                    }
+
+                    // Send to cloud for audit log + additional routing
                     match client
                         .post(format!("{}/api/v1/agents/notify", cloud_url))
                         .header("Authorization", format!("Bearer {}", token))
