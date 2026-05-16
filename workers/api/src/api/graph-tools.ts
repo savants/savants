@@ -878,24 +878,70 @@ async function fileSkeletonD1(db: D1, projectId: string, input: { file: string }
   return { text };
 }
 
-async function semanticSearchD1(db: D1, projectId: string, input: { query?: string; pattern?: string }): Promise<ToolResult> {
+async function semanticSearchD1(db: D1, projectId: string, input: { query?: string; pattern?: string }, env?: Env): Promise<ToolResult> {
   const query = input.query || input.pattern || "";
-  // D1 doesn't have vector search - fall back to LIKE matching on function names
+  if (query.length < 3) return { error: "Query too short" };
+
+  const allResults: Array<{ name: string; file_path: string; line_start: number; score?: number }> = [];
+  const seen = new Set<string>();
+
+  // Strategy 1: Vectorize semantic search (if available)
+  if (env?.VECTORIZE && env?.AI) {
+    try {
+      const embedding = await env.AI.run("@cf/baai/bge-small-en-v1.5", { text: [query] }) as { data: number[][] };
+      if (embedding?.data?.[0]) {
+        const vectorResults = await env.VECTORIZE.query(embedding.data[0], {
+          topK: 20,
+          filter: { project_id: projectId },
+          returnMetadata: "all",
+        });
+        if (vectorResults?.matches) {
+          // Fetch full node details from D1
+          for (const match of vectorResults.matches) {
+            const node = await db.prepare(
+              "SELECT name, file_path, line_start FROM graph_nodes WHERE id = ?1"
+            ).bind(match.id).first<any>();
+            if (node && !seen.has(node.name)) {
+              seen.add(node.name);
+              allResults.push({ ...node, score: match.score });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[vectorize] search failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  // Strategy 2: Keyword LIKE fallback (always runs to catch what vectors miss)
   const keywords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-  if (keywords.length === 0) return { error: "Query too short" };
+  if (keywords.length > 0) {
+    try {
+      const results = await db.prepare(`
+        SELECT name, file_path, line_start FROM graph_nodes
+        WHERE project_id = ?1 AND type = 'function'
+        AND (${keywords.map((_, i) => `LOWER(name) LIKE ?${i + 2}`).join(" OR ")})
+        ORDER BY name LIMIT 15
+      `).bind(projectId, ...keywords.map(k => `%${k}%`)).all();
 
-  // Search by name LIKE for each keyword
-  const results = await db.prepare(`
-    SELECT name, file_path, line_start, type FROM graph_nodes
-    WHERE project_id = ?1 AND type = 'function'
-    AND (${keywords.map((_, i) => `LOWER(name) LIKE ?${i + 2}`).join(" OR ")})
-    ORDER BY name LIMIT 15
-  `).bind(projectId, ...keywords.map(k => `%${k}%`)).all();
+      for (const r of results.results as any[]) {
+        if (!seen.has(r.name)) {
+          seen.add(r.name);
+          allResults.push({ ...r, score: 0.3 }); // Lower score for keyword matches
+        }
+      }
+    } catch {}
+  }
 
-  if (results.results.length === 0) return { text: `No results for '${query}'` };
+  if (allResults.length === 0) return { text: `No results for '${query}'` };
 
-  let text = `=== Search: '${query}' (${results.results.length} results) ===\n`;
-  text += (results.results as any[]).map(r => `  ${r.file_path}:${r.line_start} ${r.name}()`).join("\n");
+  // Sort by score descending
+  allResults.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+  let text = `=== Search: '${query}' (${allResults.length} results) ===\n`;
+  text += allResults.slice(0, 15).map(r =>
+    `  ${r.file_path}:${r.line_start} ${r.name}() [${(r.score || 0).toFixed(3)}]`
+  ).join("\n");
   return { text };
 }
 
@@ -903,7 +949,8 @@ export async function executeGraphTool(
   db: D1,
   projectId: string,
   tool: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  env?: Env,
 ): Promise<ToolResult> {
   switch (tool) {
     case "graph_stats":
@@ -965,7 +1012,7 @@ export async function executeGraphTool(
     case "file_skeleton":
       return fileSkeletonD1(db, projectId, input as any);
     case "semantic_search":
-      return semanticSearchD1(db, projectId, input as any);
+      return semanticSearchD1(db, projectId, input as any, env);
     default:
       return { error: `Unknown graph tool: ${tool}` };
   }

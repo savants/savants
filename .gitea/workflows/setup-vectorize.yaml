@@ -1,0 +1,27 @@
+name: Setup Vectorize
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-index:
+    name: Create Vectorize Index
+    runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install wrangler
+        run: npm install -g wrangler
+
+      - name: Create Vectorize index
+        working-directory: workers/api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          echo "Creating savants-code index (384 dims, cosine)..."
+          npx wrangler vectorize create savants-code --dimensions=384 --metric=cosine || echo "Index may already exist"
+          echo "Listing indexes..."
+          npx wrangler vectorize list

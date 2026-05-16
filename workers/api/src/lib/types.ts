@@ -1,6 +1,8 @@
 export interface Env {
   DB: D1Database;
   KV: KVNamespace;
+  VECTORIZE: VectorizeIndex;
+  AI: Ai;
   ENVIRONMENT: string;
   JWT_SECRET: string;
   GOOGLE_CLIENT_ID: string;

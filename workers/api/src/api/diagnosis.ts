@@ -67,6 +67,29 @@ export async function diagnoseError(
   } catch {}
 
   if (projectId) {
+    // Strategy 0: Vector similarity search (best for natural language queries)
+    if (!entryNode && env.VECTORIZE && env.AI) {
+      try {
+        const embedding = await env.AI.run("@cf/baai/bge-small-en-v1.5", { text: [errorMsg.slice(0, 500)] }) as { data: number[][] };
+        if (embedding?.data?.[0]) {
+          const results = await env.VECTORIZE.query(embedding.data[0], {
+            topK: 5,
+            filter: { project_id: projectId },
+            returnMetadata: "all",
+          });
+          if (results?.matches?.[0] && results.matches[0].score > 0.3) {
+            const node = await env.DB.prepare(
+              "SELECT id, name, type, file_path, line_start FROM graph_nodes WHERE id = ?1"
+            ).bind(results.matches[0].id).first<any>();
+            if (node && node.type === "function") {
+              entryNode = node;
+              sources.push("vector_search");
+            }
+          }
+        }
+      } catch {}
+    }
+
     // Strategy 1: Extract function names from the error message
     const funcNames = extractFunctionNames(errorMsg);
 

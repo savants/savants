@@ -791,7 +791,7 @@ tools.post("/call", async (c) => {
           status: 404,
         }, 404);
       }
-      proxyResult = await executeGraphTool(c.env.DB, projectId, body.tool, body.input);
+      proxyResult = await executeGraphTool(c.env.DB, projectId, body.tool, body.input, c.env);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Analysis failed";
       return c.json({ error: "graph_tool_error", message, status: 500 }, 500);

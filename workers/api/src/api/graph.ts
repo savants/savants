@@ -489,6 +489,50 @@ graph.post("/parse-result", async (c) => {
     await c.env.DB.batch(edgeStmts.slice(i, i + 50));
   }
 
+  // ── Generate and store embeddings in Vectorize ──
+  let embeddingsStored = 0;
+  try {
+    if (c.env.VECTORIZE && c.env.AI) {
+      // Build embedding texts: "functionName params first200chars"
+      const embeddingBatch: Array<{ id: string; text: string }> = [];
+      for (const entity of body.entities) {
+        if (entity.kind === "import") continue; // Skip imports
+        const nodeId = nodeIdMap.get(`${entity.file}:${entity.name}`) || nodeIdMap.get(entity.name);
+        if (!nodeId) continue;
+
+        const text = [
+          entity.name,
+          entity.params?.join(" ") || "",
+          entity.body?.slice(0, 300) || "",
+        ].join(" ").trim();
+
+        if (text.length > 5) {
+          embeddingBatch.push({ id: nodeId, text });
+        }
+      }
+
+      // Generate embeddings in batches of 100 (Workers AI limit)
+      for (let i = 0; i < embeddingBatch.length; i += 100) {
+        const batch = embeddingBatch.slice(i, i + 100);
+        const texts = batch.map(b => b.text);
+
+        const response = await c.env.AI.run("@cf/baai/bge-small-en-v1.5", { text: texts }) as { data: number[][] };
+
+        if (response?.data) {
+          const vectors = batch.map((b, idx) => ({
+            id: b.id,
+            values: response.data[idx],
+            metadata: { project_id: projectId, name: batch[idx]?.text.split(" ")[0] || "" },
+          }));
+          await c.env.VECTORIZE.upsert(vectors);
+          embeddingsStored += vectors.length;
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[vectorize] embedding failed:", err instanceof Error ? err.message : err);
+  }
+
   return c.json({
     ingested: true,
     project_id: projectId,
@@ -496,6 +540,7 @@ graph.post("/parse-result", async (c) => {
     files: body.files,
     nodes: nodeCount,
     edges: edgeCount,
+    embeddings: embeddingsStored,
   });
 });
 
