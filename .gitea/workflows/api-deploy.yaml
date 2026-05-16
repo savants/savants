@@ -24,6 +24,17 @@ jobs:
         working-directory: workers/api
         run: npx tsc --noEmit
 
+      - name: Ensure Vectorize index exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/vectorize/v2/indexes" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"savants-code","config":{"dimensions":384,"metric":"cosine"}}' | \
+            python3 -c "import sys,json; r=json.load(sys.stdin); print('Vectorize:', r.get('result',{}).get('name','') or r.get('errors',[{}])[0].get('message','ok'))"
+
       - name: Deploy
         working-directory: workers/api
         env:
