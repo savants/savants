@@ -29,11 +29,14 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
-          curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/vectorize/v2/indexes" \
+          RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/vectorize/v2/indexes" \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"name":"savants-code","config":{"dimensions":384,"metric":"cosine"}}' | \
-            python3 -c "import sys,json; r=json.load(sys.stdin); print('Vectorize:', r.get('result',{}).get('name','') or r.get('errors',[{}])[0].get('message','ok'))"
+            -d '{"name":"savants-code","config":{"dimensions":384,"metric":"cosine"}}')
+          echo "Vectorize response: $RESPONSE" | head -c 200
+          echo ""
+          # Don't fail the deploy if Vectorize creation fails (index may already exist)
+        continue-on-error: true
 
       - name: Deploy
         working-directory: workers/api
