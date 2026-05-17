@@ -121,64 +121,42 @@ fn register_hooks() {
 
     let bin = find_savants_binary();
 
-    // Add hooks for Grep and Read interception
-    let hooks = settings
-        .as_object_mut()
-        .unwrap()
+    // Build the complete hooks config (replace all savants hooks)
+    let hook_entry = |matcher: &str, cmd: &str| -> serde_json::Value {
+        json!({"matcher": matcher, "hooks": [{"type": "command", "command": cmd}]})
+    };
+
+    let intercept_cmd = format!("{} hook intercept", bin);
+    let post_cmd = format!("{} hook post-tool", bin);
+
+    // Build fresh hook arrays, preserving non-savants hooks
+    let hooks_obj = settings
+        .as_object_mut().unwrap()
         .entry("hooks")
-        .or_insert_with(|| json!({}));
+        .or_insert_with(|| json!({}))
+        .as_object_mut().unwrap();
 
-    let pre_tool = hooks
-        .as_object_mut()
-        .unwrap()
-        .entry("PreToolUse")
-        .or_insert_with(|| json!([]));
-
-    let hooks_arr = pre_tool.as_array_mut().unwrap();
-
-    // Remove existing savants hooks (update)
-    hooks_arr.retain(|h| {
-        let cmd = h.get("hooks").and_then(|h| h.as_array())
-            .and_then(|a| a.first())
-            .and_then(|h| h.get("command"))
-            .and_then(|c| c.as_str())
-            .unwrap_or("");
-        !cmd.contains("savants")
+    // PreToolUse
+    let pre = hooks_obj.entry("PreToolUse").or_insert_with(|| json!([]));
+    let pre_arr = pre.as_array_mut().unwrap();
+    pre_arr.retain(|h| {
+        !h.get("hooks").and_then(|h| h.as_array()).and_then(|a| a.first())
+            .and_then(|h| h.get("command")).and_then(|c| c.as_str())
+            .unwrap_or("").contains("savants")
     });
+    pre_arr.push(hook_entry("Grep", &intercept_cmd));
+    pre_arr.push(hook_entry("Read", &intercept_cmd));
 
-    // PreToolUse: intercept Grep and Read
-    hooks_arr.push(json!({
-        "matcher": "Grep",
-        "hooks": [{"type": "command", "command": format!("{} hook intercept", bin)}]
-    }));
-    hooks_arr.push(json!({
-        "matcher": "Read",
-        "hooks": [{"type": "command", "command": format!("{} hook intercept", bin)}]
-    }));
-
-    // PostToolUse: blast radius after edits, reindex after commits
-    let post_tool = hooks
-        .as_object_mut()
-        .unwrap()
-        .entry("PostToolUse")
-        .or_insert_with(|| json!([]));
-
-    let post_arr = post_tool.as_array_mut().unwrap();
+    // PostToolUse
+    let post = hooks_obj.entry("PostToolUse").or_insert_with(|| json!([]));
+    let post_arr = post.as_array_mut().unwrap();
     post_arr.retain(|h| {
-        let cmd = h.get("hooks").and_then(|h| h.as_array())
-            .and_then(|a| a.first())
-            .and_then(|h| h.get("command"))
-            .and_then(|c| c.as_str()).unwrap_or("");
-        !cmd.contains("savants")
+        !h.get("hooks").and_then(|h| h.as_array()).and_then(|a| a.first())
+            .and_then(|h| h.get("command")).and_then(|c| c.as_str())
+            .unwrap_or("").contains("savants")
     });
-    post_arr.push(json!({
-        "matcher": "Edit",
-        "hooks": [{"type": "command", "command": format!("{} hook post-tool", bin)}]
-    }));
-    post_arr.push(json!({
-        "matcher": "Bash",
-        "hooks": [{"type": "command", "command": format!("{} hook post-tool", bin)}]
-    }));
+    post_arr.push(hook_entry("Edit", &post_cmd));
+    post_arr.push(hook_entry("Bash", &post_cmd));
 
     if let Some(parent) = settings_path.parent() {
         let _ = fs::create_dir_all(parent);
