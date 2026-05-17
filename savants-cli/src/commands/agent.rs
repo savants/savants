@@ -50,7 +50,7 @@ pub async fn start(name: Option<String>) {
     let version = env!("CARGO_PKG_VERSION").to_string();
 
     // Detect capabilities
-    let mut capabilities = vec!["host_health".to_string(), "host_story".to_string(), "security_scan".to_string()];
+    let mut capabilities = vec!["host_health".to_string(), "host_story".to_string(), "network_report".to_string(), "security_scan".to_string()];
     if which("kubectl") {
         capabilities.push("pod_status".to_string());
         capabilities.push("pod_logs".to_string());
@@ -589,11 +589,127 @@ fn execute_tool(tool: &str, input: &serde_json::Value) -> serde_json::Value {
     match tool {
         "host_health" => host_health(),
         "host_story" => host_story(input),
+        "network_report" => network_report(input),
         "pod_status" => pod_status(input),
         "pod_logs" => pod_logs(input),
         "ebpf_snapshot" => ebpf_snapshot(input),
         _ => serde_json::json!({"error": format!("Unknown tool: {}", tool)}),
     }
+}
+
+/// Network path report: reads the rolling path probe log and returns
+/// a full analysis of network health over time.
+fn network_report(input: &serde_json::Value) -> serde_json::Value {
+    let minutes = input["minutes"].as_u64().unwrap_or(60) as usize;
+    let log_path = "/tmp/savants-network-path.jsonl";
+
+    let content = match std::fs::read_to_string(log_path) {
+        Ok(c) => c,
+        Err(_) => return serde_json::json!({"error": "No network path data yet. Wait for the next watch cycle."}),
+    };
+
+    let now = chrono::Utc::now().timestamp();
+    let cutoff = now - (minutes as i64 * 60);
+
+    let mut samples: Vec<serde_json::Value> = Vec::new();
+    let mut gw_latencies = Vec::new();
+    let mut gw_jitters = Vec::new();
+    let mut ext_latencies = Vec::new();
+    let mut ext_jitters = Vec::new();
+    let mut signals = Vec::new();
+
+    for line in content.lines() {
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+            let ts = entry["timestamp"].as_i64().unwrap_or(0);
+            if ts < cutoff { continue; }
+
+            if let Some(path) = entry["path"].as_array() {
+                for hop in path {
+                    let name = hop["hop"].as_str().unwrap_or("");
+                    let avg = hop["latency_avg_ms"].as_f64().unwrap_or(0.0);
+                    let jitter = hop["jitter_ms"].as_f64().unwrap_or(0.0);
+                    if name == "gateway" {
+                        gw_latencies.push(avg);
+                        gw_jitters.push(jitter);
+                    } else if name == "cdn_cloudflare" {
+                        ext_latencies.push(avg);
+                        ext_jitters.push(jitter);
+                    }
+                }
+            }
+            if let Some(sig) = entry["signal_dbm"].as_i64() {
+                signals.push(sig);
+            }
+            samples.push(entry);
+        }
+    }
+
+    let sample_count = samples.len();
+    if sample_count == 0 {
+        return serde_json::json!({"error": "No data in the requested time range."});
+    }
+
+    let avg = |v: &[f64]| if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
+    let max = |v: &[f64]| v.iter().cloned().fold(0.0f64, f64::max);
+    let p95 = |v: &mut Vec<f64>| {
+        if v.is_empty() { return 0.0; }
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v[(v.len() as f64 * 0.95) as usize].clone()
+    };
+
+    let gw_avg = avg(&gw_latencies);
+    let gw_max = max(&gw_jitters);
+    let gw_p95_jitter = p95(&mut gw_jitters.clone());
+    let ext_avg = avg(&ext_latencies);
+    let ext_p95_jitter = p95(&mut ext_jitters.clone());
+    let avg_signal = if signals.is_empty() { 0 } else { signals.iter().sum::<i64>() / signals.len() as i64 };
+
+    // ISP info
+    let isp_info = std::process::Command::new("curl")
+        .args(["-s", "--max-time", "5", "https://ipinfo.io/json"])
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .unwrap_or(serde_json::json!({}));
+
+    // Diagnosis
+    let diagnosis = if gw_p95_jitter > 30.0 {
+        format!("WiFi AP bufferbloat: p95 jitter {:.0}ms to gateway. Router packet scheduling is the bottleneck, not the ISP.", gw_p95_jitter)
+    } else if ext_p95_jitter > 50.0 && gw_p95_jitter < 10.0 {
+        format!("ISP jitter: p95 {:.0}ms to external but only {:.0}ms to gateway. ISP ({}) routing issue.",
+            ext_p95_jitter, gw_p95_jitter, isp_info["org"].as_str().unwrap_or("?"))
+    } else {
+        format!("Network healthy. Gateway avg {:.0}ms, external avg {:.0}ms. Signal avg {} dBm.",
+            gw_avg, ext_avg, avg_signal)
+    };
+
+    serde_json::json!({
+        "period_minutes": minutes,
+        "samples": sample_count,
+        "isp": {
+            "name": isp_info["org"].as_str().unwrap_or("unknown"),
+            "ip": isp_info["ip"].as_str().unwrap_or("?"),
+            "city": isp_info["city"].as_str().unwrap_or("?"),
+        },
+        "wifi": {
+            "signal_avg_dbm": avg_signal,
+            "signal_min_dbm": signals.iter().min().unwrap_or(&0),
+            "signal_max_dbm": signals.iter().max().unwrap_or(&0),
+        },
+        "gateway": {
+            "latency_avg_ms": gw_avg,
+            "latency_max_ms": max(&gw_latencies),
+            "jitter_p95_ms": gw_p95_jitter,
+            "jitter_max_ms": gw_max,
+        },
+        "external": {
+            "latency_avg_ms": ext_avg,
+            "latency_max_ms": max(&ext_latencies),
+            "jitter_p95_ms": ext_p95_jitter,
+        },
+        "diagnosis": diagnosis,
+        "recent_path": samples.last(),
+    })
 }
 
 /// Post-mortem analysis: scan journald for a time window and return
@@ -1356,6 +1472,9 @@ fn watch_health() -> Vec<Finding> {
 
     // ── Network + DNS health ──
     findings.extend(watch_network());
+
+    // ── Network path analysis (gateway -> ISP -> CDN) ──
+    findings.extend(probe_network_path());
 
     // ── Security checks ──
     findings.extend(watch_security());
@@ -2285,6 +2404,162 @@ fn watch_logs() -> Vec<Finding> {
 }
 
 /// Ping a host N times, return (loss%, avg_ms, max_ms)
+/// Network path probe: measures latency at each hop from WiFi to destination.
+/// Returns a structured path analysis that tells you exactly WHERE the problem is.
+fn probe_network_path() -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // Detect gateway
+    let gateway = std::fs::read_to_string("/proc/net/route").ok()
+        .and_then(|r| r.lines().skip(1).find(|l| {
+            let p: Vec<&str> = l.split_whitespace().collect();
+            p.len() > 2 && p[1] == "00000000"
+        }).and_then(|l| {
+            let hex = l.split_whitespace().nth(2)?;
+            if hex.len() == 8 {
+                let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                let c = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let d = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                Some(format!("{}.{}.{}.{}", a, b, c, d))
+            } else { None }
+        }));
+
+    let gw = match gateway {
+        Some(ref g) => g.as_str(),
+        None => return findings,
+    };
+
+    // WiFi signal
+    let signal_dbm = std::fs::read_to_string("/proc/net/wireless").ok()
+        .and_then(|w| w.lines().last().and_then(|l|
+            l.split_whitespace().nth(3).and_then(|s| s.trim_end_matches('.').parse::<i32>().ok())
+        )).unwrap_or(0);
+
+    // Probe each hop: gateway -> regional (8.8.8.8) -> CDN (1.1.1.1)
+    let hops = [
+        ("gateway", gw),
+        ("dns_google", "8.8.8.8"),
+        ("cdn_cloudflare", "1.1.1.1"),
+    ];
+
+    let mut path_data: Vec<serde_json::Value> = Vec::new();
+    let mut bottleneck_hop = "";
+    let mut bottleneck_jitter: f64 = 0.0;
+    let mut prev_avg: f64 = 0.0;
+
+    for (name, host) in &hops {
+        let (loss, avg, max) = ping_stats(host, 5);
+        let jitter = max - avg;
+        let hop_latency = if prev_avg > 0.0 { avg - prev_avg } else { avg };
+
+        path_data.push(serde_json::json!({
+            "hop": name,
+            "host": host,
+            "latency_avg_ms": avg,
+            "latency_max_ms": max,
+            "jitter_ms": jitter,
+            "hop_latency_ms": hop_latency,
+            "loss_pct": loss,
+        }));
+
+        if jitter > bottleneck_jitter {
+            bottleneck_jitter = jitter;
+            bottleneck_hop = name;
+        }
+
+        prev_avg = avg;
+    }
+
+    // Determine root cause
+    let gw_data = &path_data[0];
+    let gw_jitter = gw_data["jitter_ms"].as_f64().unwrap_or(0.0);
+    let gw_loss = gw_data["loss_pct"].as_f64().unwrap_or(0.0);
+    let ext_data = &path_data[2];
+    let ext_jitter = ext_data["jitter_ms"].as_f64().unwrap_or(0.0);
+    let ext_loss = ext_data["loss_pct"].as_f64().unwrap_or(0.0);
+
+    let (diagnosis, severity) = if gw_loss > 10.0 {
+        (format!(
+            "WiFi/AP issue: {:.0}% packet loss to gateway {}. Signal {} dBm. \
+            Action: Check AP, reduce interference, or use ethernet.",
+            gw_loss, gw, signal_dbm
+        ), "critical")
+    } else if gw_jitter > 30.0 {
+        (format!(
+            "WiFi AP bufferbloat: {:.0}ms jitter to gateway {} (avg {:.0}ms, max {:.0}ms). \
+            Signal {} dBm is fine - the router's packet scheduling is slow. \
+            Action: Disable QoS on router, or use ethernet.",
+            gw_jitter, gw,
+            gw_data["latency_avg_ms"].as_f64().unwrap_or(0.0),
+            gw_data["latency_max_ms"].as_f64().unwrap_or(0.0),
+            signal_dbm
+        ), "warning")
+    } else if ext_loss > 10.0 && gw_loss == 0.0 {
+        (format!(
+            "ISP packet loss: {:.0}% loss to external (gateway OK at 0%). \
+            ISP link is dropping packets. Action: Contact ISP or switch to backup.",
+            ext_loss
+        ), "critical")
+    } else if ext_jitter > 50.0 && gw_jitter < 10.0 {
+        (format!(
+            "ISP jitter: {:.0}ms jitter to external but only {:.0}ms to gateway. \
+            ISP peering or routing issue. Action: Try different DNS, contact ISP.",
+            ext_jitter, gw_jitter
+        ), "warning")
+    } else {
+        (format!(
+            "Network healthy. Gateway {:.0}ms, external {:.0}ms. Signal {} dBm.",
+            gw_data["latency_avg_ms"].as_f64().unwrap_or(0.0),
+            ext_data["latency_avg_ms"].as_f64().unwrap_or(0.0),
+            signal_dbm
+        ), "info")
+    };
+
+    // Only report as finding if there's a problem
+    if severity != "info" {
+        findings.push(Finding {
+            key: "network_path".into(),
+            severity: severity.into(),
+            category: "network".into(),
+            title: format!("Network: {} (bottleneck: {})",
+                if severity == "critical" { "degraded" } else { "jitter" },
+                bottleneck_hop),
+            message: diagnosis.clone(),
+            metadata: serde_json::json!({
+                "path": path_data,
+                "bottleneck": bottleneck_hop,
+                "signal_dbm": signal_dbm,
+                "source": "network_path_probe",
+            }),
+        });
+    }
+
+    // Always store path data for the network_report tool (in /tmp)
+    let report = serde_json::json!({
+        "timestamp": chrono::Utc::now().timestamp(),
+        "signal_dbm": signal_dbm,
+        "path": path_data,
+        "diagnosis": diagnosis,
+        "bottleneck": bottleneck_hop,
+    });
+    // Append to rolling log (last 100 samples)
+    let log_path = "/tmp/savants-network-path.jsonl";
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
+        use std::io::Write;
+        let _ = writeln!(file, "{}", serde_json::to_string(&report).unwrap_or_default());
+    }
+    // Trim to last 100 lines
+    if let Ok(content) = std::fs::read_to_string(log_path) {
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.len() > 100 {
+            let _ = std::fs::write(log_path, lines[lines.len()-100..].join("\n") + "\n");
+        }
+    }
+
+    findings
+}
+
 fn ping_stats(host: &str, count: u32) -> (f64, f64, f64) {
     let output = std::process::Command::new("ping")
         .args(["-c", &count.to_string(), "-W", "2", "-i", "0.2", host])

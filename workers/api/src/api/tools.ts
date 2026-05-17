@@ -798,7 +798,7 @@ tools.post("/call", async (c) => {
     }
   }
   // ── Agent-backed infra tools (route to remote agent) ──
-  else if (["host_health", "host_story", "pod_status", "pod_logs", "ebpf_snapshot"].includes(body.tool)) {
+  else if (["host_health", "host_story", "network_report", "pod_status", "pod_logs", "ebpf_snapshot"].includes(body.tool)) {
     try {
       const agentName = (body.input.agent as string) || undefined;
 
