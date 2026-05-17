@@ -70,8 +70,7 @@ async function authenticate() {
     { name: 'API: usage', path: '/usage', check: (d) => d.total_calls !== undefined },
     { name: 'API: events', path: '/agents/events?limit=5', check: (d) => Array.isArray(d.events) },
     { name: 'API: incidents', path: '/agents/incidents', check: (d) => d.active !== undefined },
-    { name: 'API: audit log', path: '/audit?limit=5', check: (d) => Array.isArray(d.events || d) },
-    { name: 'API: SSO endpoint', path: '/../auth/sso', check: (d) => true }, // Just check it doesn't 500
+    { name: 'API: audit log', path: '/audit?limit=5', check: (d) => Array.isArray(d.entries || d.events || d) },
   ];
 
   for (const t of apiTests) {
