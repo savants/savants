@@ -13,12 +13,13 @@ database_id = "bf5c1140-48ac-4b61-bb5c-6fc2a673eb2d"
 binding = "KV"
 id = "9a24b341dccd4658a962056081c59e22"
 
-[[vectorize]]
-binding = "VECTORIZE"
-index_name = "savants-code"
-
-[ai]
-binding = "AI"
+# Vectorize + AI bindings (uncomment after running: wrangler vectorize create savants-code --dimensions=384 --metric=cosine)
+# [[vectorize]]
+# binding = "VECTORIZE"
+# index_name = "savants-code"
+#
+# [ai]
+# binding = "AI"
 
 [[routes]]
 pattern = "api.savants.cloud/*"
