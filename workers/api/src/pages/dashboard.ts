@@ -326,11 +326,12 @@ const ICONS = {
 
 // ─── Layout ──────────────────────────────────────────────────────────────────
 
-type NavPage = "overview" | "keys" | "team" | "integrations" | "docs" | "billing" | "settings";
+type NavPage = "overview" | "incidents" | "keys" | "team" | "integrations" | "docs" | "billing" | "settings";
 
 function layout(activePage: NavPage, pageTitle: string, pageContent: string): string {
   const navItems: Array<{ id: NavPage; label: string; href: string; icon: string }> = [
     { id: "overview", label: "Overview", href: "/dashboard", icon: ICONS.overview },
+    { id: "incidents", label: "Incidents", href: "/dashboard/incidents", icon: ICONS.overview },
     { id: "keys", label: "API Keys", href: "/dashboard/keys", icon: ICONS.keys },
     { id: "team", label: "Team", href: "/dashboard/team", icon: ICONS.team },
     { id: "integrations", label: "Integrations", href: "/dashboard/integrations", icon: ICONS.integrations },
@@ -1977,6 +1978,173 @@ export function projectDetailPage(projectSlug: string): string {
   return layout("overview", "Project: " + projectSlug, content) + js + closeHtml();
 }
 
+export function incidentsPage(): string {
+  const content = `
+      <div id="alert-box" class="alert"></div>
+      <div style="margin-bottom:24px">
+        <div class="card-subtitle">Active and recent incidents with causal chain analysis.</div>
+      </div>
+
+      <!-- Active Incidents -->
+      <div class="card" style="margin-bottom:24px">
+        <div class="card-header">
+          <div class="card-title" style="color:var(--danger)">Active Incidents</div>
+        </div>
+        <div id="active-incidents">
+          <div class="skeleton skeleton-row"></div>
+        </div>
+      </div>
+
+      <!-- Incident Timeline -->
+      <div class="card" style="margin-bottom:24px">
+        <div class="card-header">
+          <div class="card-title">Timeline (last 2 hours)</div>
+        </div>
+        <div id="incident-timeline" style="position:relative;min-height:200px;padding:16px 0">
+          <div class="skeleton skeleton-row"></div>
+        </div>
+      </div>
+
+      <!-- Causal Chain -->
+      <div class="card" style="margin-bottom:24px">
+        <div class="card-header">
+          <div class="card-title">Root Cause Analysis</div>
+        </div>
+        <div id="causal-chain">
+          <div style="padding:24px;text-align:center;color:var(--muted);font-size:0.85rem">
+            Select an incident above to see its causal chain.
+          </div>
+        </div>
+      </div>
+
+      <!-- Recently Resolved -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Recently Resolved</div>
+        </div>
+        <div id="resolved-incidents">
+          <div class="skeleton skeleton-row"></div>
+        </div>
+      </div>
+  `;
+
+  const js = `
+<style>
+  .timeline-event { display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-left:2px solid var(--border); margin-left:8px; padding-left:20px; position:relative; cursor:pointer; transition: background 0.15s; border-radius:0 8px 8px 0; }
+  .timeline-event:hover { background:rgba(34,211,238,0.04); }
+  .timeline-event::before { content:''; position:absolute; left:-6px; top:14px; width:10px; height:10px; border-radius:50%; border:2px solid var(--border); background:var(--bg); }
+  .timeline-event.critical::before { border-color:var(--danger); background:var(--danger); }
+  .timeline-event.warning::before { border-color:var(--warning); background:var(--warning); }
+  .timeline-event.info::before { border-color:var(--accent); background:var(--accent); }
+  .timeline-event .ev-time { font-family:'JetBrains Mono',monospace; font-size:0.72rem; color:var(--muted); min-width:50px; }
+  .timeline-event .ev-title { font-size:0.85rem; font-weight:500; }
+  .timeline-event .ev-meta { font-size:0.72rem; color:var(--muted); margin-top:2px; }
+  .incident-card { padding:16px; border:1px solid var(--border); border-radius:10px; margin-bottom:12px; cursor:pointer; transition: border-color 0.2s; }
+  .incident-card:hover { border-color:var(--accent); }
+  .incident-card.critical { border-left:3px solid var(--danger); }
+  .incident-card.warning { border-left:3px solid var(--warning); }
+  .causal-node { display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; position:relative; }
+  .causal-node::after { content:''; position:absolute; bottom:-9px; left:24px; width:2px; height:8px; background:var(--border); }
+  .causal-node:last-child::after { display:none; }
+  .causal-node .cn-score { font-family:'JetBrains Mono',monospace; font-size:0.75rem; padding:2px 8px; border-radius:4px; background:var(--surface); color:var(--accent); }
+  .resolved-item { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border); }
+  .resolved-item:last-child { border-bottom:none; }
+</style>
+<script>
+(function(){
+  if (!getToken()) return;
+
+  // Load active incidents
+  apiFetch('/api/v1/agents/incidents').then(function(r) {
+    if (!r.ok) return;
+    var active = r.data.active || [];
+    var resolved = r.data.resolved || [];
+
+    // Active
+    var el = document.getElementById('active-incidents');
+    if (active.length === 0) {
+      el.innerHTML = '<div style="padding:24px;text-align:center;color:var(--success);font-size:0.9rem">No active incidents. All systems operational.</div>';
+    } else {
+      el.innerHTML = active.map(function(inc) {
+        return '<div class="incident-card ' + inc.severity + '" onclick="loadCauses(\\'' + inc.key + '\\')">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center">' +
+            '<div style="font-weight:600;font-size:0.9rem">' + inc.title.substring(0,60) + '</div>' +
+            '<div style="font-size:0.72rem;color:var(--muted)">' + inc.occurrences + 'x / ' + inc.duration_min + 'min</div>' +
+          '</div>' +
+          '<div style="font-size:0.78rem;color:var(--muted);margin-top:4px">' + inc.category + ' - ' + inc.agent + '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    // Resolved
+    var rel = document.getElementById('resolved-incidents');
+    if (resolved.length === 0) {
+      rel.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);font-size:0.85rem">No recently resolved incidents.</div>';
+    } else {
+      rel.innerHTML = resolved.slice(0,10).map(function(inc) {
+        return '<div class="resolved-item">' +
+          '<div><div style="font-size:0.85rem">' + inc.title.substring(0,50) + '</div>' +
+          '<div style="font-size:0.72rem;color:var(--muted)">' + inc.category + '</div></div>' +
+          '<div style="font-size:0.72rem;color:var(--success)">resolved ' + (inc.resolved_min_ago || '?') + 'min ago</div>' +
+        '</div>';
+      }).join('');
+    }
+  });
+
+  // Load timeline
+  apiFetch('/api/v1/agents/events?limit=30').then(function(r) {
+    if (!r.ok || !r.data.events) return;
+    var el = document.getElementById('incident-timeline');
+    var events = r.data.events.filter(function(e) { return e.severity !== 'info'; });
+    if (events.length === 0) {
+      el.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-size:0.85rem">No warning/critical events in the last 2 hours.</div>';
+      return;
+    }
+    el.innerHTML = events.map(function(e) {
+      var ts = new Date(e.timestamp * 1000);
+      var time = ts.getHours().toString().padStart(2,'0') + ':' + ts.getMinutes().toString().padStart(2,'0');
+      return '<div class="timeline-event ' + e.severity + '">' +
+        '<div class="ev-time">' + time + '</div>' +
+        '<div><div class="ev-title">' + (e.title || '').substring(0,60) + '</div>' +
+        '<div class="ev-meta">' + (e.agent || '') + ' - ' + (e.category || '') + '</div></div>' +
+      '</div>';
+    }).join('');
+  });
+})();
+
+// Load causal chain for an incident
+function loadCauses(key) {
+  apiFetch('/api/v1/tools/call', {
+    method: 'POST',
+    body: JSON.stringify({tool: 'find_causes', input: {event_type: 'infrastructure', lookback_minutes: 120}})
+  }).then(function(r) {
+    var el = document.getElementById('causal-chain');
+    if (!r.ok || !r.data.result) {
+      el.innerHTML = '<div style="padding:16px;color:var(--muted)">Could not load causal analysis.</div>';
+      return;
+    }
+    var result = r.data.result;
+    var causes = result.probable_causes || [];
+    if (causes.length === 0) {
+      el.innerHTML = '<div style="padding:16px;color:var(--muted)">No causal data available for this incident.</div>';
+      return;
+    }
+    el.innerHTML = '<div style="padding:4px 0;margin-bottom:12px;font-size:0.82rem;color:var(--muted)">Confidence: ' + ((result.confidence || 0) * 100).toFixed(0) + '% - ' + (result.reasoning || '') + '</div>' +
+      causes.slice(0,8).map(function(c) {
+        return '<div class="causal-node">' +
+          '<div class="cn-score">' + (c.causal_score || 0).toFixed(2) + '</div>' +
+          '<div style="flex:1"><div style="font-size:0.85rem;font-weight:500">' + (c.event_title || '?').substring(0,50) + '</div>' +
+          '<div style="font-size:0.72rem;color:var(--muted)">' + (c.explanation || '').substring(0,80) + '</div></div>' +
+        '</div>';
+      }).join('');
+  });
+}
+</script>
+`;
+
+  return layout("incidents", "Incidents", content) + js + closeHtml();
+}
+
 export function dashboardPage(page?: string): string {
   switch (page) {
     case "keys":
@@ -1985,6 +2153,8 @@ export function dashboardPage(page?: string): string {
       return teamPage();
     case "integrations":
       return integrationsPage();
+    case "incidents":
+      return incidentsPage();
     case "docs":
       return docsPage();
     case "billing":
