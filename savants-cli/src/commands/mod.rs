@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod connect;
 pub mod daemon;
+pub mod hooks;
 pub mod mcp;
 pub mod project;
 pub mod status;

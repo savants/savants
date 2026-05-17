@@ -80,6 +80,12 @@ enum Commands {
         #[command(subcommand)]
         action: HostAction,
     },
+    /// Claude Code hook: intercepts grep/read when graph can answer better
+    #[command(name = "hook")]
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
     /// Start the MCP server (for Claude Code / Cursor)
     Serve,
     /// Manage the Savants daemon (watches all infrastructure continuously)
@@ -145,6 +151,12 @@ enum ProjectAction {
         /// Source identifier (repo name, project slug, namespace, channel)
         source_id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum HookAction {
+    /// Intercept a tool call - called by Claude Code's PreToolUse hook
+    Intercept,
 }
 
 #[derive(Subcommand)]
@@ -317,6 +329,11 @@ async fn main() {
         Commands::Status => {
             commands::status::run().await;
         }
+        Commands::Hook { action } => match action {
+            HookAction::Intercept => {
+                commands::hooks::intercept();
+            }
+        },
         Commands::Mcp { action } => match action {
             McpAction::Install { scope, tool } => {
                 commands::mcp::install(&scope, &tool);

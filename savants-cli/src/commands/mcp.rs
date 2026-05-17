@@ -67,6 +67,7 @@ pub fn install(scope: &str, tool: &str) {
             Ok(out) if out.status.success() => {
                 // Add all savants MCP tools to the allowlist (they're read-only)
                 add_to_claude_allowlist();
+                register_hooks();
                 ensure_claude_md();
                 println!();
                 println!("{}", "Savants MCP server registered globally with Claude Code.".green());
@@ -98,7 +99,72 @@ pub fn install(scope: &str, tool: &str) {
     let config_path = PathBuf::from(".mcp.json");
     write_mcp_json(&config_path, &config);
     add_to_claude_allowlist();
+    register_hooks();
     ensure_claude_md();
+}
+
+/// Register PreToolUse hooks with Claude Code settings.
+/// These intercept Grep/Read and suggest savants tools when the graph can answer.
+fn register_hooks() {
+    let settings_path = dirs::home_dir()
+        .map(|h| h.join(".claude").join("settings.json"))
+        .unwrap_or_default();
+
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| json!({}))
+    } else {
+        json!({})
+    };
+
+    let bin = find_savants_binary();
+
+    // Add hooks for Grep and Read interception
+    let hooks = settings
+        .as_object_mut()
+        .unwrap()
+        .entry("hooks")
+        .or_insert_with(|| json!({}));
+
+    let pre_tool = hooks
+        .as_object_mut()
+        .unwrap()
+        .entry("PreToolUse")
+        .or_insert_with(|| json!([]));
+
+    let hooks_arr = pre_tool.as_array_mut().unwrap();
+
+    // Remove existing savants hooks (update)
+    hooks_arr.retain(|h| {
+        let cmd = h.get("hooks").and_then(|h| h.as_array())
+            .and_then(|a| a.first())
+            .and_then(|h| h.get("command"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        !cmd.contains("savants")
+    });
+
+    // Add Grep interceptor
+    hooks_arr.push(json!({
+        "matcher": "Grep",
+        "hooks": [{"type": "command", "command": format!("{} hook intercept", bin)}]
+    }));
+
+    // Add Read interceptor (only full-file reads of source code)
+    hooks_arr.push(json!({
+        "matcher": "Read",
+        "hooks": [{"type": "command", "command": format!("{} hook intercept", bin)}]
+    }));
+
+    if let Some(parent) = settings_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let content = serde_json::to_string_pretty(&settings).unwrap() + "\n";
+    if let Err(e) = fs::write(&settings_path, &content) {
+        eprintln!("Warning: could not register hooks: {}", e);
+    }
 }
 
 /// Add all savants MCP tools to Claude Code's allowlist.
@@ -279,6 +345,28 @@ pub fn uninstall(scope: &str) {
                 .args(["mcp", "remove", "savants"])
                 .output();
             removed.push("Claude Code global".to_string());
+        }
+    }
+
+    // Remove hooks from settings.json
+    if let Some(settings_path) = dirs::home_dir().map(|h| h.join(".claude").join("settings.json")) {
+        if let Ok(content) = fs::read_to_string(&settings_path) {
+            if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                    if let Some(pre) = hooks.get_mut("PreToolUse").and_then(|p| p.as_array_mut()) {
+                        pre.retain(|h| {
+                            let cmd = h.get("hooks").and_then(|h| h.as_array())
+                                .and_then(|a| a.first())
+                                .and_then(|h| h.get("command"))
+                                .and_then(|c| c.as_str()).unwrap_or("");
+                            !cmd.contains("savants")
+                        });
+                    }
+                }
+                let out = serde_json::to_string_pretty(&settings).unwrap() + "\n";
+                let _ = fs::write(&settings_path, out);
+                removed.push("hooks".to_string());
+            }
         }
     }
 
