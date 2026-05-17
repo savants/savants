@@ -4,6 +4,7 @@ import type { Env, AuthContext } from "./lib/types";
 import { authMiddleware } from "./auth/middleware";
 import deviceRoutes from "./auth/device";
 import oauthRoutes from "./auth/oauth";
+import ssoRoutes from "./auth/sso";
 import toolsRoutes from "./api/tools";
 import orgRoutes from "./api/org";
 import usageRoutes from "./api/usage";
@@ -307,6 +308,7 @@ app.get("/docs/*", (c) => c.redirect("https://savants.dev", 302));
 
 app.route("/auth/device", deviceRoutes);
 app.route("/auth", oauthRoutes);
+app.route("/auth", ssoRoutes);
 
 // ─── Public API routes ──────────────────────────────────────────────────────
 

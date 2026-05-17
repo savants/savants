@@ -16,6 +16,8 @@ export interface Env {
   GITHUB_APP_TOKEN: string;
   GRAPH_PROXY_URL: string;
   CF_API_TOKEN: string;
+  WORKOS_API_KEY: string;
+  WORKOS_CLIENT_ID: string;
 }
 
 export interface AuthContext {
