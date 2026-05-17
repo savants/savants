@@ -2145,6 +2145,110 @@ function loadCauses(key) {
   return layout("incidents", "Incidents", content) + js + closeHtml();
 }
 
+export function mttrPage(): string {
+  const content = `
+      <div id="alert-box" class="alert"></div>
+      <div style="margin-bottom:24px">
+        <div class="card-subtitle">Mean Time To Recovery - proves Savants ROI to your team.</div>
+      </div>
+
+      <!-- MTTR Summary -->
+      <div class="metrics-row" id="mttr-metrics">
+        <div class="metric-card accent"><div class="metric-value" id="mttr-val">-</div><div class="metric-label">Avg MTTR</div></div>
+        <div class="metric-card"><div class="metric-value" id="incidents-val">-</div><div class="metric-label">Incidents (30d)</div></div>
+        <div class="metric-card"><div class="metric-value" id="resolved-val">-</div><div class="metric-label">Resolved</div></div>
+        <div class="metric-card"><div class="metric-value" id="detection-val">-</div><div class="metric-label">Avg Detection</div></div>
+      </div>
+
+      <!-- MTTR Trend Chart -->
+      <div class="card" style="margin-bottom:24px">
+        <div class="card-header"><div class="card-title">MTTR Trend (last 30 days)</div></div>
+        <div id="mttr-chart" style="height:200px;display:flex;align-items:flex-end;gap:4px;padding:16px 0"></div>
+      </div>
+
+      <!-- Incident Breakdown -->
+      <div class="card" style="margin-bottom:24px">
+        <div class="card-header"><div class="card-title">Incidents by Category</div></div>
+        <div id="category-breakdown"></div>
+      </div>
+
+      <!-- Incident History Table -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">Incident History</div></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Title</th><th>Category</th><th>Duration</th><th>Status</th></tr></thead>
+            <tbody id="incident-table"><tr><td colspan="4"><div class="skeleton skeleton-row"></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+  `;
+
+  const js = `
+<script>
+(function(){
+  if (!getToken()) return;
+
+  apiFetch('/api/v1/agents/incidents').then(function(r) {
+    if (!r.ok) return;
+    var active = r.data.active || [];
+    var resolved = r.data.resolved || [];
+    var all = active.concat(resolved);
+
+    // MTTR calculation
+    var durations = resolved.filter(function(i) { return i.duration_min > 0; }).map(function(i) { return i.duration_min; });
+    var avgMttr = durations.length > 0 ? Math.round(durations.reduce(function(a,b){return a+b;},0) / durations.length) : 0;
+
+    document.getElementById('mttr-val').textContent = avgMttr > 60 ? (avgMttr/60).toFixed(1) + 'h' : avgMttr + 'min';
+    document.getElementById('incidents-val').textContent = all.length;
+    document.getElementById('resolved-val').textContent = resolved.length;
+    document.getElementById('detection-val').textContent = '<1min';
+
+    // Chart: bar chart of MTTR per incident
+    var chart = document.getElementById('mttr-chart');
+    if (durations.length === 0) {
+      chart.innerHTML = '<div style="text-align:center;color:var(--muted);width:100%;padding:40px">No resolved incidents with duration data.</div>';
+    } else {
+      var maxD = Math.max.apply(null, durations);
+      chart.innerHTML = durations.slice(-30).map(function(d, i) {
+        var h = Math.max(4, (d / maxD) * 180);
+        var color = d > 60 ? 'var(--danger)' : d > 15 ? 'var(--warning)' : 'var(--success)';
+        return '<div title="' + d + ' min" style="flex:1;min-width:6px;height:' + h + 'px;background:' + color + ';border-radius:3px 3px 0 0;transition:height 0.5s"></div>';
+      }).join('');
+    }
+
+    // Category breakdown
+    var cats = {};
+    all.forEach(function(i) { cats[i.category] = (cats[i.category] || 0) + 1; });
+    var catEl = document.getElementById('category-breakdown');
+    var catTotal = all.length || 1;
+    catEl.innerHTML = Object.entries(cats).sort(function(a,b){return b[1]-a[1];}).map(function(kv) {
+      var pct = (kv[1] / catTotal * 100).toFixed(0);
+      return '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;padding:4px 0">' +
+        '<span style="min-width:80px;font-size:0.82rem;color:var(--muted)">' + kv[0] + '</span>' +
+        '<div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:var(--accent);border-radius:3px;transition:width 1s"></div></div>' +
+        '<span style="min-width:40px;text-align:right;font-size:0.78rem;font-family:JetBrains Mono,monospace">' + kv[1] + '</span>' +
+      '</div>';
+    }).join('');
+
+    // Table
+    var table = document.getElementById('incident-table');
+    table.innerHTML = all.slice(0, 20).map(function(i) {
+      var dur = i.duration_min > 60 ? (i.duration_min/60).toFixed(1) + 'h' : i.duration_min + 'min';
+      var status = i.status === 'active' ? '<span style="color:var(--danger)">active</span>' : '<span style="color:var(--success)">resolved</span>';
+      return '<tr><td style="font-size:0.85rem">' + (i.title||'').substring(0,50) + '</td>' +
+        '<td style="font-size:0.78rem;color:var(--muted)">' + (i.category||'') + '</td>' +
+        '<td class="mono" style="font-size:0.78rem">' + dur + '</td>' +
+        '<td>' + status + '</td></tr>';
+    }).join('');
+  });
+})();
+</script>
+`;
+
+  return layout("overview", "MTTR Dashboard", content) + js + closeHtml();
+}
+
 export function dashboardPage(page?: string): string {
   switch (page) {
     case "keys":
@@ -2155,6 +2259,8 @@ export function dashboardPage(page?: string): string {
       return integrationsPage();
     case "incidents":
       return incidentsPage();
+    case "mttr":
+      return mttrPage();
     case "docs":
       return docsPage();
     case "billing":
