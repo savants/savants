@@ -70,6 +70,8 @@ async function authenticate() {
     { name: 'API: usage', path: '/usage', check: (d) => d.total_calls !== undefined },
     { name: 'API: events', path: '/agents/events?limit=5', check: (d) => Array.isArray(d.events) },
     { name: 'API: incidents', path: '/agents/incidents', check: (d) => d.active !== undefined },
+    { name: 'API: audit log', path: '/audit?limit=5', check: (d) => Array.isArray(d.events || d) },
+    { name: 'API: SSO endpoint', path: '/../auth/sso', check: (d) => true }, // Just check it doesn't 500
   ];
 
   for (const t of apiTests) {
@@ -128,6 +130,9 @@ async function authenticate() {
     { url: '/dashboard/integrations', name: 'dashboard-integrations', check: 'ntegration' },
     { url: '/dashboard/billing', name: 'dashboard-billing', check: 'Billing' },
     { url: '/dashboard/settings', name: 'dashboard-settings', check: 'Settings' },
+    { url: '/dashboard/incidents', name: 'dashboard-incidents', check: 'Incidents' },
+    { url: '/dashboard/mttr', name: 'dashboard-mttr', check: 'MTTR' },
+    { url: '/dashboard/audit', name: 'dashboard-audit', check: 'audit' },
   ];
 
   for (const p of dashPages) {
@@ -181,6 +186,46 @@ async function authenticate() {
     log(buttons.length >= 4 ? 'PASS' : 'FAIL', 'Pricing: CTA buttons present', `${buttons.length} buttons found`);
   } catch (e) {
     log('FAIL', 'Pricing: CTA buttons present', e.message.substring(0, 80));
+  }
+
+  // ── Enterprise Feature Tests ──
+
+  // Incidents page loads timeline
+  try {
+    await goAuth(BASE + '/dashboard/incidents');
+    const has = await page.content();
+    log(has.includes('active-incidents') ? 'PASS' : 'FAIL', 'Enterprise: incidents page', 'timeline + causal chain');
+    await screenshot(page, 'enterprise-incidents');
+  } catch (e) {
+    log('FAIL', 'Enterprise: incidents page', e.message.substring(0, 80));
+  }
+
+  // MTTR page loads metrics
+  try {
+    await goAuth(BASE + '/dashboard/mttr');
+    const has = await page.content();
+    log(has.includes('mttr-val') ? 'PASS' : 'FAIL', 'Enterprise: MTTR dashboard', 'metrics + chart');
+    await screenshot(page, 'enterprise-mttr');
+  } catch (e) {
+    log('FAIL', 'Enterprise: MTTR dashboard', e.message.substring(0, 80));
+  }
+
+  // Audit log page loads table
+  try {
+    await goAuth(BASE + '/dashboard/audit');
+    const has = await page.content();
+    log(has.includes('audit-table') ? 'PASS' : 'FAIL', 'Enterprise: audit log', 'table + filter');
+    await screenshot(page, 'enterprise-audit');
+  } catch (e) {
+    log('FAIL', 'Enterprise: audit log', e.message.substring(0, 80));
+  }
+
+  // SSO endpoint exists (doesn't 500)
+  try {
+    const ssoRes = await fetch(BASE + '/auth/sso', { redirect: 'manual' });
+    log(ssoRes.status !== 500 ? 'PASS' : 'FAIL', 'Enterprise: SSO endpoint', `HTTP ${ssoRes.status}`);
+  } catch (e) {
+    log('FAIL', 'Enterprise: SSO endpoint', e.message.substring(0, 80));
   }
 
   await browser.close();
