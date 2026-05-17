@@ -146,16 +146,38 @@ fn register_hooks() {
         !cmd.contains("savants")
     });
 
-    // Add Grep interceptor
+    // PreToolUse: intercept Grep and Read
     hooks_arr.push(json!({
         "matcher": "Grep",
         "hooks": [{"type": "command", "command": format!("{} hook intercept", bin)}]
     }));
-
-    // Add Read interceptor (only full-file reads of source code)
     hooks_arr.push(json!({
         "matcher": "Read",
         "hooks": [{"type": "command", "command": format!("{} hook intercept", bin)}]
+    }));
+
+    // PostToolUse: blast radius after edits, reindex after commits
+    let post_tool = hooks
+        .as_object_mut()
+        .unwrap()
+        .entry("PostToolUse")
+        .or_insert_with(|| json!([]));
+
+    let post_arr = post_tool.as_array_mut().unwrap();
+    post_arr.retain(|h| {
+        let cmd = h.get("hooks").and_then(|h| h.as_array())
+            .and_then(|a| a.first())
+            .and_then(|h| h.get("command"))
+            .and_then(|c| c.as_str()).unwrap_or("");
+        !cmd.contains("savants")
+    });
+    post_arr.push(json!({
+        "matcher": "Edit",
+        "hooks": [{"type": "command", "command": format!("{} hook post-tool", bin)}]
+    }));
+    post_arr.push(json!({
+        "matcher": "Bash",
+        "hooks": [{"type": "command", "command": format!("{} hook post-tool", bin)}]
     }));
 
     if let Some(parent) = settings_path.parent() {
@@ -353,14 +375,16 @@ pub fn uninstall(scope: &str) {
         if let Ok(content) = fs::read_to_string(&settings_path) {
             if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-                    if let Some(pre) = hooks.get_mut("PreToolUse").and_then(|p| p.as_array_mut()) {
-                        pre.retain(|h| {
-                            let cmd = h.get("hooks").and_then(|h| h.as_array())
-                                .and_then(|a| a.first())
-                                .and_then(|h| h.get("command"))
-                                .and_then(|c| c.as_str()).unwrap_or("");
-                            !cmd.contains("savants")
-                        });
+                    for event in &["PreToolUse", "PostToolUse"] {
+                        if let Some(arr) = hooks.get_mut(*event).and_then(|p| p.as_array_mut()) {
+                            arr.retain(|h| {
+                                let cmd = h.get("hooks").and_then(|h| h.as_array())
+                                    .and_then(|a| a.first())
+                                    .and_then(|h| h.get("command"))
+                                    .and_then(|c| c.as_str()).unwrap_or("");
+                                !cmd.contains("savants")
+                            });
+                        }
                     }
                 }
                 let out = serde_json::to_string_pretty(&settings).unwrap() + "\n";

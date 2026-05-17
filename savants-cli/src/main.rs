@@ -157,6 +157,8 @@ enum ProjectAction {
 enum HookAction {
     /// Intercept a tool call - called by Claude Code's PreToolUse hook
     Intercept,
+    /// Post-tool context - called after Edit/Bash to suggest graph actions
+    PostTool,
 }
 
 #[derive(Subcommand)]
@@ -332,6 +334,9 @@ async fn main() {
         Commands::Hook { action } => match action {
             HookAction::Intercept => {
                 commands::hooks::intercept();
+            }
+            HookAction::PostTool => {
+                commands::hooks::post_tool();
             }
         },
         Commands::Mcp { action } => match action {

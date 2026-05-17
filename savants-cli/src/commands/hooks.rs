@@ -11,8 +11,7 @@
 use serde_json::Value;
 use std::io::Read;
 
-/// Check if savants graph can answer this query better than grep/read.
-/// Called by Claude Code hook system before Grep or Read tool calls.
+/// Main hook entry point. Reads hook event from stdin, dispatches.
 pub fn intercept() {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).unwrap_or_default();
@@ -135,4 +134,119 @@ fn block(message: &str) {
     // Print the suggestion and exit 2 = block
     println!("{}", message);
     std::process::exit(2);
+}
+
+/// Post-tool hook: runs AFTER a tool completes.
+/// Provides context about what just happened.
+pub fn post_tool() {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input).unwrap_or_default();
+
+    let hook_data: Value = serde_json::from_str(&input).unwrap_or_default();
+    let tool_name = hook_data.get("tool_name")
+        .or_else(|| hook_data.get("tool"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let tool_input = hook_data.get("tool_input")
+        .or_else(|| hook_data.get("input"))
+        .cloned()
+        .unwrap_or_default();
+
+    match tool_name {
+        "Edit" | "edit" | "Write" | "write" => handle_post_edit(&tool_input),
+        "Bash" | "bash" => handle_post_bash(&tool_input),
+        _ => {}
+    }
+
+    // Always allow (post hooks don't block)
+    std::process::exit(0);
+}
+
+fn handle_post_edit(input: &Value) {
+    let file_path = input.get("file_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if file_path.is_empty() { return; }
+
+    // Only care about source files
+    let is_source = file_path.ends_with(".ts") || file_path.ends_with(".tsx")
+        || file_path.ends_with(".js") || file_path.ends_with(".py")
+        || file_path.ends_with(".rs") || file_path.ends_with(".go");
+    if !is_source || !has_graph_index() { return; }
+
+    // Extract function names from the edited region
+    let old_string = input.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+    let new_string = input.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Find function-like identifiers in the edit
+    let mut functions_changed: Vec<String> = Vec::new();
+    for text in &[old_string, new_string] {
+        for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
+            if word.len() > 5
+                && word.chars().any(|c| c.is_lowercase())
+                && word.chars().any(|c| c.is_uppercase())
+                && !functions_changed.contains(&word.to_string())
+            {
+                functions_changed.push(word.to_string());
+            }
+        }
+    }
+
+    if !functions_changed.is_empty() {
+        let file_name = file_path.rsplit('/').next().unwrap_or(file_path);
+        println!(
+            "Savants: You edited {} which contains {}. \
+            Use `mcp__savants__blast_radius` to check what's affected, \
+            or `mcp__savants__callers` to see what depends on these functions.",
+            file_name,
+            functions_changed.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+}
+
+fn handle_post_bash(input: &Value) {
+    let command = input.get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Detect git commit -> suggest reindex
+    if command.contains("git commit") || command.contains("git push") {
+        if has_graph_index() {
+            println!(
+                "Savants: Code was committed. Run `mcp__savants__reindex` to update the graph \
+                with the latest changes so search and callers stay accurate."
+            );
+        }
+    }
+
+    // Detect deployment commands
+    if command.contains("kubectl apply") || command.contains("helm upgrade")
+        || command.contains("docker push") || command.contains("wrangler deploy")
+        || command.contains("argocd sync")
+    {
+        println!(
+            "Savants: Deploy detected. Use `mcp__savants__diagnose` after deploy to check \
+            for new errors, or `mcp__savants__network_report` to verify connectivity."
+        );
+    }
+}
+
+/// Track what tools are used and what questions are asked.
+/// Appends to a local telemetry log for improving savants.
+pub fn log_usage(tool: &str, query: &str) {
+    let log_path = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".savants")
+        .join("usage.jsonl");
+
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        use std::io::Write;
+        let entry = serde_json::json!({
+            "ts": chrono::Utc::now().timestamp(),
+            "tool": tool,
+            "query": if query.len() > 200 { &query[..200] } else { query },
+        });
+        let _ = writeln!(file, "{}", serde_json::to_string(&entry).unwrap_or_default());
+    }
 }
