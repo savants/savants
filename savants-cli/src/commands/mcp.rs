@@ -67,6 +67,7 @@ pub fn install(scope: &str, tool: &str) {
             Ok(out) if out.status.success() => {
                 // Add all savants MCP tools to the allowlist (they're read-only)
                 add_to_claude_allowlist();
+                ensure_claude_md();
                 println!();
                 println!("{}", "Savants MCP server registered globally with Claude Code.".green());
                 println!("All savants tools auto-approved (read-only).");
@@ -97,6 +98,7 @@ pub fn install(scope: &str, tool: &str) {
     let config_path = PathBuf::from(".mcp.json");
     write_mcp_json(&config_path, &config);
     add_to_claude_allowlist();
+    ensure_claude_md();
 }
 
 /// Add all savants MCP tools to Claude Code's allowlist.
@@ -140,6 +142,36 @@ fn add_to_claude_allowlist() {
     let content = serde_json::to_string_pretty(&settings).unwrap() + "\n";
     if let Err(e) = fs::write(&settings_path, &content) {
         eprintln!("Warning: could not update Claude settings: {}", e);
+    }
+}
+
+/// Write a project CLAUDE.md with savants instructions if none exists.
+/// This tells Claude to use the graph first, not grep.
+fn ensure_claude_md() {
+    let claude_md = PathBuf::from("CLAUDE.md");
+    let savants_block = r#"# Savants - Graph-First Code Intelligence
+When savants MCP tools are available, ALWAYS use them BEFORE grep/read:
+- "What caused X?" -> `diagnose` (error_message, traces full call chain with source code)
+- "Who calls X?" -> `callers` (function, recursive chain)
+- "Where is X used?" -> `where_used` (symbol, all references)
+- "Find code that does X" -> `semantic_search` (query, finds by meaning not text)
+- "What's in this file?" -> `file_skeleton` (file, function list without reading bodies)
+- "What's this function?" -> `function_xray` (function_name, full profile)
+- "Is infra healthy?" -> `network_report` or `host_health`
+
+Only fall back to Grep for exact regex patterns. Only Read files when savants returns "not found".
+"#;
+
+    if claude_md.exists() {
+        // Append if not already present
+        if let Ok(content) = fs::read_to_string(&claude_md) {
+            if !content.contains("Savants - Graph-First") {
+                let updated = format!("{}\n{}", content.trim(), savants_block);
+                let _ = fs::write(&claude_md, updated);
+            }
+        }
+    } else {
+        let _ = fs::write(&claude_md, savants_block);
     }
 }
 
