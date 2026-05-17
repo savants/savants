@@ -46,10 +46,14 @@ fn handle_grep_intercept(input: &Value) {
         return;
     }
 
-    // Check if this looks like a function name search (camelCase, snake_case, PascalCase)
+    // Check if this looks like a function name (camelCase or snake_case, not ALL_CAPS)
+    let is_all_upper = pattern.chars().all(|c| c.is_uppercase() || c == '_');
+    let has_mixed_case = pattern.chars().any(|c| c.is_lowercase()) && pattern.chars().any(|c| c.is_uppercase());
+    let has_underscore = pattern.contains('_') && !is_all_upper;
     let is_func_search = pattern.chars().all(|c| c.is_alphanumeric() || c == '_')
-        && pattern.len() > 3
-        && (pattern.contains('_') || pattern.chars().any(|c| c.is_uppercase()));
+        && pattern.len() > 5
+        && !is_all_upper
+        && (has_underscore || has_mixed_case);
 
     if !is_func_search {
         // Regex/exact string search - let grep handle it
