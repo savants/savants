@@ -24,7 +24,7 @@ export function authMiddleware() {
     let auth: AuthContext | null = null;
 
     if (token.startsWith("ey")) {
-      auth = await resolveJwt(token, c.env.JWT_SECRET);
+      auth = await resolveJwt(token, c.env.JWT_SECRET, c.env.DB);
     } else if (token.startsWith("sk_live_")) {
       auth = await resolveApiKey(token, c.env.DB);
     } else if (token.startsWith("svt_agent_")) {
@@ -40,10 +40,23 @@ export function authMiddleware() {
   };
 }
 
-async function resolveJwt(token: string, secret: string): Promise<AuthContext | null> {
+async function resolveJwt(token: string, secret: string, db?: D1Database): Promise<AuthContext | null> {
   const payload = await verifyJwt(token, secret);
   if (!payload) return null;
-  return { userId: payload.sub, orgId: payload.org };
+
+  // Fetch role from membership table
+  let role: "admin" | "member" | "viewer" = "member";
+  if (db) {
+    try {
+      const membership = await db.prepare(
+        "SELECT role FROM memberships WHERE user_id = ?1 AND org_id = ?2 LIMIT 1"
+      ).bind(payload.sub, payload.org).first<{ role: string }>();
+      if (membership?.role === "admin" || membership?.role === "owner") role = "admin";
+      else if (membership?.role === "viewer") role = "viewer";
+    } catch {}
+  }
+
+  return { userId: payload.sub, orgId: payload.org, role };
 }
 
 async function resolveApiKey(rawKey: string, db: D1Database): Promise<AuthContext | null> {
@@ -59,7 +72,7 @@ async function resolveApiKey(rawKey: string, db: D1Database): Promise<AuthContex
   const membership = await getUserOrgMembership(db, keyRecord.created_by);
   if (!membership) return null;
 
-  return { userId: keyRecord.created_by, orgId: keyRecord.org_id };
+  return { userId: keyRecord.created_by, orgId: keyRecord.org_id, role: "admin" as const };
 }
 
 async function resolveAgentKey(rawKey: string, db: D1Database): Promise<AuthContext | null> {
@@ -72,5 +85,27 @@ async function resolveAgentKey(rawKey: string, db: D1Database): Promise<AuthCont
 
   await touchAgentKeyLastUsed(db, keyRecord.id);
 
-  return { userId: keyRecord.created_by, orgId: keyRecord.org_id };
+  return { userId: keyRecord.created_by, orgId: keyRecord.org_id, role: "admin" as const };
+}
+
+/// Middleware: require admin role. Use after authMiddleware.
+export function requireAdmin() {
+  return async (c: Context<HonoEnv>, next: Next) => {
+    const auth = c.get("auth");
+    if (auth.role !== "admin") {
+      return c.json({ error: "forbidden", message: "Admin access required", status: 403 }, 403);
+    }
+    await next();
+  };
+}
+
+/// Middleware: require admin or member (not viewer). Use after authMiddleware.
+export function requireMember() {
+  return async (c: Context<HonoEnv>, next: Next) => {
+    const auth = c.get("auth");
+    if (auth.role === "viewer") {
+      return c.json({ error: "forbidden", message: "Write access required", status: 403 }, 403);
+    }
+    await next();
+  };
 }

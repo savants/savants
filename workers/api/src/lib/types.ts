@@ -23,6 +23,7 @@ export interface Env {
 export interface AuthContext {
   userId: string;
   orgId: string;
+  role: "admin" | "member" | "viewer";
 }
 
 export interface User {

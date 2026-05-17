@@ -2145,6 +2145,84 @@ function loadCauses(key) {
   return layout("incidents", "Incidents", content) + js + closeHtml();
 }
 
+export function auditLogPage(): string {
+  const content = `
+      <div id="alert-box" class="alert"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
+        <div class="card-subtitle">Complete audit trail of all actions in your organization.</div>
+        <select id="audit-filter" style="background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:0.82rem">
+          <option value="">All actions</option>
+          <option value="agent.notify">Agent notifications</option>
+          <option value="tool.call">Tool calls</option>
+          <option value="auth.login">Logins</option>
+          <option value="api_key.create">API key events</option>
+          <option value="member.invite">Team events</option>
+        </select>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Resource</th><th>Details</th></tr></thead>
+            <tbody id="audit-table"><tr><td colspan="5"><div class="skeleton skeleton-row"></div></td></tr></tbody>
+          </table>
+        </div>
+        <div id="audit-more" style="text-align:center;padding:16px"></div>
+      </div>
+  `;
+
+  const js = `
+<script>
+(function(){
+  if (!getToken()) return;
+  var offset = 0;
+  var filter = '';
+
+  function loadAudit() {
+    var url = '/api/v1/audit?limit=30&offset=' + offset;
+    if (filter) url += '&action=' + filter;
+    apiFetch(url).then(function(r) {
+      if (!r.ok) return;
+      var events = r.data.events || r.data || [];
+      var tbody = document.getElementById('audit-table');
+      if (offset === 0) tbody.innerHTML = '';
+      if (events.length === 0 && offset === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px">No audit events found.</td></tr>';
+        return;
+      }
+      tbody.innerHTML += events.map(function(e) {
+        var ts = new Date((e.created_at || 0) * 1000);
+        var time = ts.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + ts.getHours().toString().padStart(2,'0') + ':' + ts.getMinutes().toString().padStart(2,'0');
+        var meta = {};
+        try { meta = JSON.parse(e.metadata || '{}'); } catch(ex) {}
+        var detail = meta.title || meta.tool || meta.key_name || '';
+        return '<tr>' +
+          '<td class="mono" style="font-size:0.78rem;white-space:nowrap">' + time + '</td>' +
+          '<td><span style="font-size:0.78rem;padding:2px 8px;border-radius:4px;background:var(--surface)">' + (e.action || '?') + '</span></td>' +
+          '<td style="font-size:0.82rem">' + (e.actor_id || '').substring(0,12) + '</td>' +
+          '<td style="font-size:0.82rem;color:var(--muted)">' + (e.resource_type || '') + '</td>' +
+          '<td style="font-size:0.78rem;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (detail || '').substring(0,60) + '</td>' +
+        '</tr>';
+      }).join('');
+      if (events.length >= 30) {
+        document.getElementById('audit-more').innerHTML = '<button class="btn btn-secondary btn-sm" onclick="loadMore()">Load more</button>';
+      } else {
+        document.getElementById('audit-more').innerHTML = '';
+      }
+    });
+  }
+
+  window.loadMore = function() { offset += 30; loadAudit(); };
+  document.getElementById('audit-filter').addEventListener('change', function(e) {
+    filter = e.target.value; offset = 0; loadAudit();
+  });
+  loadAudit();
+})();
+</script>
+`;
+
+  return layout("overview", "Audit Log", content) + js + closeHtml();
+}
+
 export function mttrPage(): string {
   const content = `
       <div id="alert-box" class="alert"></div>
@@ -2261,6 +2339,8 @@ export function dashboardPage(page?: string): string {
       return incidentsPage();
     case "mttr":
       return mttrPage();
+    case "audit":
+      return auditLogPage();
     case "docs":
       return docsPage();
     case "billing":
