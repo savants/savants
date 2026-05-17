@@ -391,11 +391,12 @@ const TOOL_LIST: ToolDefinition[] = [
   // ── Cloud tools (PAYG) ──
   {
     name: "diagnose_error",
-    description: "Root cause file + line in 0.7s. Traces call chains through code + k8s + logs + Slack. Git blame context. Upstream trace.",
+    description: "THE FIRST TOOL TO USE FOR ANY ERROR OR INCIDENT. Finds the root cause function, traces the full call chain with source code for each function, enriches from Sentry + Jira + agent findings. Returns confidence score. Use this BEFORE manually reading code.",
     input_schema: {
       type: "object",
       properties: {
-        error_message: { type: "string", description: "The error message or stack trace" },
+        error_message: { type: "string", description: "Error message, incident description, or 'what caused X' question" },
+        repo: { type: "string", description: "Repository name (for graph lookup)" },
         file_path: { type: "string", description: "Optional file path for context" },
       },
       required: ["error_message"],
