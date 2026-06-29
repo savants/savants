@@ -1,0 +1,15 @@
+{
+  "_comment": "Savants Guard Configuration — profiles stack together, custom rules added on top",
+
+  "profiles": [
+    "standard",
+    "secrets",
+    "git-safe"
+  ],
+
+  "custom_rules": [
+    "when tool eq 'Edit' and file_path contains 'migrations/' then require_approval",
+    "when tool eq 'Bash' and command contains 'prisma migrate' then require_approval",
+    "when tool eq 'Write' and file_path contains 'src/legacy/' then block"
+  ]
+}

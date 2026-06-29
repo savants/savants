@@ -1,0 +1,32 @@
+{
+  "id": "oss-005",
+  "source": "github-bug",
+  "title": "SvelteKit #15004: TypeError Cannot read private member #state from Response proxy",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "sveltekit TypeError: Cannot read private member #state from an object whose class did not declare it at Proxy.clone in page load_data",
+    "source": "github_issue",
+    "issue_url": "https://github.com/sveltejs/kit/issues/15004"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/kit/src/runtime/server/page/load_data.js",
+    "root_cause_function": "load_server_data",
+    "root_cause_description": "On Node v24+, undici's Response has private class fields. When SvelteKit proxies the Response in page load, clone() fails because the proxy cannot access private #state. Fix: use Reflect.apply and Object.defineProperties to properly delegate method calls.",
+    "root_cause_category": "application",
+    "fix_pr": "#15005",
+    "fix_description": "Apply MDN recommended fix for proxying objects with private fields"
+  },
+  "expected_signals": {
+    "must_mention": ["load_data", "load"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "kit",
+    "issue_number": 15004,
+    "pr_number": 15005,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

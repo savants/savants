@@ -1,0 +1,266 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Rust CLI — the primary binary
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  rust-cli:
+    name: Rust CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: savants-cli
+
+      - name: Build (release)
+        working-directory: savants-cli
+        run: cargo build --release
+
+      - name: Unit tests
+        working-directory: savants-cli
+        run: cargo test --release
+
+      - name: Clippy (lint — warnings are errors)
+        working-directory: savants-cli
+        run: cargo clippy --release -- -D warnings
+        continue-on-error: true  # TODO: fix all clippy warnings then remove this
+
+      - name: Binary size gate (max 20MB)
+        working-directory: savants-cli
+        run: |
+          SIZE=$(du -m target/release/savants | cut -f1)
+          echo "Binary: ${SIZE}MB"
+          if [ "$SIZE" -gt 20 ]; then
+            echo "::error::Binary exceeds 20MB (${SIZE}MB)"
+            exit 1
+          fi
+
+      - name: Security gate — no leaked IP
+        working-directory: savants-cli
+        run: |
+          BIN=target/release/savants
+          FAIL=0
+
+          FALKOR=$(strings $BIN | grep -ic "falkordb" || true)
+          if [ "$FALKOR" -gt 0 ]; then
+            echo "::error::Binary contains $FALKOR 'falkordb' references"
+            FAIL=1
+          fi
+
+          PATHS=$(strings $BIN | grep -c "/home/" || true)
+          if [ "$PATHS" -gt 0 ]; then
+            echo "::error::Binary leaks $PATHS build paths"
+            FAIL=1
+          fi
+
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+          echo "Security gate passed: 0 FalkorDB refs, 0 path leaks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: savants-linux-x86_64
+          path: savants-cli/target/release/savants
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Rust Cloud API
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  rust-cloud:
+    name: Cloud API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: savants-cloud
+
+      - name: Build
+        working-directory: savants-cloud
+        run: cargo build --release
+
+      - name: Test
+        working-directory: savants-cloud
+        run: cargo test --release
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Website
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  website:
+    name: Website
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install + Build
+        working-directory: website
+        run: |
+          bun install
+          bunx astro build
+
+      - name: Size gate (max 500KB)
+        working-directory: website
+        run: |
+          SIZE=$(du -sk dist/ | cut -f1)
+          echo "Website: ${SIZE}KB"
+          if [ "$SIZE" -gt 500 ]; then
+            echo "::error::Website exceeds 500KB (${SIZE}KB)"
+            exit 1
+          fi
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Python SDK — guard tests
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  python-sdk:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install SDK
+        working-directory: packages/guard-python
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        working-directory: packages/guard-python
+        run: pytest tests/ -v --tb=short
+
+      - name: Verify imports
+        run: |
+          python -c "
+          from savants_guard import create_guard, GuardResult, GuardError, parse_rule
+          from savants_guard import production_safety, spend_limit, business_hours, deploy_safety
+          from savants_guard import risk_aware_safety, RiskContext, file_risk, change_size
+          print(f'savants-guard imported successfully')
+          guard = create_guard(['when action eq \"test\" then block'])
+          result = guard.check({'action': 'test'})
+          assert result.blocked, 'Guard check failed'
+          print('All imports and basic check passed')
+          "
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Guard profiles — validate all profiles load
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  guard-profiles:
+    name: Guard Profiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SDK
+        working-directory: packages/guard-python
+        run: pip install -e .
+
+      - name: Validate all profiles
+        run: |
+          python3 -c "
+          import json, os, sys
+          from savants_guard import create_guard
+
+          profiles_dir = 'packages/guard-profiles/presets'
+          profiles = [f.replace('.json','') for f in os.listdir(profiles_dir) if f.endswith('.json')]
+          failed = []
+
+          for name in sorted(profiles):
+              path = os.path.join(profiles_dir, f'{name}.json')
+              rules = json.load(open(path))
+              guard = create_guard(rules)
+              count = len(guard.list_rules())
+              if count == 0:
+                  failed.append(f'{name}: 0 rules parsed')
+                  print(f'  FAIL {name}: 0 rules parsed from {len(rules)} entries')
+              else:
+                  print(f'  OK   {name}: {count} rules')
+
+          if failed:
+              print(f'\n{len(failed)} profiles failed')
+              sys.exit(1)
+          print(f'\nAll {len(profiles)} profiles valid')
+          "
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Integration test — binary against real graph
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  integration:
+    name: Integration
+    needs: [rust-cli]
+    runs-on: ubuntu-latest
+    services:
+      graph:
+        image: falkordb/falkordb:latest
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: savants-linux-x86_64
+          path: .
+
+      - name: Setup
+        run: chmod +x savants
+
+      - name: savants status
+        env:
+          SAVANTS_PORT: "6379"
+        run: ./savants status
+
+      - name: savants host snapshot
+        env:
+          SAVANTS_PORT: "6379"
+        run: ./savants host snapshot
+
+      - name: savants story
+        env:
+          SAVANTS_PORT: "6379"
+        run: ./savants story --since-minutes 0
+
+      - name: savants mcp install
+        run: ./savants mcp install
+
+      - name: Verify MCP config
+        run: |
+          python3 -c "
+          import json
+          d = json.load(open('.mcp.json'))
+          assert 'savants' in d['mcpServers'], 'savants not in mcpServers'
+          print('MCP config valid')
+          "
+
+      - name: savants mcp status
+        run: ./savants mcp status
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Release gate — all checks must pass
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  release-gate:
+    name: Release Gate
+    needs: [rust-cli, rust-cloud, website, python-sdk, guard-profiles, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All checks passed
+        run: echo "All CI checks passed. Safe to release."

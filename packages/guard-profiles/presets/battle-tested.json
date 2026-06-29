@@ -1,0 +1,61 @@
+[
+  "when tool eq 'Bash' and command contains 'rm -rf /' then block",
+  "when tool eq 'Bash' and command contains 'rm -rf ~' then block",
+  "when tool eq 'Bash' and command contains 'rm -rf $HOME' then block",
+  "when tool eq 'Bash' and command contains 'rm --no-preserve-root' then block",
+  "when tool eq 'Bash' and command contains 'rm -rf .' then suggest 'Use git clean -fd for tracked repos, or remove specific files'",
+
+  "when tool eq 'Bash' and command contains 'git reset --hard' then suggest 'Use git stash to save work first, or git reset --soft'",
+  "when tool eq 'Bash' and command contains 'git push --force' then rewrite 'git push --force-with-lease'",
+  "when tool eq 'Bash' and command contains 'git push -f ' then rewrite 'git push --force-with-lease'",
+  "when tool eq 'Bash' and command contains 'git clean -fd' then ask 'git clean deletes all untracked files permanently'",
+  "when tool eq 'Bash' and command contains 'git checkout .' then ask 'This discards all unstaged changes'",
+
+  "when tool eq 'Bash' and command contains 'DROP TABLE' then block",
+  "when tool eq 'Bash' and command contains 'DROP DATABASE' then block",
+  "when tool eq 'Bash' and command contains 'TRUNCATE TABLE' then ask 'TRUNCATE deletes all rows permanently'",
+  "when tool eq 'Bash' and command contains 'DELETE FROM' and command not_contains 'WHERE' then block",
+  "when tool eq 'Bash' and command contains 'volumeDelete' then block",
+
+  "when tool eq 'Bash' and command contains 'curl' and command contains 'mutation' and command contains 'Delete' then block",
+  "when tool eq 'Bash' and command contains 'curl' and command contains 'mutation' and command contains 'destroy' then block",
+  "when tool eq 'Bash' and command contains 'curl' and command contains '| sh' then block",
+  "when tool eq 'Bash' and command contains 'curl' and command contains '| bash' then block",
+
+  "when tool eq 'Bash' and command contains 'kubectl delete namespace' then block",
+  "when tool eq 'Bash' and command contains 'kubectl delete statefulset' then block",
+  "when tool eq 'Bash' and command contains 'kubectl delete pvc' then ask 'PVC deletion loses persistent data'",
+  "when tool eq 'Bash' and command contains 'kubectl delete' and command contains '--all' then block",
+  "when tool eq 'Bash' and command contains 'docker system prune' then ask 'Docker prune removes all unused data'",
+  "when tool eq 'Bash' and command contains 'terraform destroy' then block",
+
+  "when tool eq 'Bash' and command contains 'npm publish' then ask 'Publishing to npm is public and permanent'",
+  "when tool eq 'Bash' and command contains 'twine upload' then ask 'Publishing to PyPI is permanent'",
+  "when tool eq 'Bash' and command contains 'cargo publish' then ask 'Publishing to crates.io is permanent'",
+  "when tool eq 'Bash' and command contains 'docker push' then ask 'Pushing to a container registry'",
+
+  "when tool eq 'Read' and file_path contains '.env' then ask 'Reading .env may expose secrets to the agent context'",
+  "when tool eq 'Read' and file_path contains '.ssh/id_' then block",
+  "when tool eq 'Read' and file_path contains '.aws/credentials' then block",
+  "when tool eq 'Read' and file_path contains '.gcloud/' then block",
+  "when tool eq 'Write' and file_path contains '.env' then ask 'Writing to .env may expose secrets if committed'",
+  "when tool eq 'Write' and file_path contains 'credentials' then block",
+  "when tool eq 'Write' and file_path contains 'id_rsa' then block",
+  "when tool eq 'Write' and file_path contains '.ssh' then block",
+  "when tool eq 'Edit' and file_path contains '.env' then ask 'Editing .env may expose secrets'",
+
+  "when tool eq 'Bash' and command contains 'chmod 777' then suggest 'Use chmod 755 for directories or chmod 644 for files'",
+  "when tool eq 'Bash' and command contains 'sudo rm' then ask 'sudo rm is destructive and irreversible'",
+  "when tool eq 'Bash' and command contains 'mkfs' then block",
+  "when tool eq 'Bash' and command contains 'dd if=' then block",
+
+  "when tool eq 'Write' and content contains 'sk_live_' then suggest 'Use an environment variable instead of hardcoding Stripe keys'",
+  "when tool eq 'Write' and content contains 'sk-ant-' then suggest 'Use an environment variable instead of hardcoding API keys'",
+  "when tool eq 'Write' and content contains 'ghp_' then suggest 'Use an environment variable instead of hardcoding GitHub tokens'",
+  "when tool eq 'Write' and content contains 'AKIA' then suggest 'Use an environment variable instead of hardcoding AWS keys'",
+
+  "when tool eq 'Bash' and command contains 'base64' and command contains '.env' then block",
+  "when tool eq 'Bash' and command contains 'base64' and command contains '.ssh' then block",
+  "when tool eq 'Bash' and command contains 'cat' and command contains 'id_rsa' then block",
+  "when tool eq 'Bash' and command contains 'printenv' then ask 'Printing environment variables may expose secrets'"
+]

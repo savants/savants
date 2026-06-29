@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bad-image
+  namespace: chaos-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bad-image
+  template:
+    metadata:
+      labels:
+        app: bad-image
+    spec:
+      containers:
+        - name: app
+          image: nginx:v99.99.99
+          resources:
+            limits:
+              memory: "64Mi"
+              cpu: "100m"

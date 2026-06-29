@@ -1,0 +1,19 @@
+[
+  "when tool eq 'Bash' and command contains 'aws ec2 terminate-instances' then block",
+  "when tool eq 'Bash' and command contains 'aws s3 rb' and command contains '--force' then block",
+  "when tool eq 'Bash' and command contains 'aws s3 rm' and command contains '--recursive' then ask 'Recursively deleting S3 objects is irreversible'",
+  "when tool eq 'Bash' and command contains 'aws rds delete-db-instance' then block",
+  "when tool eq 'Bash' and command contains 'aws rds delete-db-cluster' then block",
+  "when tool eq 'Bash' and command contains 'aws iam' and command contains 'AdminAccess' then block",
+  "when tool eq 'Bash' and command contains 'aws kms schedule-key-deletion' then block",
+  "when tool eq 'Bash' and command contains 'aws ec2 delete-volume' then ask 'Deleting an EBS volume permanently destroys data'",
+  "when tool eq 'Bash' and command contains 'aws cloudformation delete-stack' then ask 'Deleting a CloudFormation stack destroys all its resources'",
+  "when tool eq 'Bash' and command contains 'gcloud projects delete' then block",
+  "when tool eq 'Bash' and command contains 'gcloud sql instances delete' then block",
+  "when tool eq 'Bash' and command contains 'gcloud compute instances delete' then ask 'Deleting a GCP instance is permanent'",
+  "when tool eq 'Bash' and command contains 'az group delete' then block",
+  "when tool eq 'Bash' and command contains 'az storage account delete' then block",
+  "when tool eq 'Bash' and command contains 'terraform destroy' then block",
+  "when tool eq 'Bash' and command contains 'terraform apply' and command contains '-auto-approve' then ask 'Auto-approve skips the plan review — review changes first'",
+  "when tool eq 'Bash' and command contains 'pulumi destroy' then block"
+]

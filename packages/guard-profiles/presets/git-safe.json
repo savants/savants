@@ -1,0 +1,22 @@
+[
+  "when tool eq 'Bash' and command contains 'git push --force' then rewrite 'git push --force-with-lease'",
+  "when tool eq 'Bash' and command contains 'git push -f ' then rewrite 'git push --force-with-lease'",
+  "when tool eq 'Bash' and command contains 'git push origin --force' then rewrite 'git push origin --force-with-lease'",
+  "when tool eq 'Bash' and command contains 'git reset --hard' then suggest 'Use git stash to save work first, or git reset --soft'",
+  "when tool eq 'Bash' and command contains 'git clean -fd' then ask 'git clean permanently deletes all untracked files'",
+  "when tool eq 'Bash' and command contains 'git clean -fx' then ask 'git clean -fx also removes gitignored files permanently'",
+  "when tool eq 'Bash' and command contains 'git checkout .' then ask 'This discards all unstaged changes permanently'",
+  "when tool eq 'Bash' and command contains 'git checkout -- .' then ask 'This discards all unstaged changes permanently'",
+  "when tool eq 'Bash' and command contains 'git stash drop' then ask 'Dropping a stash permanently discards saved work'",
+  "when tool eq 'Bash' and command contains 'git stash clear' then ask 'This permanently deletes ALL stashed changes'",
+  "when tool eq 'Bash' and command contains 'git filter-branch' then ask 'filter-branch rewrites history and is very hard to undo'",
+  "when tool eq 'Bash' and command contains 'git push --delete' then ask 'This permanently deletes a remote branch or tag'",
+  "when tool eq 'Bash' and command contains 'git branch -D' then ask 'Force-deleting a branch may lose unmerged commits'",
+  "when tool eq 'Bash' and command contains 'git branch -D main' then block",
+  "when tool eq 'Bash' and command contains 'git branch -D master' then block",
+  "when tool eq 'Bash' and command contains 'git add .' then suggest 'Stage specific files by name to avoid committing secrets or unintended files'",
+  "when tool eq 'Bash' and command contains 'git add -A' then suggest 'Stage specific files by name to avoid committing secrets or unintended files'",
+  "when tool eq 'Bash' and command contains 'git rebase' and command contains 'main' then block",
+  "when tool eq 'Edit' and file_path contains '.git/' then block",
+  "when tool eq 'Write' and file_path contains '.git/' then block"
+]

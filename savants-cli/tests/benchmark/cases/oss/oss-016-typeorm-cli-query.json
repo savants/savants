@@ -1,0 +1,30 @@
+{
+  "id": "oss-016",
+  "source": "github-bug",
+  "title": "TypeORM #7043: TypeError in CLI query command",
+  "category": "application",
+  "difficulty": "easy",
+  "error_signal": {
+    "message": "typeorm TypeError: Cannot read properties of undefined in QueryCommand when running typeorm CLI query command",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "src/commands/QueryCommand.ts",
+    "root_cause_function": null,
+    "root_cause_description": "CLI query command does not handle undefined connection options properly, causing a TypeError when the command is invoked without proper configuration.",
+    "root_cause_category": "application",
+    "fix_pr": "#7043",
+    "fix_description": "Add null check for connection options in QueryCommand"
+  },
+  "expected_signals": {
+    "must_mention": ["QueryCommand", "command"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "typeorm",
+    "pr_number": 7043,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "id": "oss-015",
+  "source": "github-bug",
+  "title": "Payload #15116: TypeError Cannot read private member #headers on Node.js 24",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "payload TypeError: Cannot read private member #headers from an object whose class did not declare it in isolateObjectProperty when proxying request headers on Node 24",
+    "source": "github_issue",
+    "issue_url": "https://github.com/payloadcms/payload/pull/15116"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/payload/src/utilities/isolateObjectProperty.ts",
+    "root_cause_function": "isolateObjectProperty",
+    "root_cause_description": "Node 24 undici uses private class fields for headers. isolateObjectProperty creates a proxy that cannot access private #headers field.",
+    "root_cause_category": "application",
+    "fix_pr": "#15116",
+    "fix_description": "Fix proxy handler to properly delegate private field access"
+  },
+  "expected_signals": {
+    "must_mention": ["isolateObjectProperty"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "payload",
+    "pr_number": 15116,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

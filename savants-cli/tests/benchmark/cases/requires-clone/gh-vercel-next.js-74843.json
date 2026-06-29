@@ -1,0 +1,40 @@
+{
+  "id": "gh-vercel-next.js-74843",
+  "source": "github-bug",
+  "title": "vercel/next.js#74843: Multi-byte characters in Server Action inputs can get mangled when using the Edge Runtime",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "Multi-byte characters in Server Action inputs can get mangled when using the Edge Runtime",
+    "source": "github_issue",
+    "issue_url": "https://github.com/vercel/next.js/issues/74843"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/next/src/server/app-render/action-handler.ts",
+    "root_cause_function": null,
+    "root_cause_description": "Fixed in PR #74845 by @vexcat",
+    "root_cause_category": "application",
+    "fix_pr": "#74845",
+    "fix_branch": "vexcat/fix-edge-mojibake",
+    "files_changed": 8,
+    "additions": 4,
+    "deletions": 3
+  },
+  "expected_signals": {
+    "must_mention": [
+      "packages",
+      "next",
+      "server",
+      "render"
+    ],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "vercel/next.js",
+    "issue_number": 74843,
+    "pr_number": 74845,
+    "harvested_date": "2026-04-15",
+    "confidence": "medium"
+  }
+}

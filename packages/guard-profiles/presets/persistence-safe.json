@@ -1,0 +1,16 @@
+[
+  "when tool eq 'Bash' and command contains 'bash -i' and command contains '/dev/tcp' then block",
+  "when tool eq 'Bash' and command contains 'python' and command contains 'import socket' and command contains 'connect' then block",
+  "when tool eq 'Bash' and command contains 'python' and command contains 'import subprocess' and command contains 'socket' then block",
+  "when tool eq 'Bash' and command contains 'perl' and command contains 'socket' and command contains 'exec' then block",
+  "when tool eq 'Bash' and command contains 'ruby' and command contains 'TCPSocket' then block",
+  "when tool eq 'Bash' and command contains 'crontab' then ask 'Modifying crontab changes scheduled tasks on the system'",
+  "when tool eq 'Write' and file_path contains '/etc/systemd/system' then block",
+  "when tool eq 'Write' and file_path contains '/etc/cron' then block",
+  "when tool eq 'Write' and file_path contains '.bashrc' then ask 'Modifying shell config can break the user environment'",
+  "when tool eq 'Write' and file_path contains '.bash_profile' then ask 'Modifying shell config can break the user environment'",
+  "when tool eq 'Write' and file_path contains '.zshrc' then ask 'Modifying shell config can break the user environment'",
+  "when tool eq 'Write' and file_path contains '.profile' then ask 'Modifying shell config can break the user environment'",
+  "when tool eq 'Edit' and file_path contains '.bashrc' then ask 'Editing shell config can break the user environment'",
+  "when tool eq 'Edit' and file_path contains '.zshrc' then ask 'Editing shell config can break the user environment'"
+]

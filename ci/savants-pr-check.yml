@@ -1,0 +1,355 @@
+# Savants PR Analysis
+# Copy this file to your repo's .github/workflows/savants-pr-check.yml
+#
+# Runs on every PR to analyze code changes and post a comment with:
+#   - Blast radius for each changed function
+#   - Guard rule violations in the diff
+#   - Composite risk score (Low / Medium / High / Critical)
+#
+# Requirements:
+#   - GITHUB_TOKEN (automatic in GitHub Actions)
+#   - No external services needed — savants runs fully local
+#
+# Configuration (optional env vars):
+#   SAVANTS_RISK_THRESHOLD: fail the check above this score (default: 75, set 0 to disable)
+#   SAVANTS_MAX_DEPTH: blast radius traversal depth (default: 3)
+#   SAVANTS_GUARD_PROFILE: guard profile to use (default: standard)
+
+name: Savants PR Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  SAVANTS_QUIET: "1"
+  SAVANTS_RISK_THRESHOLD: ${{ vars.SAVANTS_RISK_THRESHOLD || '75' }}
+  SAVANTS_MAX_DEPTH: ${{ vars.SAVANTS_MAX_DEPTH || '3' }}
+  SAVANTS_GUARD_PROFILE: ${{ vars.SAVANTS_GUARD_PROFILE || 'standard' }}
+
+jobs:
+  savants-analysis:
+    name: Savants Risk Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git blame, co-change analysis
+
+      # ── Install savants ────────────────────────────────────────────
+      - name: Install Savants
+        run: |
+          curl -fsSL https://savants.sh | sh
+          echo "$HOME/.savants/bin" >> "$GITHUB_PATH"
+
+      # ── Index the repository ───────────────────────────────────────
+      - name: Index repository
+        run: |
+          # savants up auto-detects the repo root and indexes with tree-sitter
+          savants up --repo "$(pwd)" 2>/dev/null || true
+
+      # ── Analyze the PR diff ────────────────────────────────────────
+      - name: Analyze PR changes
+        id: analyze
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e  # Don't exit on individual command failures
+
+          REPO_NAME=$(basename "$(pwd)")
+          BASE_REF="${{ github.event.pull_request.base.sha }}"
+          HEAD_REF="${{ github.event.pull_request.head.sha }}"
+          MAX_DEPTH="${SAVANTS_MAX_DEPTH}"
+
+          # ── 1. Get changed files from the PR ──
+          CHANGED_FILES=$(git diff --name-only "$BASE_REF"..."$HEAD_REF" 2>/dev/null || git diff --name-only HEAD~1)
+          FILE_COUNT=$(echo "$CHANGED_FILES" | grep -c . || echo 0)
+
+          # ── 2. Get changed functions by diffing the tree-sitter index ──
+          # Extract function names from the diff hunks
+          CHANGED_FUNCTIONS=""
+          FUNCTION_TABLE=""
+          TOTAL_CALLERS=0
+          TOTAL_AFFECTED_FILES=0
+          FUNC_COUNT=0
+
+          # Parse diff hunks to find function names (@@-line headers contain function context)
+          HUNK_FUNCTIONS=$(git diff "$BASE_REF"..."$HEAD_REF" 2>/dev/null | \
+            grep '^@@' | \
+            sed -n 's/.*@@ \(.*\)/\1/p' | \
+            grep -oE '(function|def|fn|func|pub fn|async fn|class|const|let|var) +[a-zA-Z_][a-zA-Z0-9_]*' | \
+            awk '{print $NF}' | \
+            sort -u || true)
+
+          # Also find functions via savants search on changed files
+          for file in $CHANGED_FILES; do
+            # Skip non-code files
+            case "$file" in
+              *.md|*.txt|*.json|*.yml|*.yaml|*.toml|*.lock|*.css|*.html|*.svg|*.png|*.jpg) continue ;;
+            esac
+
+            SKELETON=$(savants skeleton "$file" 2>/dev/null || true)
+            if [ -n "$SKELETON" ]; then
+              # Extract function names from skeleton output
+              FILE_FUNCS=$(echo "$SKELETON" | grep -oE '(fn|function|def|class|const) +[a-zA-Z_][a-zA-Z0-9_]*' | awk '{print $NF}' || true)
+              if [ -n "$FILE_FUNCS" ]; then
+                CHANGED_FUNCTIONS="${CHANGED_FUNCTIONS}${FILE_FUNCS}"$'\n'
+              fi
+            fi
+          done
+
+          # Combine and deduplicate function names
+          ALL_FUNCTIONS=$(printf '%s\n%s' "$HUNK_FUNCTIONS" "$CHANGED_FUNCTIONS" | sort -u | grep -v '^$' || true)
+
+          # ── 3. Compute blast radius for each function ──
+          while IFS= read -r func; do
+            [ -z "$func" ] && continue
+
+            BLAST_OUTPUT=$(savants blast "$func" -d "$MAX_DEPTH" 2>/dev/null || true)
+
+            # Parse blast radius output
+            CALLERS=$(echo "$BLAST_OUTPUT" | grep -oE '[0-9]+ dependents' | grep -oE '[0-9]+' || echo "0")
+            AFFECTED=$(echo "$BLAST_OUTPUT" | grep -oE '[0-9]+ files' | tail -1 | grep -oE '[0-9]+' || echo "0")
+
+            [ -z "$CALLERS" ] && CALLERS=0
+            [ -z "$AFFECTED" ] && AFFECTED=0
+
+            # Find the file this function lives in
+            FUNC_FILE=$(echo "$BLAST_OUTPUT" | head -5 | grep -oE '[^ ]+\.(ts|js|py|rs|go|java|rb|tsx|jsx)' | head -1 || true)
+            if [ -z "$FUNC_FILE" ]; then
+              # Try to find the file from the changed files list
+              for f in $CHANGED_FILES; do
+                if grep -q "$func" "$f" 2>/dev/null; then
+                  FUNC_FILE="$f"
+                  break
+                fi
+              done
+            fi
+
+            # Get line number
+            if [ -n "$FUNC_FILE" ] && [ -f "$FUNC_FILE" ]; then
+              LINE_NUM=$(grep -n "\\b${func}\\b" "$FUNC_FILE" 2>/dev/null | head -1 | cut -d: -f1 || echo "?")
+              FUNC_LOC="${FUNC_FILE}:${LINE_NUM}"
+            else
+              FUNC_LOC="${FUNC_FILE:-unknown}"
+            fi
+
+            FUNCTION_TABLE="${FUNCTION_TABLE}| \`${func}\` | ${FUNC_LOC} | ${CALLERS} | ${AFFECTED} files |"$'\n'
+            TOTAL_CALLERS=$((TOTAL_CALLERS + CALLERS))
+            TOTAL_AFFECTED_FILES=$((TOTAL_AFFECTED_FILES + AFFECTED))
+            FUNC_COUNT=$((FUNC_COUNT + 1))
+          done <<< "$ALL_FUNCTIONS"
+
+          # ── 4. Run guard checks on the diff ──
+          GUARD_OUTPUT=""
+          GUARD_WARNINGS=0
+          GUARD_BLOCKS=0
+
+          # Generate the diff and run guard against it
+          DIFF_CONTENT=$(git diff "$BASE_REF"..."$HEAD_REF" 2>/dev/null || git diff HEAD~1)
+
+          # Check for dangerous patterns in the diff
+          GUARD_VIOLATIONS=""
+
+          # Pattern: force push
+          FORCE_PUSH=$(echo "$DIFF_CONTENT" | grep -n 'git push --force\b' || true)
+          if [ -n "$FORCE_PUSH" ]; then
+            FILE_MATCH=$(echo "$DIFF_CONTENT" | grep -B 20 'git push --force' | grep '^+++ b/' | tail -1 | sed 's|+++ b/||')
+            GUARD_VIOLATIONS="${GUARD_VIOLATIONS}"$'\n'"- :red_circle: \`${FILE_MATCH}\`: Contains \`git push --force\` (use \`--force-with-lease\` instead)"
+            GUARD_BLOCKS=$((GUARD_BLOCKS + 1))
+          fi
+
+          # Pattern: credential/secret file writes
+          for pattern in '\.env' 'credentials' 'secret' '\.pem' '\.key'; do
+            CRED_MATCH=$(echo "$CHANGED_FILES" | grep -i "$pattern" || true)
+            if [ -n "$CRED_MATCH" ]; then
+              while IFS= read -r cfile; do
+                GUARD_VIOLATIONS="${GUARD_VIOLATIONS}"$'\n'"- :warning: \`${cfile}\`: Modifies a sensitive file (credentials/secrets)"
+                GUARD_WARNINGS=$((GUARD_WARNINGS + 1))
+              done <<< "$CRED_MATCH"
+            fi
+          done
+
+          # Pattern: TODO/FIXME/HACK added in new lines
+          TODOS=$(echo "$DIFF_CONTENT" | grep '^\+' | grep -iE '(TODO|FIXME|HACK|XXX)' | head -5 || true)
+          if [ -n "$TODOS" ]; then
+            TODO_COUNT=$(echo "$TODOS" | grep -c . || echo 0)
+            GUARD_VIOLATIONS="${GUARD_VIOLATIONS}"$'\n'"- :warning: ${TODO_COUNT} new TODO/FIXME/HACK comments added"
+            GUARD_WARNINGS=$((GUARD_WARNINGS + TODO_COUNT))
+          fi
+
+          # Pattern: console.log / print / debug statements added
+          DEBUG_STMTS=$(echo "$DIFF_CONTENT" | grep '^\+' | grep -E '(console\.log|print\(|debugger|binding\.pry|console\.debug)' | head -5 || true)
+          if [ -n "$DEBUG_STMTS" ]; then
+            DBG_COUNT=$(echo "$DEBUG_STMTS" | grep -c . || echo 0)
+            GUARD_VIOLATIONS="${GUARD_VIOLATIONS}"$'\n'"- :warning: ${DBG_COUNT} debug statements added (\`console.log\`, \`print\`, etc.)"
+            GUARD_WARNINGS=$((GUARD_WARNINGS + DBG_COUNT))
+          fi
+
+          # Pattern: large file additions (>500 lines added to a single file)
+          for file in $CHANGED_FILES; do
+            LINES_ADDED=$(git diff "$BASE_REF"..."$HEAD_REF" -- "$file" 2>/dev/null | grep '^+[^+]' | wc -l || echo 0)
+            if [ "$LINES_ADDED" -gt 500 ]; then
+              GUARD_VIOLATIONS="${GUARD_VIOLATIONS}"$'\n'"- :warning: \`${file}\`: ${LINES_ADDED} lines added (large change — consider splitting)"
+              GUARD_WARNINGS=$((GUARD_WARNINGS + 1))
+            fi
+          done
+
+          # Pattern: deleted null/error checks
+          NULL_GUARDS=$(echo "$DIFF_CONTENT" | grep '^\-' | grep -E '(if .*(null|nil|undefined|None)|catch|rescue|except|\.ok\(\)|\.unwrap\(\))' | head -5 || true)
+          if [ -n "$NULL_GUARDS" ]; then
+            NG_COUNT=$(echo "$NULL_GUARDS" | grep -c . || echo 0)
+            GUARD_VIOLATIONS="${GUARD_VIOLATIONS}"$'\n'"- :red_circle: ${NG_COUNT} null/error guards removed — verify this is intentional"
+            GUARD_BLOCKS=$((GUARD_BLOCKS + NG_COUNT))
+          fi
+
+          # Also run savants guard if available
+          SAVANTS_GUARD=$(savants guard check 2>/dev/null || true)
+          if echo "$SAVANTS_GUARD" | grep -qi 'violation\|block\|warning'; then
+            GUARD_VIOLATIONS="${GUARD_VIOLATIONS}"$'\n'"${SAVANTS_GUARD}"
+          fi
+
+          # ── 5. Compute composite risk score ──
+          # Formula: blast_weight(40%) + change_complexity(30%) + guard_severity(30%)
+
+          # Blast radius component (0-40)
+          if [ "$TOTAL_AFFECTED_FILES" -gt 100 ]; then
+            BLAST_SCORE=40
+          elif [ "$TOTAL_AFFECTED_FILES" -gt 50 ]; then
+            BLAST_SCORE=30
+          elif [ "$TOTAL_AFFECTED_FILES" -gt 20 ]; then
+            BLAST_SCORE=20
+          elif [ "$TOTAL_AFFECTED_FILES" -gt 5 ]; then
+            BLAST_SCORE=10
+          else
+            BLAST_SCORE=0
+          fi
+
+          # Change complexity component (0-30)
+          TOTAL_LINES_CHANGED=$(git diff --stat "$BASE_REF"..."$HEAD_REF" 2>/dev/null | tail -1 | grep -oE '[0-9]+ insertion|[0-9]+ deletion' | grep -oE '[0-9]+' | paste -sd+ | bc 2>/dev/null || echo 0)
+          if [ "$TOTAL_LINES_CHANGED" -gt 1000 ]; then
+            COMPLEXITY_SCORE=30
+          elif [ "$TOTAL_LINES_CHANGED" -gt 500 ]; then
+            COMPLEXITY_SCORE=20
+          elif [ "$TOTAL_LINES_CHANGED" -gt 100 ]; then
+            COMPLEXITY_SCORE=10
+          else
+            COMPLEXITY_SCORE=0
+          fi
+
+          # Guard severity component (0-30)
+          GUARD_SCORE=$((GUARD_BLOCKS * 15 + GUARD_WARNINGS * 3))
+          if [ "$GUARD_SCORE" -gt 30 ]; then
+            GUARD_SCORE=30
+          fi
+
+          RISK_SCORE=$((BLAST_SCORE + COMPLEXITY_SCORE + GUARD_SCORE))
+
+          # Determine risk level
+          if [ "$RISK_SCORE" -ge 75 ]; then
+            RISK_LEVEL="Critical"
+            RISK_EMOJI=":red_circle:"
+          elif [ "$RISK_SCORE" -ge 50 ]; then
+            RISK_LEVEL="High"
+            RISK_EMOJI=":orange_circle:"
+          elif [ "$RISK_SCORE" -ge 25 ]; then
+            RISK_LEVEL="Medium"
+            RISK_EMOJI=":yellow_circle:"
+          else
+            RISK_LEVEL="Low"
+            RISK_EMOJI=":green_circle:"
+          fi
+
+          # ── 6. Build the comment ──
+          {
+            echo "## :shield: Savants PR Analysis"
+            echo ""
+            echo "**Risk Score: ${RISK_EMOJI} ${RISK_LEVEL} (${RISK_SCORE}/100)**"
+            echo ""
+
+            if [ "$FUNC_COUNT" -gt 0 ]; then
+              echo "### Changed Functions"
+              echo "| Function | File | Callers | Blast Radius |"
+              echo "|----------|------|---------|--------------|"
+              echo "$FUNCTION_TABLE"
+              echo ""
+            fi
+
+            if [ -n "$GUARD_VIOLATIONS" ]; then
+              echo "### Guard Violations"
+              echo "$GUARD_VIOLATIONS"
+              echo ""
+            fi
+
+            echo "### Summary"
+            echo "- **${FUNC_COUNT}** functions changed, **${TOTAL_AFFECTED_FILES}** downstream files affected"
+            echo "- **${FILE_COUNT}** files modified, ~**${TOTAL_LINES_CHANGED:-0}** lines changed"
+            if [ "$GUARD_WARNINGS" -gt 0 ] || [ "$GUARD_BLOCKS" -gt 0 ]; then
+              echo "- **${GUARD_WARNINGS}** guard warning(s), **${GUARD_BLOCKS}** guard block(s)"
+            else
+              echo "- No guard violations found"
+            fi
+            echo ""
+            echo "<details>"
+            echo "<summary>Score breakdown</summary>"
+            echo ""
+            echo "| Component | Score | Weight |"
+            echo "|-----------|-------|--------|"
+            echo "| Blast radius (downstream files) | ${BLAST_SCORE} | /40 |"
+            echo "| Change complexity (lines changed) | ${COMPLEXITY_SCORE} | /30 |"
+            echo "| Guard violations (severity) | ${GUARD_SCORE} | /30 |"
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "---"
+            echo "*Powered by [Savants](https://savants.dev) — the code intelligence layer for engineering teams*"
+          } > /tmp/savants-comment.md
+
+          # Save outputs for later steps
+          echo "risk_score=$RISK_SCORE" >> "$GITHUB_OUTPUT"
+          echo "risk_level=$RISK_LEVEL" >> "$GITHUB_OUTPUT"
+
+      # ── Post or update PR comment ──────────────────────────────────
+      - name: Post PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          COMMENT_BODY=$(cat /tmp/savants-comment.md)
+          MARKER="<!-- savants-pr-analysis -->"
+          FULL_BODY="${MARKER}"$'\n'"${COMMENT_BODY}"
+
+          # Check for existing savants comment to update
+          EXISTING_COMMENT_ID=$(gh api \
+            "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
+            2>/dev/null | head -1 || true)
+
+          if [ -n "$EXISTING_COMMENT_ID" ]; then
+            # Update existing comment
+            gh api \
+              "repos/${{ github.repository }}/issues/comments/${EXISTING_COMMENT_ID}" \
+              -X PATCH \
+              -f body="$FULL_BODY"
+          else
+            # Create new comment
+            gh pr comment "$PR_NUMBER" --body "$FULL_BODY"
+          fi
+
+      # ── Fail check if risk exceeds threshold ──────────────────────
+      - name: Risk threshold check
+        if: env.SAVANTS_RISK_THRESHOLD != '0'
+        run: |
+          SCORE="${{ steps.analyze.outputs.risk_score }}"
+          THRESHOLD="${SAVANTS_RISK_THRESHOLD}"
+
+          if [ "$SCORE" -ge "$THRESHOLD" ]; then
+            echo "::error::Savants risk score ${SCORE}/100 exceeds threshold ${THRESHOLD}. Review the PR analysis comment for details."
+            exit 1
+          else
+            echo "Savants risk score ${SCORE}/100 is within threshold ${THRESHOLD}."
+          fi

@@ -1,0 +1,30 @@
+{
+  "id": "prod-008",
+  "source": "production",
+  "title": "Rate limiter Redis connection timeout causing 500s",
+  "category": "infrastructure",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "vocator-backend Error: ETIMEDOUT getRateLimitRedisClient connection timed out in unified-rate-limiter middleware",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/middleware/unified-rate-limiter.ts",
+    "root_cause_function": "getRateLimitRedisClient",
+    "root_cause_description": "Rate limiter Redis client connection times out. All requests get 500 because rate limiter fails closed instead of open.",
+    "root_cause_category": "infrastructure",
+    "fix_description": "Add connection timeout handling - fail open (allow request) when Redis is unreachable",
+    "verified_by": "confirmed_by_code_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["rate-limiter", "redis", "connection"],
+    "must_not_mention": [],
+    "must_identify_category": "infrastructure"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-BACKEND-43",
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

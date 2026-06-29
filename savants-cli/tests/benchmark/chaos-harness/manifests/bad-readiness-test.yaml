@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bad-readiness
+  namespace: chaos-test
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bad-readiness
+  template:
+    metadata:
+      labels:
+        app: bad-readiness
+    spec:
+      containers:
+        - name: app
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bad-readiness
+  namespace: chaos-test
+spec:
+  selector:
+    app: bad-readiness
+  ports:
+    - port: 80
+      targetPort: 80

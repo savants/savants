@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "savants-guard"
+version = "0.4.0"
+description = "Deterministic guardrails for AI agents. Your agent follows your rules. Always."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "Savants", email = "hello@savants.dev"}]
+keywords = ["ai", "agent", "guardrails", "safety", "llm", "deterministic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Security",
+]
+dependencies = []
+
+[project.optional-dependencies]
+managed = ["httpx>=0.27"]
+dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[project.urls]
+Homepage = "https://savants.dev"
+Documentation = "https://savants.dev/docs/getting-started"
+Repository = "https://github.com/savants/savants"
+Issues = "https://github.com/savants/savants/issues"
+
+[tool.setuptools.packages.find]
+include = ["savants_guard*"]

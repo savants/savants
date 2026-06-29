@@ -1,0 +1,22 @@
+[
+  "when tool eq 'Bash' and command contains 'chmod 777' then suggest 'Use chmod 755 for directories or chmod 644 for files'",
+  "when tool eq 'Bash' and command contains 'chmod -R' and command contains '/etc' then block",
+  "when tool eq 'Bash' and command contains 'chmod -R' and command contains '/usr' then block",
+  "when tool eq 'Bash' and command contains 'chmod -R' and command contains '/var' then block",
+  "when tool eq 'Bash' and command contains 'chown -R' and command contains '/etc' then block",
+  "when tool eq 'Bash' and command contains 'chown -R' and command contains '/usr' then block",
+  "when tool eq 'Bash' and command contains 'chown -R' and command contains '/var' then block",
+  "when tool eq 'Bash' and command contains 'useradd' then block",
+  "when tool eq 'Bash' and command contains 'adduser' then block",
+  "when tool eq 'Bash' and command contains 'passwd ' then block",
+  "when tool eq 'Bash' and command contains 'iptables -F' then block",
+  "when tool eq 'Bash' and command contains 'ufw disable' then block",
+  "when tool eq 'Bash' and command contains 'setenforce 0' then block",
+  "when tool eq 'Bash' and command contains 'reboot' then ask 'Rebooting the system will interrupt all running processes'",
+  "when tool eq 'Bash' and command contains 'shutdown' then ask 'Shutting down the system will stop all services'",
+  "when tool eq 'Bash' and command contains 'systemctl stop' then ask 'Stopping a system service may cause downtime'",
+  "when tool eq 'Bash' and command contains 'systemctl disable' then ask 'Disabling a service prevents it from starting on boot'",
+  "when tool eq 'Bash' and command contains 'kill -9' then ask 'SIGKILL does not allow graceful shutdown — try SIGTERM first'",
+  "when tool eq 'Bash' and command contains 'killall' then ask 'killall terminates all processes matching the name'",
+  "when tool eq 'Bash' and command contains 'pkill' then ask 'pkill may terminate multiple matching processes'"
+]

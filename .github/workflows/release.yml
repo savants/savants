@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compile deps (aarch64 Linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p savants-cli/.cargo
+          echo '[target.aarch64-unknown-linux-gnu]' >> savants-cli/.cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> savants-cli/.cargo/config.toml
+
+      - name: Build
+        working-directory: savants-cli
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp savants-cli/target/${{ matrix.target }}/release/savants dist/savants-${{ matrix.target }}
+          chmod +x dist/savants-${{ matrix.target }}
+          cd dist && tar czf savants-${{ matrix.target }}.tar.gz savants-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: savants-${{ matrix.target }}
+          path: dist/savants-${{ matrix.target }}.tar.gz
+
+  release:
+    name: Create Release + Upload to R2
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*/savants-*.tar.gz
+          generate_release_notes: true
+
+      - name: Upload to R2
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          R2_API="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/savants-releases/objects"
+
+          for f in artifacts/*/savants-*.tar.gz; do
+            FILENAME=$(basename "$f")
+            echo "Uploading ${FILENAME}..."
+
+            # Versioned path
+            curl -sf -X PUT "${R2_API}/${TAG}/${FILENAME}" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/gzip" \
+              --data-binary "@${f}"
+
+            # Latest path
+            curl -sf -X PUT "${R2_API}/latest/${FILENAME}" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/gzip" \
+              --data-binary "@${f}"
+
+            echo "Done: ${FILENAME}"
+          done
+
+          # Update version.txt
+          echo -n "${VERSION}" | curl -sf -X PUT "${R2_API}/latest/version.txt" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: text/plain" \
+            --data-binary "@-"
+          echo "Updated version.txt to ${VERSION}"
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Python SDK — publish to PyPI on tag
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  publish-python:
+    name: Publish Python SDK to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # trusted publisher
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        working-directory: packages/guard-python
+        run: python -m build
+
+      - name: Run tests before publishing
+        working-directory: packages/guard-python
+        run: |
+          pip install -e ".[dev]"
+          pytest tests/ -q
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/guard-python/dist/
+
+          # Update install.sh
+          curl -sf -X PUT "${R2_API}/install.sh" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: text/plain" \
+            --data-binary @scripts/install.sh
+          echo "Updated install.sh"

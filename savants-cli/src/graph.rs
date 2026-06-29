@@ -1,0 +1,292 @@
+use redis::{Client, Commands, RedisResult, Value};
+use std::env;
+
+#[derive(Clone)]
+pub struct GraphClient {
+    client: Client,
+    graph_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueryResult {
+    pub rows: Vec<Vec<GraphValue>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum GraphValue {
+    String(String),
+    Integer(i64),
+    Float(f64),
+    Boolean(bool),
+    Null,
+    Array(Vec<GraphValue>),
+}
+
+impl GraphValue {
+    pub fn as_str(&self) -> &str {
+        match self {
+            GraphValue::String(s) => s,
+            _ => "",
+        }
+    }
+
+    pub fn as_i64(&self) -> i64 {
+        match self {
+            GraphValue::Integer(i) => *i,
+            GraphValue::Float(f) => *f as i64,
+            GraphValue::String(s) => s.parse().unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    pub fn as_f64(&self) -> f64 {
+        match self {
+            GraphValue::Float(f) => *f,
+            GraphValue::Integer(i) => *i as f64,
+            GraphValue::String(s) => s.parse().unwrap_or(0.0),
+            _ => 0.0,
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self, GraphValue::Null)
+    }
+}
+
+/// A typed parameter value for Savants memory CYPHER queries.
+/// Strings get quoted, numbers and booleans do not.
+#[derive(Debug, Clone)]
+pub enum ParamValue {
+    Str(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    StrList(Vec<String>),
+}
+
+impl ParamValue {
+    /// Format for Savants memory CYPHER parameter syntax.
+    fn to_cypher_literal(&self) -> String {
+        match self {
+            ParamValue::Str(s) => format!("'{}'", s.replace('\'', "\\'")),
+            ParamValue::Int(i) => i.to_string(),
+            ParamValue::Float(f) => format!("{:.6}", f),
+            ParamValue::Bool(b) => if *b { "true".into() } else { "false".into() },
+            ParamValue::StrList(v) => {
+                let items: Vec<String> = v.iter()
+                    .map(|s| format!("'{}'", s.replace('\'', "\\'")))
+                    .collect();
+                format!("[{}]", items.join(","))
+            }
+        }
+    }
+}
+
+impl From<&str> for ParamValue {
+    fn from(s: &str) -> Self { ParamValue::Str(s.to_string()) }
+}
+impl From<String> for ParamValue {
+    fn from(s: String) -> Self { ParamValue::Str(s) }
+}
+impl From<i64> for ParamValue {
+    fn from(i: i64) -> Self { ParamValue::Int(i) }
+}
+impl From<i32> for ParamValue {
+    fn from(i: i32) -> Self { ParamValue::Int(i as i64) }
+}
+impl From<u64> for ParamValue {
+    fn from(i: u64) -> Self { ParamValue::Int(i as i64) }
+}
+impl From<f64> for ParamValue {
+    fn from(f: f64) -> Self { ParamValue::Float(f) }
+}
+impl From<bool> for ParamValue {
+    fn from(b: bool) -> Self { ParamValue::Bool(b) }
+}
+impl From<Vec<String>> for ParamValue {
+    fn from(v: Vec<String>) -> Self { ParamValue::StrList(v) }
+}
+
+impl GraphClient {
+    pub fn new(graph_name: &str) -> RedisResult<Self> {
+        // Host resolution: SAVANTS_HOST env var, default localhost
+        let host = env::var("SAVANTS_HOST").unwrap_or_else(|_| "localhost".to_string());
+        // Port resolution order:
+        // 1. SAVANTS_PORT env var (explicit override for CI/automation)
+        // 2. ~/.savants/savants.port (written by the embedded manager)
+        // 3. Default: 6379
+        let port = env::var("SAVANTS_PORT")
+            .ok()
+            .or_else(|| {
+                let port_file = dirs::home_dir()
+                    .unwrap_or_default()
+                    .join(".savants")
+                    .join("savants.port");
+                std::fs::read_to_string(port_file).ok()
+            })
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .unwrap_or(6379);
+        let url = format!("redis://{}:{}", host, port);
+        let client = Client::open(url)?;
+        Ok(Self {
+            client,
+            graph_name: graph_name.to_string(),
+        })
+    }
+
+    pub fn query(&self, cypher: &str, params: &[(&str, &str)]) -> RedisResult<QueryResult> {
+        let mut conn = self.client.get_connection()?;
+
+        // Build parameterized cypher string
+        let param_str = if params.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<String> = params
+                .iter()
+                .map(|(k, v)| format!("{}='{}'", k, v.replace('\'', "\\'")))
+                .collect();
+            format!("CYPHER {} ", parts.join(" "))
+        };
+
+        let full_query = format!("{}{}", param_str, cypher);
+
+        let result: Value = redis::cmd("GRAPH.QUERY")
+            .arg(&self.graph_name)
+            .arg(&full_query)
+            .arg("--compact")
+            .query(&mut conn)?;
+
+        Ok(parse_graph_result(result))
+    }
+
+    /// Execute a query with typed parameters (supports int, float, bool, string, string list).
+    pub fn query_typed(&self, cypher: &str, params: &[(&str, ParamValue)]) -> RedisResult<QueryResult> {
+        let mut conn = self.client.get_connection()?;
+
+        let param_str = if params.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<String> = params
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v.to_cypher_literal()))
+                .collect();
+            format!("CYPHER {} ", parts.join(" "))
+        };
+
+        let full_query = format!("{}{}", param_str, cypher);
+
+        let result: Value = redis::cmd("GRAPH.QUERY")
+            .arg(&self.graph_name)
+            .arg(&full_query)
+            .arg("--compact")
+            .query(&mut conn)?;
+
+        Ok(parse_graph_result(result))
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.client.get_connection().is_ok()
+    }
+
+    /// List all graph names known to the server (via GRAPH.LIST).
+    pub fn list_graphs(&self) -> Vec<String> {
+        let Ok(mut conn) = self.client.get_connection() else { return vec![]; };
+        let result: RedisResult<Value> = redis::cmd("GRAPH.LIST").query(&mut conn);
+        match result {
+            Ok(Value::Bulk(items)) => {
+                items.iter().filter_map(|v| {
+                    if let Value::Data(bytes) = v {
+                        Some(String::from_utf8_lossy(bytes).to_string())
+                    } else {
+                        None
+                    }
+                }).collect()
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Discover cluster graph names — returns graph names that contain K8sPod nodes.
+    /// Falls back to all graphs except the main "savants" graph.
+    pub fn discover_cluster_graphs(&self) -> Vec<String> {
+        let all = self.list_graphs();
+        let state = crate::config::State::load();
+        let main_graph = state.graph_name();
+        all.into_iter()
+            .filter(|g| g != &main_graph)
+            .collect()
+    }
+}
+
+fn parse_graph_result(value: Value) -> QueryResult {
+    let rows = match value {
+        Value::Bulk(ref parts) if parts.len() >= 2 => {
+            if let Value::Bulk(ref result_rows) = parts[1] {
+                result_rows
+                    .iter()
+                    .map(|row| {
+                        if let Value::Bulk(ref cols) = row {
+                            cols.iter().map(parse_value).collect()
+                        } else {
+                            vec![parse_value(row)]
+                        }
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
+        }
+        _ => vec![],
+    };
+
+    QueryResult { rows }
+}
+
+fn parse_value(v: &Value) -> GraphValue {
+    match v {
+        Value::Data(bytes) => {
+            GraphValue::String(String::from_utf8_lossy(bytes).to_string())
+        }
+        Value::Status(s) => GraphValue::String(s.clone()),
+        Value::Int(i) => GraphValue::Integer(*i),
+        Value::Okay => GraphValue::String("OK".to_string()),
+        Value::Nil => GraphValue::Null,
+        Value::Bulk(arr) => {
+            // Savants memory compact format: [type_id, value]
+            if arr.len() == 2 {
+                if let Value::Int(type_id) = &arr[0] {
+                    return match type_id {
+                        1 => GraphValue::Null,
+                        2 => parse_value(&arr[1]),
+                        3 => parse_value(&arr[1]),
+                        4 => {
+                            if let Value::Status(s) = &arr[1] {
+                                GraphValue::Boolean(s == "true")
+                            } else {
+                                parse_value(&arr[1])
+                            }
+                        }
+                        5 => {
+                            // Double encoded as string in compact mode
+                            if let Value::Data(bytes) = &arr[1] {
+                                let s = String::from_utf8_lossy(bytes);
+                                GraphValue::Float(s.parse().unwrap_or(0.0))
+                            } else {
+                                parse_value(&arr[1])
+                            }
+                        }
+                        6 => {
+                            if let Value::Bulk(inner) = &arr[1] {
+                                GraphValue::Array(inner.iter().map(parse_value).collect())
+                            } else {
+                                parse_value(&arr[1])
+                            }
+                        }
+                        _ => parse_value(&arr[1]),
+                    };
+                }
+            }
+            GraphValue::Array(arr.iter().map(parse_value).collect())
+        }
+    }
+}

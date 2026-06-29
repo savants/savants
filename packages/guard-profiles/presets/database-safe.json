@@ -1,0 +1,18 @@
+[
+  "when tool eq 'Bash' and command contains 'DROP DATABASE' then block",
+  "when tool eq 'Bash' and command contains 'DROP TABLE' then block",
+  "when tool eq 'Bash' and command contains 'DROP SCHEMA' then block",
+  "when tool eq 'Bash' and command contains 'drop database' then block",
+  "when tool eq 'Bash' and command contains 'drop table' then block",
+  "when tool eq 'Bash' and command contains 'DELETE FROM' and command not_contains 'WHERE' then block",
+  "when tool eq 'Bash' and command contains 'delete from' and command not_contains 'where' then block",
+  "when tool eq 'Bash' and command contains 'UPDATE' and command not_contains 'WHERE' and command contains 'SET' then ask 'UPDATE without WHERE clause modifies ALL rows'",
+  "when tool eq 'Bash' and command contains 'TRUNCATE' then ask 'TRUNCATE permanently deletes all rows from the table'",
+  "when tool eq 'Bash' and command contains 'ALTER TABLE' and command contains 'DROP COLUMN' then ask 'Dropping a column permanently destroys data'",
+  "when tool eq 'Bash' and command contains 'GRANT ALL' then block",
+  "when tool eq 'Bash' and command contains 'SUPERUSER' then block",
+  "when tool eq 'Bash' and command contains 'FLUSHALL' then ask 'FLUSHALL deletes all data from all Redis databases'",
+  "when tool eq 'Bash' and command contains 'FLUSHDB' then ask 'FLUSHDB deletes all data from the current Redis database'",
+  "when tool eq 'Bash' and command contains 'dropDatabase' then ask 'dropDatabase permanently destroys a MongoDB database'",
+  "when tool eq 'Bash' and command contains 'volumeDelete' then block"
+]

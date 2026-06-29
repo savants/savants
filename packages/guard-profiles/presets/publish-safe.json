@@ -1,0 +1,18 @@
+[
+  "when tool eq 'Bash' and command contains 'npm publish' then ask 'Publishing to npm is public and permanent'",
+  "when tool eq 'Bash' and command contains 'npx publish' then block",
+  "when tool eq 'Bash' and command contains 'yarn publish' then block",
+  "when tool eq 'Bash' and command contains 'twine upload' then ask 'Publishing to PyPI is permanent'",
+  "when tool eq 'Bash' and command contains 'cargo publish' then ask 'Publishing to crates.io is permanent'",
+  "when tool eq 'Bash' and command contains 'gem push' then ask 'Publishing to RubyGems is public'",
+  "when tool eq 'Bash' and command contains 'pip upload' then block",
+  "when tool eq 'Bash' and command contains 'docker push' then ask 'Pushing to a container registry — verify the image and tag'",
+  "when tool eq 'Bash' and command contains 'wrangler deploy' then block",
+  "when tool eq 'Bash' and command contains 'vercel --prod' then block",
+  "when tool eq 'Bash' and command contains 'netlify deploy --prod' then block",
+  "when tool eq 'Bash' and command contains 'fly deploy' then block",
+  "when tool eq 'Bash' and command contains 'pip install' and command contains '--index-url' then ask 'Installing from a non-default index — verify the source is trusted'",
+  "when tool eq 'Bash' and command contains 'npm install' and command contains '--registry' then ask 'Installing from a non-default registry — verify the source is trusted'",
+  "when tool eq 'Bash' and command contains 'pip install' and command contains 'http://' then block",
+  "when tool eq 'Bash' and command contains 'npm install' and command contains 'http://' then block"
+]

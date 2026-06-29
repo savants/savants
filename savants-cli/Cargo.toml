@@ -1,0 +1,57 @@
+[package]
+name = "savants"
+version = "0.1.0"
+edition = "2021"
+description = "Your infrastructure savant. Know what's wrong in 60 seconds."
+
+[[bin]]
+name = "savants"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "=4.5.37", features = ["derive"] }
+redis = { version = "=0.25.4", features = ["tokio-comp"] }
+tokio = { version = "1.38", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+colored = "2"
+dirs = "5"
+toml = "0.8"
+kube = { version = "0.87", features = ["runtime", "client", "derive"] }
+k8s-openapi = { version = "0.20", features = ["v1_28"] }
+futures = "0.3"
+tracing = "0.1"
+regex = "1"
+chrono = "0.4"
+nix = { version = "0.27", features = ["fs", "user"] }
+sha2 = "0.10"
+gethostname = "0.4"
+rand = "0.8"
+hostname = "0.3"
+reqwest = { version = "0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+libc = "0.2"
+tree-sitter = "0.22"
+tree-sitter-typescript = "0.21"
+tree-sitter-javascript = "0.21"
+tree-sitter-python = "0.21"
+tree-sitter-rust = "0.21"
+tree-sitter-go = "0.21"
+tree-sitter-java = "0.21"
+tree-sitter-c = "0.21"
+tree-sitter-cpp = "0.22"
+tree-sitter-ruby = "0.21"
+tree-sitter-c-sharp = "0.21"
+walkdir = "2"
+glob = "0.3"
+fastembed = { version = "5", optional = true }
+libbpf-rs = { version = "0.24", optional = true }
+
+[profile.release]
+opt-level = 3
+strip = true
+panic = "abort"
+lto = true
+codegen-units = 1
+[features]
+embeddings = ["fastembed"]
+ebpf = ["libbpf-rs"]

@@ -1,0 +1,361 @@
+# Savants Chaos Test Scenarios
+# Each scenario injects a known fault, waits for detection, and verifies diagnosis.
+# Run with: ./chaos-harness/runner.sh [--scenario dns-forward-bad | --all]
+
+scenarios:
+
+  # ================================================================
+  # INFRASTRUCTURE - DNS (3 scenarios)
+  # ================================================================
+
+  - id: chaos-dns-001
+    name: CoreDNS forward to unreachable upstream
+    category: infrastructure
+    subcategory: dns
+    difficulty: medium
+    inject:
+      type: configmap_patch
+      namespace: kube-system
+      name: coredns
+      patch: '{"data":{"Corefile":".:53 {\n    errors\n    health\n    ready\n    forward . 127.0.0.1\n    cache 30\n    loop\n    reload\n    loadbalance\n}"}}'
+    wait_for:
+      type: log_pattern
+      pattern: "SERVFAIL|connection refused|i/o timeout"
+      timeout_seconds: 90
+    error_signal: "DNS resolution failing across cluster, pods unable to resolve service names"
+    ground_truth:
+      root_cause: "CoreDNS ConfigMap forward directive pointing to unreachable 127.0.0.1"
+      must_mention: ["coredns", "forward", "dns", "upstream", "127.0.0.1"]
+      must_identify_as: "infrastructure"
+    restore:
+      type: configmap_patch
+      namespace: kube-system
+      name: coredns
+      patch: '{"data":{"Corefile":".:53 {\n    errors\n    health\n    ready\n    forward . 1.1.1.1 8.8.8.8\n    cache 30\n    loop\n    reload\n    loadbalance\n}"}}'
+
+  - id: chaos-dns-002
+    name: CoreDNS pods scaled to zero
+    category: infrastructure
+    subcategory: dns
+    difficulty: easy
+    inject:
+      type: scale
+      namespace: kube-system
+      resource: deployment/coredns
+      replicas: 0
+    wait_for:
+      type: pod_gone
+      namespace: kube-system
+      label: "k8s-app=kube-dns"
+      timeout_seconds: 60
+    error_signal: "DNS resolution timeout, no DNS pods running"
+    ground_truth:
+      root_cause: "CoreDNS deployment scaled to 0 replicas"
+      must_mention: ["coredns", "scaled", "0", "dns"]
+      must_identify_as: "infrastructure"
+    restore:
+      type: scale
+      namespace: kube-system
+      resource: deployment/coredns
+      replicas: 2
+
+  - id: chaos-dns-003
+    name: CoreDNS custom domain forward loop
+    category: infrastructure
+    subcategory: dns
+    difficulty: hard
+    inject:
+      type: configmap_patch
+      namespace: kube-system
+      name: coredns
+      patch: '{"data":{"Corefile":".:53 {\n    errors\n    health\n    ready\n    forward . 10.43.0.10\n    cache 30\n    loop\n    reload\n    loadbalance\n}"}}'
+    wait_for:
+      type: log_pattern
+      pattern: "loop.*detected|HINFO|SERVFAIL"
+      timeout_seconds: 90
+    error_signal: "DNS loop detected, CoreDNS forwarding to itself"
+    ground_truth:
+      root_cause: "CoreDNS forward pointing to cluster DNS IP (itself), creating a loop"
+      must_mention: ["coredns", "loop", "forward"]
+      must_identify_as: "infrastructure"
+    restore:
+      type: configmap_patch
+      namespace: kube-system
+      name: coredns
+      patch: '{"data":{"Corefile":".:53 {\n    errors\n    health\n    ready\n    forward . 1.1.1.1 8.8.8.8\n    cache 30\n    loop\n    reload\n    loadbalance\n}"}}'
+
+  # ================================================================
+  # INFRASTRUCTURE - Resources (3 scenarios)
+  # ================================================================
+
+  - id: chaos-resource-001
+    name: Pod OOMKilled - memory limit too low
+    category: infrastructure
+    subcategory: resource_exhaustion
+    difficulty: easy
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: oom-test.yaml
+    wait_for:
+      type: pod_status
+      namespace: chaos-test
+      name_contains: oom-test
+      status: "OOMKilled|CrashLoopBackOff"
+      timeout_seconds: 120
+    error_signal: "Pod chaos-test/oom-test OOMKilled, restarting repeatedly"
+    ground_truth:
+      root_cause: "Memory limit set to 10Mi but application requires at least 64Mi"
+      must_mention: ["oom", "memory", "limit", "10Mi"]
+      must_identify_as: "infrastructure"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  - id: chaos-resource-002
+    name: PVC at 100% capacity
+    category: infrastructure
+    subcategory: storage
+    difficulty: medium
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: pvc-full-test.yaml
+    wait_for:
+      type: log_pattern
+      pattern: "No space left|disk full|write failed"
+      timeout_seconds: 120
+    error_signal: "Application unable to write, disk full on mounted volume"
+    ground_truth:
+      root_cause: "PVC mounted at /data is at 100% capacity"
+      must_mention: ["disk", "full", "pvc", "storage", "capacity"]
+      must_identify_as: "infrastructure"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  - id: chaos-resource-003
+    name: CPU throttled - requests too low
+    category: infrastructure
+    subcategory: resource_exhaustion
+    difficulty: medium
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: cpu-throttle-test.yaml
+    wait_for:
+      type: metric_threshold
+      metric: "container_cpu_cfs_throttled_seconds_total"
+      threshold: 0.5
+      timeout_seconds: 180
+    error_signal: "Application responding slowly, high CPU throttling detected"
+    ground_truth:
+      root_cause: "CPU request set to 10m but application needs 200m, heavy CFS throttling"
+      must_mention: ["cpu", "throttl", "request", "limit"]
+      must_identify_as: "infrastructure"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  # ================================================================
+  # APPLICATION - CrashLoop (3 scenarios)
+  # ================================================================
+
+  - id: chaos-app-001
+    name: Missing environment variable
+    category: application
+    subcategory: configuration
+    difficulty: easy
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: missing-env-test.yaml
+    wait_for:
+      type: pod_status
+      namespace: chaos-test
+      name_contains: missing-env
+      status: "CrashLoopBackOff|Error"
+      timeout_seconds: 90
+    error_signal: "Pod CrashLoopBackOff, exit code 1, missing required configuration"
+    ground_truth:
+      root_cause: "Required environment variable DATABASE_URL not set in deployment spec"
+      must_mention: ["environment", "variable", "missing", "DATABASE_URL"]
+      must_identify_as: "application"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  - id: chaos-app-002
+    name: Bad image tag - ImagePullBackOff
+    category: application
+    subcategory: deployment
+    difficulty: easy
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: bad-image-test.yaml
+    wait_for:
+      type: pod_status
+      namespace: chaos-test
+      name_contains: bad-image
+      status: "ImagePullBackOff|ErrImagePull"
+      timeout_seconds: 90
+    error_signal: "Pod ImagePullBackOff, unable to pull image"
+    ground_truth:
+      root_cause: "Image tag v99.99.99 does not exist in the registry"
+      must_mention: ["image", "pull", "tag", "v99.99.99"]
+      must_identify_as: "application"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  - id: chaos-app-003
+    name: Readiness probe misconfigured
+    category: application
+    subcategory: health_check
+    difficulty: medium
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: bad-readiness-test.yaml
+    wait_for:
+      type: event_pattern
+      namespace: chaos-test
+      pattern: "Readiness probe failed|Unhealthy"
+      timeout_seconds: 120
+    error_signal: "Deployment stuck, 0/3 pods ready, readiness probe failing"
+    ground_truth:
+      root_cause: "Readiness probe configured for path /healthz but application serves health on /health"
+      must_mention: ["readiness", "probe", "health", "path"]
+      must_identify_as: "application"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  # ================================================================
+  # CONFIGURATION (2 scenarios)
+  # ================================================================
+
+  - id: chaos-config-001
+    name: Secret deleted while pods running
+    category: configuration
+    subcategory: secrets
+    difficulty: medium
+    inject:
+      type: deploy_then_delete_secret
+      namespace: chaos-test
+      manifest: secret-dep-test.yaml
+      secret_name: app-credentials
+      delay_seconds: 30
+    wait_for:
+      type: pod_status
+      namespace: chaos-test
+      name_contains: secret-dep
+      status: "CrashLoopBackOff|Error"
+      timeout_seconds: 120
+    error_signal: "Pod crashing after secret was deleted, unable to mount volume"
+    ground_truth:
+      root_cause: "Secret app-credentials was deleted, pods mounting it as volume restart and fail"
+      must_mention: ["secret", "deleted", "mount", "credentials"]
+      must_identify_as: "configuration"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  - id: chaos-config-002
+    name: ConfigMap YAML syntax error
+    category: configuration
+    subcategory: configmap
+    difficulty: hard
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: bad-config-test.yaml
+    wait_for:
+      type: pod_status
+      namespace: chaos-test
+      name_contains: bad-config
+      status: "CrashLoopBackOff|Error"
+      timeout_seconds: 90
+    error_signal: "Application crashing on startup, unable to parse configuration"
+    ground_truth:
+      root_cause: "ConfigMap app-config contains invalid YAML syntax, application fails to parse"
+      must_mention: ["configmap", "config", "parse", "syntax", "yaml"]
+      must_identify_as: "configuration"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  # ================================================================
+  # NETWORK (2 scenarios)
+  # ================================================================
+
+  - id: chaos-net-001
+    name: NetworkPolicy blocks all ingress
+    category: infrastructure
+    subcategory: network
+    difficulty: medium
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: netpol-deny-test.yaml
+    wait_for:
+      type: log_pattern
+      pattern: "connection refused|connection timed out|i/o timeout"
+      timeout_seconds: 120
+    error_signal: "Service unreachable, connection refused between pods"
+    ground_truth:
+      root_cause: "NetworkPolicy deny-all-ingress blocking all incoming traffic to the service"
+      must_mention: ["network", "policy", "deny", "ingress", "blocked"]
+      must_identify_as: "infrastructure"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  - id: chaos-net-002
+    name: Service port mismatch
+    category: infrastructure
+    subcategory: network
+    difficulty: medium
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: port-mismatch-test.yaml
+    wait_for:
+      type: log_pattern
+      pattern: "connection refused|no route|ECONNREFUSED"
+      timeout_seconds: 90
+    error_signal: "Service returning connection refused, pods appear healthy"
+    ground_truth:
+      root_cause: "Service targeting port 8080 but container listening on port 3000"
+      must_mention: ["port", "mismatch", "8080", "3000", "service"]
+      must_identify_as: "infrastructure"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test
+
+  # ================================================================
+  # CERTIFICATES (1 scenario)
+  # ================================================================
+
+  - id: chaos-cert-001
+    name: TLS certificate expired
+    category: infrastructure
+    subcategory: certificates
+    difficulty: medium
+    inject:
+      type: deploy
+      namespace: chaos-test
+      manifest: expired-cert-test.yaml
+    wait_for:
+      type: log_pattern
+      pattern: "certificate has expired|x509|tls handshake"
+      timeout_seconds: 90
+    error_signal: "TLS handshake failing, certificate expired"
+    ground_truth:
+      root_cause: "TLS certificate in secret tls-cert expired, needs renewal"
+      must_mention: ["certificate", "expired", "tls", "renew"]
+      must_identify_as: "infrastructure"
+    restore:
+      type: delete_namespace
+      namespace: chaos-test

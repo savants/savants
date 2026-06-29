@@ -1,0 +1,23 @@
+[
+  "when tool eq 'Bash' and command contains 'rm -rf /' then block",
+  "when tool eq 'Bash' and command contains 'rm -rf ~' then block",
+  "when tool eq 'Bash' and command contains 'rm -rf $HOME' then block",
+  "when tool eq 'Bash' and command contains 'rm --no-preserve-root' then block",
+  "when tool eq 'Bash' and command contains 'rm -rf .' then suggest 'Use git clean -fd for tracked repos, or remove specific files by name'",
+  "when tool eq 'Bash' and command contains 'rm -rf *' then block",
+  "when tool eq 'Bash' and command contains 'rm -fr /' then block",
+  "when tool eq 'Bash' and command contains 'rm -fr ~' then block",
+  "when tool eq 'Bash' and command contains 'sudo rm -rf' then block",
+  "when tool eq 'Bash' and command contains 'find' and command contains '-exec rm' then ask 'find -exec rm can recursively delete large file trees'",
+  "when tool eq 'Bash' and command contains 'find' and command contains '-delete' then ask 'find -delete permanently removes matched files'",
+  "when tool eq 'Bash' and command contains 'dd if=/dev/zero' then block",
+  "when tool eq 'Bash' and command contains 'dd if=/dev/urandom' then block",
+  "when tool eq 'Bash' and command contains 'mkfs' then block",
+  "when tool eq 'Bash' and command contains 'wipefs' then block",
+  "when tool eq 'Bash' and command contains 'shred' then block",
+  "when tool eq 'Bash' and command contains 'rm' and command contains 'backup' then block",
+  "when tool eq 'Bash' and command contains 'rm' and command contains '.bak' then block",
+  "when tool eq 'Bash' and command contains 'rm' and command contains '.dump' then ask 'Deleting dump files may destroy the only recovery copy'",
+  "when tool eq 'Bash' and command contains 'delete-snapshot' then ask 'Deleting cloud snapshots removes recovery points'",
+  "when tool eq 'Bash' and command contains 'restic forget' and command contains '--prune' then ask 'Pruning restic snapshots permanently removes backup data'"
+]

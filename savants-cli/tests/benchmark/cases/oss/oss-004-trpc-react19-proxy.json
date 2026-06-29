@@ -1,0 +1,31 @@
+{
+  "id": "oss-004",
+  "source": "github-bug",
+  "title": "tRPC #7336: React 19 proxy coercion causes infinite recursion in createInnerProxy",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "trpc TypeError: Maximum call stack size exceeded when React 19 calls valueOf() or toString() on tRPC proxy object returned by createInnerProxy",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/server/src/unstable-core-do-not-import/createProxy.ts",
+    "root_cause_function": "createInnerProxy",
+    "root_cause_description": "React 19 coerces proxy objects to primitives by calling valueOf/toString/toJSON. createInnerProxy's get trap returns another proxy for these methods instead of a primitive, causing infinite recursion.",
+    "root_cause_category": "application",
+    "fix_pr": "#7336",
+    "fix_description": "Add special handling for valueOf, toString, toJSON in the proxy get trap to return proper primitive values"
+  },
+  "expected_signals": {
+    "must_mention": ["createInnerProxy", "proxy"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "trpc",
+    "issue_number": 7336,
+    "pr_number": 7336,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

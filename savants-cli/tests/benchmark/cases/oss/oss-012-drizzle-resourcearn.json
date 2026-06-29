@@ -1,0 +1,31 @@
+{
+  "id": "oss-012",
+  "source": "github-bug",
+  "title": "Drizzle #3680: TypeError Cannot destructure resourceArn of connection as undefined",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "drizzle-orm TypeError: Cannot destructure property 'resourceArn' of 'connection' as it is undefined in AWS Data API pg driver",
+    "source": "github_issue",
+    "issue_url": "https://github.com/drizzle-team/drizzle-orm/issues/3224"
+  },
+  "ground_truth": {
+    "root_cause_file": "drizzle-orm/src/aws-data-api/pg/driver.ts",
+    "root_cause_function": null,
+    "root_cause_description": "ESM/CJS module mismatch causes the AWS SDK connection object to be undefined when imported. The driver destructures properties without checking for null.",
+    "root_cause_category": "application",
+    "fix_pr": "#3680",
+    "fix_description": "Fix module import to handle ESM/CJS interop correctly"
+  },
+  "expected_signals": {
+    "must_mention": ["driver", "aws"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "drizzle-orm",
+    "pr_number": 3680,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

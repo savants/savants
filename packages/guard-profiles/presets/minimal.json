@@ -1,0 +1,12 @@
+[
+  "when tool eq 'Bash' and command contains 'rm -rf /' then block",
+  "when tool eq 'Bash' and command contains 'rm -rf ~' then block",
+  "when tool eq 'Bash' and command contains 'rm -rf $HOME' then block",
+  "when tool eq 'Bash' and command contains 'sudo rm -rf' then block",
+  "when tool eq 'Bash' and command contains 'mkfs' then block",
+  "when tool eq 'Bash' and command contains 'dd if=' then block",
+  "when tool eq 'Bash' and command contains 'git push --force' and command contains 'main' then block",
+  "when tool eq 'Bash' and command contains 'DROP DATABASE' then block",
+  "when tool eq 'Write' and file_path contains 'id_rsa' then block",
+  "when tool eq 'Write' and file_path contains 'id_ed25519' then block"
+]

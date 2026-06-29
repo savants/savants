@@ -1,0 +1,30 @@
+{
+  "id": "prod-009",
+  "source": "production",
+  "title": "transcribeAnswer fails on empty audio buffer",
+  "category": "application",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "vocator-backend TypeError: transcribeAnswer Cannot read properties of undefined (reading 'length') in screening service audio processing",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/services/screening.ts",
+    "root_cause_function": "transcribeAnswer",
+    "root_cause_description": "transcribeAnswer receives empty or undefined audio buffer when candidate submits without recording. No null check on the buffer before processing.",
+    "root_cause_category": "application",
+    "fix_description": "Add null/empty check for audio buffer before processing in transcribeAnswer",
+    "verified_by": "confirmed_by_code_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["transcribeAnswer", "screening"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-BACKEND-44",
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "id": "prod-002",
+  "source": "production",
+  "title": "Redis SUBSCRIBE error - connection shared between pub/sub and regular commands",
+  "category": "infrastructure",
+  "difficulty": "medium",
+  "error_signal": {
+    "message": "vocator-backend ReplyError: ERR Cant execute info only SUBSCRIBE UNSUBSCRIBE PING QUIT RESET are allowed in this context",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/lib/redis-pubsub.ts",
+    "root_cause_function": null,
+    "root_cause_description": "Redis client in SUBSCRIBE mode being reused for regular commands. Need separate connections.",
+    "root_cause_category": "infrastructure",
+    "fix_description": "Ensure subscriber and regular Redis clients are separate connections",
+    "verified_by": "confirmed_by_code_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["redis", "subscribe", "connection", "separate"],
+    "must_not_mention": ["frontend", "identity-verification"],
+    "must_identify_category": "infrastructure"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-BACKEND-33",
+    "added_date": "2026-04-13",
+    "confidence": "high"
+  }
+}

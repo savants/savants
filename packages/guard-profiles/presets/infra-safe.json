@@ -1,0 +1,15 @@
+[
+  "when tool eq 'Bash' and command contains 'kubectl delete' then block",
+  "when tool eq 'Bash' and command contains 'kubectl scale' and command contains '--replicas=0' then block",
+  "when tool eq 'Bash' and command contains 'terraform destroy' then block",
+  "when tool eq 'Bash' and command contains 'terraform apply -auto-approve' then block",
+  "when tool eq 'Bash' and command contains 'aws s3 rb' then block",
+  "when tool eq 'Bash' and command contains 'aws s3 rm' and command contains '--recursive' then block",
+  "when tool eq 'Bash' and command contains 'aws ec2 terminate' then block",
+  "when tool eq 'Bash' and command contains 'aws rds delete' then block",
+  "when tool eq 'Bash' and command contains 'gcloud compute instances delete' then block",
+  "when tool eq 'Bash' and command contains 'docker system prune -a' then block",
+  "when tool eq 'Bash' and command contains 'docker volume rm' then block",
+  "when tool eq 'Bash' and command contains 'helm delete' then block",
+  "when tool eq 'Bash' and command contains 'helm uninstall' then block"
+]

@@ -1,0 +1,8 @@
+
+[dev]
+pytest
+pytest-asyncio
+httpx
+
+[managed]
+httpx>=0.27

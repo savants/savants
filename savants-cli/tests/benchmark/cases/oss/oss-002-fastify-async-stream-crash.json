@@ -1,0 +1,31 @@
+{
+  "id": "oss-002",
+  "source": "github-bug",
+  "title": "Fastify #4021: crash when using async handler send stream",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "fastify UnhandledPromiseRejection: crash when async route handler sends a stream via reply.send(stream)",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "lib/wrapThenable.js",
+    "root_cause_function": "wrapThenable",
+    "root_cause_description": "wrapThenable does not properly handle the case where an async handler returns after already sending a stream response, causing an unhandled promise rejection.",
+    "root_cause_category": "application",
+    "fix_pr": "#4021",
+    "fix_description": "Add proper error handling in wrapThenable for stream responses from async handlers"
+  },
+  "expected_signals": {
+    "must_mention": ["wrapThenable"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "fastify",
+    "issue_number": 4021,
+    "pr_number": 4021,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

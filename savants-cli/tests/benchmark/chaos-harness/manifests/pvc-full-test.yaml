@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tiny-pvc
+  namespace: chaos-test
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pvc-full
+  namespace: chaos-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pvc-full
+  template:
+    metadata:
+      labels:
+        app: pvc-full
+    spec:
+      containers:
+        - name: writer
+          image: busybox:1.36
+          command: ["sh", "-c", "dd if=/dev/zero of=/data/fill bs=1M count=10 2>&1; echo 'Disk full test triggered'; sleep 3600"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            limits:
+              memory: "32Mi"
+              cpu: "50m"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: tiny-pvc

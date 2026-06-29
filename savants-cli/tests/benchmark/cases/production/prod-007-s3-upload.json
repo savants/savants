@@ -1,0 +1,30 @@
+{
+  "id": "prod-007",
+  "source": "production",
+  "title": "S3 uploadToS3 AccessDenied on resume upload",
+  "category": "infrastructure",
+  "difficulty": "easy",
+  "error_signal": {
+    "message": "vocator-backend AccessDenied: Access Denied when calling uploadToS3 for resume file storage",
+    "source": "sentry"
+  },
+  "ground_truth": {
+    "root_cause_file": "server/services/s3.ts",
+    "root_cause_function": "uploadToS3",
+    "root_cause_description": "S3 bucket policy or IAM role does not have PutObject permission. Infrastructure issue, not code bug.",
+    "root_cause_category": "infrastructure",
+    "fix_description": "Check IAM role permissions and S3 bucket policy for PutObject access",
+    "verified_by": "confirmed_by_code_analysis"
+  },
+  "expected_signals": {
+    "must_mention": ["uploadToS3", "s3"],
+    "must_not_mention": [],
+    "must_identify_category": "infrastructure"
+  },
+  "metadata": {
+    "repo": "talent-pipeline",
+    "sentry_id": "VOCATOR-BACKEND-42",
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

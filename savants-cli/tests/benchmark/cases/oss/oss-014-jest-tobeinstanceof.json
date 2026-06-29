@@ -1,0 +1,30 @@
+{
+  "id": "oss-014",
+  "source": "github-bug",
+  "title": "Jest #6912: TypeError in toBeInstanceOf on null or undefined value",
+  "category": "application",
+  "difficulty": "easy",
+  "error_signal": {
+    "message": "jest TypeError: Cannot read property 'constructor' of undefined when using toBeInstanceOf matcher on null or undefined value in expect matchers",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/expect/src/matchers.js",
+    "root_cause_function": "toBeInstanceOf",
+    "root_cause_description": "toBeInstanceOf accesses value.constructor without null check. When value is null/undefined, it throws TypeError instead of a proper matcher failure.",
+    "root_cause_category": "application",
+    "fix_pr": "#6912",
+    "fix_description": "Add null guard before accessing constructor property"
+  },
+  "expected_signals": {
+    "must_mention": ["matchers", "toBeInstanceOf"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "jest",
+    "pr_number": 6912,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

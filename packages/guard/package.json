@@ -1,0 +1,33 @@
+{
+  "name": "@savants.dev/guard",
+  "version": "0.1.0",
+  "description": "Deterministic guardrails for AI agents. Your agent follows your rules. Always.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "savants-guard": "dist/cli.js"
+  },
+  "files": ["dist", "profiles"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "ai", "agent", "guardrails", "safety", "fsm", "state-machine",
+    "llm", "tool-call", "authorization", "deterministic",
+    "vercel-ai", "langchain", "openai", "claude", "anthropic"
+  ],
+  "author": "Savants <hello@savants.dev>",
+  "license": "MIT",
+  "homepage": "https://savants.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/savants/savants"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  }
+}

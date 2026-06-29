@@ -1,0 +1,30 @@
+{
+  "id": "oss-019",
+  "source": "github-bug",
+  "title": "Astro #14803: Image tests crash from circular reference in CSS plugin",
+  "category": "application",
+  "difficulty": "hard",
+  "error_signal": {
+    "message": "astro Error: out of memory crash caused by circular reference in vite-plugin-css when dev CSS plugin invalidates image.css during loading creating infinite loop",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/astro/src/vite-plugin-css/index.ts",
+    "root_cause_function": null,
+    "root_cause_description": "Circular reference in CSS plugin - dev CSS plugin invalidates image.css during loading, causing the page to never finish loading until OOM.",
+    "root_cause_category": "application",
+    "fix_pr": "#14803",
+    "fix_description": "Break circular invalidation by checking if module is already being loaded"
+  },
+  "expected_signals": {
+    "must_mention": ["vite-plugin-css", "css"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "astro",
+    "pr_number": 14803,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}

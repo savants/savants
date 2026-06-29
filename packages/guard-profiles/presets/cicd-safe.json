@@ -1,0 +1,10 @@
+[
+  "when tool eq 'Write' and file_path contains '.github/workflows' then ask 'Modifying CI/CD workflows can affect deployments'",
+  "when tool eq 'Write' and file_path contains '.gitlab-ci.yml' then ask 'Modifying CI/CD config can affect deployments'",
+  "when tool eq 'Edit' and file_path contains '.github/workflows' then ask 'Editing CI/CD workflows can affect deployments'",
+  "when tool eq 'Bash' and command contains 'gh secret delete' then block",
+  "when tool eq 'Bash' and command contains 'gh variable delete' then block",
+  "when tool eq 'Write' and file_path contains 'Makefile' then ask 'Modifying Makefile can change build and deploy behavior'",
+  "when tool eq 'Write' and file_path contains 'Jenkinsfile' then ask 'Modifying Jenkinsfile can affect CI/CD pipelines'",
+  "when tool eq 'Edit' and file_path contains 'Makefile' then ask 'Editing Makefile can change build and deploy behavior'"
+]

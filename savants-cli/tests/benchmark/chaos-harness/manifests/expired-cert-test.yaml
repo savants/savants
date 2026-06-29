@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls-cert
+  namespace: chaos-test
+type: kubernetes.io/tls
+data:
+  # Self-signed cert that expired in 2020 (pre-generated, base64 encoded)
+  # openssl req -x509 -nodes -days 1 -newkey rsa:2048 -keyout key.pem -out cert.pem -subj '/CN=test.local' -addext 'notBefore=Jan 1 00:00:00 2020 GMT' -addext 'notAfter=Jan 2 00:00:00 2020 GMT'
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUN5RENDQWJDZ0F3SUJBZ0lVZXdWZmdlMmFrcWdSbmN0UE9XUHZ2ZGdKTU1Jd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0ZERVNNQkFHQTFVRUF3d0pkR1Z6ZEM1c2IyTmhiREFlRncweU1EQXhNREV3TURBd01EQmFGdzB5TURBeApNREl3TURBd01EQmFNQlF4RWpBUUJnTlZCQU1NQ1hSbGMzUXViRzlqWVd3d2dnRWlNQTBHQ1NxR1NJYjNEUUVCCkFRVUFBNElCRHdBd2dnRUtBb0lCQVFDN3RVTG1pcXVlNUJCQT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktnd2dnU2tBZ0VBQW9JQkFRQzdwVUxtaXF1ZTVCQkEKLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQo=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: expired-cert
+  namespace: chaos-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: expired-cert
+  template:
+    metadata:
+      labels:
+        app: expired-cert
+    spec:
+      containers:
+        - name: app
+          image: python:3.11-slim
+          command: ["python3", "-c", "import ssl,socket; ctx=ssl.SSLContext(); ctx.load_cert_chain('/tls/tls.crt','/tls/tls.key'); print('Cert loaded, checking validity...'); import datetime; cert=ssl.PEM_cert_to_DER_cert(open('/tls/tls.crt').read().split('-----')[2]); print('Certificate likely expired'); import time; time.sleep(3600)"]
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+          resources:
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+      volumes:
+        - name: tls
+          secret:
+            secretName: tls-cert

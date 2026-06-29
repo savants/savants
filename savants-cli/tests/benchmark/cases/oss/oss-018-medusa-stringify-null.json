@@ -1,0 +1,30 @@
+{
+  "id": "oss-018",
+  "source": "github-bug",
+  "title": "Medusa #1766: stringifyNullProperties crashes on null property values",
+  "category": "application",
+  "difficulty": "easy",
+  "error_signal": {
+    "message": "medusa-js TypeError: Cannot convert undefined or null to object in stringifyNullProperties when Object.keys is called on null value in utils",
+    "source": "github_issue"
+  },
+  "ground_truth": {
+    "root_cause_file": "packages/medusa-js/src/utils.ts",
+    "root_cause_function": "stringifyNullProperties",
+    "root_cause_description": "stringifyNullProperties checks if value is an object before checking for null. Since typeof null === 'object', it passes the object check then crashes when Object.keys(null) is called.",
+    "root_cause_category": "application",
+    "fix_pr": "#1766",
+    "fix_description": "Check for null before the object type check"
+  },
+  "expected_signals": {
+    "must_mention": ["stringifyNullProperties", "utils"],
+    "must_not_mention": [],
+    "must_identify_category": "application"
+  },
+  "metadata": {
+    "repo": "medusa",
+    "pr_number": 1766,
+    "added_date": "2026-04-15",
+    "confidence": "high"
+  }
+}
