@@ -899,6 +899,10 @@ pub async fn start(name: Option<String>) {
                         "ebpf_oomkill" => true, // Process killed
                         "ebpf_biolatency" => true, // Disk slow
                         "ebpf_runqlat" => true, // CPU saturated
+                        "io_pressure_critical" => true, // NVMe I/O stall - precedes read-only
+                        "io_pressure_high" => true, // I/O pressure building
+                        k if k.starts_with("nvme_") => true, // NVMe errors
+                        k if k.starts_with("pod_crash_") => true, // Pod crashloop
                         k if k.starts_with("service_errors_") => is_critical, // Only if critical (>10 errors)
                         k if k.starts_with("memory_") => true,
                         k if k.starts_with("disk_") => true,
@@ -3109,13 +3113,22 @@ fn watch_kernel_health() -> Vec<Finding> {
                             if let Some(temp_str) = line.split(':').nth(1) {
                                 let temp: u32 = temp_str.trim().split_whitespace().next()
                                     .and_then(|s| s.parse().ok()).unwrap_or(0);
-                                if temp > 70 {
+                                if temp >= 80 {
+                                    findings.push(Finding {
+                                        key: format!("smart_temp_{}", disk),
+                                        severity: "critical".into(),
+                                        category: "disk".into(),
+                                        title: format!("NVMe overheating: {}°C on {} — read-only remount risk", temp, disk),
+                                        message: format!("Disk temperature at {}°C. Above 80°C causes thermal throttling, I/O timeouts, and filesystem read-only remounts. Reduce I/O load and improve cooling.", temp),
+                                        metadata: serde_json::json!({"disk": disk, "temp_c": temp}),
+                                    });
+                                } else if temp > 70 {
                                     findings.push(Finding {
                                         key: format!("smart_temp_{}", disk),
                                         severity: "warning".into(),
                                         category: "disk".into(),
-                                        title: format!("NVMe temperature high: {}C on {}", temp, disk),
-                                        message: format!("Disk temperature at {}C. Throttling may occur above 80C.", temp),
+                                        title: format!("NVMe temperature high: {}°C on {}", temp, disk),
+                                        message: format!("Disk temperature at {}°C. Throttling may occur above 80°C.", temp),
                                         metadata: serde_json::json!({"disk": disk, "temp_c": temp}),
                                     });
                                 }
@@ -3132,6 +3145,40 @@ fn watch_kernel_health() -> Vec<Finding> {
                             title: format!("SMART health FAILED on {}", disk),
                             message: format!("Disk {} SMART self-test reports FAILED. Disk is failing. Back up immediately.", disk),
                             metadata: serde_json::json!({"disk": disk}),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 3b. Disk temperature via /sys/class/hwmon (no sudo needed) ──
+    if let Ok(hwmon_dir) = std::fs::read_dir("/sys/class/hwmon") {
+        for entry in hwmon_dir.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if let Ok(temp_str) = std::fs::read_to_string(path.join("temp1_input")) {
+                if let Ok(temp_milli) = temp_str.trim().parse::<f64>() {
+                    let temp_c = (temp_milli / 1000.0) as u32;
+                    let name = std::fs::read_to_string(path.join("name"))
+                        .unwrap_or_default().trim().to_string();
+
+                    if temp_c >= 80 {
+                        findings.push(Finding {
+                            key: format!("hwmon_temp_{}", name),
+                            severity: "critical".into(),
+                            category: "disk".into(),
+                            title: format!("Disk overheating: {}C ({}) — read-only remount risk", temp_c, name),
+                            message: format!("Temperature at {}C. Above 80C causes I/O timeouts and filesystem read-only remounts.", temp_c),
+                            metadata: serde_json::json!({"sensor": name, "temp_c": temp_c}),
+                        });
+                    } else if temp_c >= 70 {
+                        findings.push(Finding {
+                            key: format!("hwmon_temp_{}", name),
+                            severity: "warning".into(),
+                            category: "disk".into(),
+                            title: format!("Disk temperature high: {}C ({})", temp_c, name),
+                            message: format!("Temperature at {}C. Approaching thermal throttle zone (80C+).", temp_c),
+                            metadata: serde_json::json!({"sensor": name, "temp_c": temp_c}),
                         });
                     }
                 }

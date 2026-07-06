@@ -57,6 +57,7 @@ const PROFILES: &[(&str, &str)] = &[
     ("k8s-safe.json", include_str!("../../../packages/guard-profiles/presets/k8s-safe.json")),
     ("k8s-secrets.json", include_str!("../../../packages/guard-profiles/presets/k8s-secrets.json")),
     ("battle-tested.json", include_str!("../../../packages/guard-profiles/presets/battle-tested.json")),
+    ("nixos-safe.json", include_str!("../../../packages/guard-profiles/presets/nixos-safe.json")),
 ];
 
 /// Sync embedded profile files to ~/.savants/profiles/ if they've changed.

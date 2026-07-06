@@ -2244,6 +2244,77 @@ fn run_snapshot_standalone() {
         }
     }
 
+    // Disk temperatures (NVMe, SATA)
+    let mut temps_found = false;
+    for hwmon in std::fs::read_dir("/sys/class/hwmon").into_iter().flatten() {
+        if let Ok(entry) = hwmon {
+            let path = entry.path();
+            let name = std::fs::read_to_string(path.join("name")).unwrap_or_default().trim().to_string();
+            if let Ok(temp_str) = std::fs::read_to_string(path.join("temp1_input")) {
+                if let Ok(temp_milli) = temp_str.trim().parse::<f64>() {
+                    let temp_c = temp_milli / 1000.0;
+                    if !temps_found {
+                        temps_found = true;
+                    }
+                    let status = if temp_c >= 80.0 {
+                        format!("{}°C {}", temp_c, "CRITICAL — thermal throttling/read-only risk".red())
+                    } else if temp_c >= 70.0 {
+                        format!("{}°C {}", temp_c, "WARNING — running hot".yellow())
+                    } else {
+                        format!("{}°C", temp_c)
+                    };
+                    let label = if name.contains("nvme") || name.is_empty() { "NVMe" } else { &name };
+                    println!("  {} {} ({})", "Temp:".bold(), status, label);
+                }
+            }
+        }
+    }
+
+    // I/O Pressure (PSI)
+    if let Ok(io_psi) = std::fs::read_to_string("/proc/pressure/io") {
+        // Parse: some avg10=X.XX avg60=X.XX avg300=X.XX total=XXXX
+        for line in io_psi.lines() {
+            if line.starts_with("some") {
+                if let Some(avg10) = line.split_whitespace()
+                    .find(|s| s.starts_with("avg10="))
+                    .and_then(|s| s.strip_prefix("avg10="))
+                    .and_then(|s| s.parse::<f64>().ok())
+                {
+                    let status = if avg10 >= 50.0 {
+                        format!("{:.1}% {}", avg10, "CRITICAL — I/O stalls, read-only remount risk".red())
+                    } else if avg10 >= 20.0 {
+                        format!("{:.1}% {}", avg10, "WARNING — disk overloaded".yellow())
+                    } else {
+                        format!("{:.1}%", avg10)
+                    };
+                    println!("  {} {}", "I/O Pressure:".bold(), status);
+                }
+            }
+        }
+    }
+
+    // CPU Pressure (PSI)
+    if let Ok(cpu_psi) = std::fs::read_to_string("/proc/pressure/cpu") {
+        for line in cpu_psi.lines() {
+            if line.starts_with("some") {
+                if let Some(avg10) = line.split_whitespace()
+                    .find(|s| s.starts_with("avg10="))
+                    .and_then(|s| s.strip_prefix("avg10="))
+                    .and_then(|s| s.parse::<f64>().ok())
+                {
+                    if avg10 >= 20.0 {
+                        let status = if avg10 >= 50.0 {
+                            format!("{:.1}% {}", avg10, "CRITICAL — CPU starvation".red())
+                        } else {
+                            format!("{:.1}% {}", avg10, "WARNING — CPU pressure".yellow())
+                        };
+                        println!("  {} {}", "CPU Pressure:".bold(), status);
+                    }
+                }
+            }
+        }
+    }
+
     // Docker
     if let Ok(output) = Command::new("docker").args(["ps", "--format", "{{.Names}}: {{.Status}}"]).output() {
         if output.status.success() {

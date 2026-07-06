@@ -24,8 +24,10 @@
 
   "when tool eq 'Bash' and command contains 'kubectl delete namespace' then block",
   "when tool eq 'Bash' and command contains 'kubectl delete statefulset' then block",
-  "when tool eq 'Bash' and command contains 'kubectl delete pvc' then ask 'PVC deletion loses persistent data'",
+  "when tool eq 'Bash' and command contains 'kubectl delete pvc' then block",
+  "when tool eq 'Bash' and command contains 'kubectl delete pv ' then block",
   "when tool eq 'Bash' and command contains 'kubectl delete' and command contains '--all' then block",
+  "when tool eq 'Bash' and command contains 'kubectl delete' and command contains '--force' then ask 'Force-deleting Kubernetes resources skips graceful shutdown'",
   "when tool eq 'Bash' and command contains 'docker system prune' then ask 'Docker prune removes all unused data'",
   "when tool eq 'Bash' and command contains 'terraform destroy' then block",
 

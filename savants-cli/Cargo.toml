@@ -1,6 +1,6 @@
 [package]
 name = "savants"
-version = "0.1.0"
+version = "0.22.0"
 edition = "2021"
 description = "Your infrastructure savant. Know what's wrong in 60 seconds."
 
@@ -42,6 +42,7 @@ tree-sitter-cpp = "0.22"
 tree-sitter-ruby = "0.21"
 tree-sitter-c-sharp = "0.21"
 walkdir = "2"
+petgraph = "0.7"
 glob = "0.3"
 fastembed = { version = "5", optional = true }
 libbpf-rs = { version = "0.24", optional = true }

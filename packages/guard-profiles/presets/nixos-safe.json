@@ -1,0 +1,7 @@
+[
+  "when tool eq 'Bash' and command contains 'nix-env -i' then suggest 'Use nix profile install instead of nix-env -i (declarative is better)'",
+  "when tool eq 'Bash' and command contains 'nix-channel --update' then suggest 'Use flake inputs instead of channels'",
+  "when tool eq 'Bash' and command contains 'nix-collect-garbage -d' then ask 'This deletes all old system generations — you cannot rollback after this'",
+  "when tool eq 'Bash' and command contains '/etc/nixos' and command contains 'rm' then block",
+  "when tool eq 'Write' and file_path contains '/etc/nixos' then ask 'Modifying NixOS configuration — verify syntax before rebuilding'"
+]

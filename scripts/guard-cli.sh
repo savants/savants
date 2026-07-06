@@ -12,7 +12,9 @@ set -euo pipefail
 SAVANTS_DIR="${HOME}/.savants"
 RULES_FILE="${SAVANTS_DIR}/guard-rules.json"
 STATS_FILE="${SAVANTS_DIR}/hook-stats.jsonl"
+LOCK_FILE="${SAVANTS_DIR}/profiles.lock"
 PROFILES_DIR="$(dirname "$0")/../packages/guard-profiles/presets"
+CLOUD_API="${SAVANTS_CLOUD_API:-https://api.savants.cloud/api/v1/profiles}"
 
 # If installed globally, profiles are bundled
 if [ ! -d "$PROFILES_DIR" ]; then
@@ -23,6 +25,350 @@ cmd="${1:-help}"
 shift || true
 
 case "$cmd" in
+  install)
+    # Install a guard profile from cloud, GitHub, or URL
+    PROFILE_NAME="${1:-}"
+    if [ -z "$PROFILE_NAME" ]; then
+      echo "Usage: savants guard install <source>"
+      echo ""
+      echo "Sources:"
+      echo "  @user/name          Cloud profile (latest version)"
+      echo "  @user/name@1.2.0    Cloud profile (exact version)"
+      echo "  @user/name@^1       Cloud profile (semver range)"
+      echo "  nixos-safe           Community profile from GitHub"
+      echo "  https://...          Raw URL to a JSON rules file"
+      echo ""
+      echo "Examples:"
+      echo "  savants guard install @miguel/nixos-flake-only"
+      echo "  savants guard install @miguel/nixos-flake-only@^1"
+      echo "  savants guard install nixos-safe"
+      echo "  savants guard install https://example.com/rules.json"
+      exit 1
+    fi
+
+    CUSTOM_DIR="${SAVANTS_DIR}/custom-profiles"
+    mkdir -p "$CUSTOM_DIR"
+
+    if [[ "$PROFILE_NAME" == @* ]]; then
+      # Cloud profile: @owner/name or @owner/name@version
+      HANDLE="${PROFILE_NAME#@}"
+
+      # Split on @ to get version specifier
+      if [[ "$HANDLE" == *@* ]]; then
+        VERSION_SPEC="${HANDLE##*@}"
+        HANDLE="${HANDLE%@*}"
+      else
+        VERSION_SPEC=""
+      fi
+
+      OWNER="${HANDLE%%/*}"
+      NAME="${HANDLE#*/}"
+
+      if [ -z "$OWNER" ] || [ -z "$NAME" ]; then
+        echo "Invalid handle. Use: @owner/name"
+        exit 1
+      fi
+
+      echo "Installing @${OWNER}/${NAME}..."
+
+      if [ -n "$VERSION_SPEC" ]; then
+        API_URL="${CLOUD_API}/${OWNER}/${NAME}/${VERSION_SPEC}"
+      else
+        API_URL="${CLOUD_API}/${OWNER}/${NAME}"
+      fi
+
+      RESPONSE=$(curl -fsSL "$API_URL" 2>/dev/null)
+      if [ $? -ne 0 ]; then
+        echo "  Profile @${OWNER}/${NAME} not found on savants.cloud"
+        exit 1
+      fi
+
+      # Extract rules and version from response
+      INSTALLED_VERSION=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['version'])" 2>/dev/null)
+      RULES=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['rules']))" 2>/dev/null)
+
+      if [ -z "$INSTALLED_VERSION" ] || [ -z "$RULES" ]; then
+        echo "  Error: invalid response from cloud API"
+        exit 1
+      fi
+
+      DEST="${CUSTOM_DIR}/${NAME}.json"
+
+      # Read previous version from lock file for rollback support
+      PREV_VERSION=""
+      if [ -f "$LOCK_FILE" ]; then
+        PREV_VERSION=$(python3 -c "
+import json
+lock = json.load(open('${LOCK_FILE}'))
+entry = lock.get('@${OWNER}/${NAME}', {})
+print(entry.get('version', ''))
+" 2>/dev/null)
+      fi
+
+      echo "$RULES" > "$DEST"
+      RULE_COUNT=$(python3 -c "import json; print(len(json.load(open('$DEST'))))" 2>/dev/null)
+      echo "  Installed: @${OWNER}/${NAME}@${INSTALLED_VERSION} (${RULE_COUNT} rules)"
+
+      # Update lock file
+      python3 -c "
+import json, os
+lock_path = '${LOCK_FILE}'
+try:
+    lock = json.load(open(lock_path))
+except:
+    lock = {}
+lock['@${OWNER}/${NAME}'] = {
+    'version': '${INSTALLED_VERSION}',
+    'pinned': '${VERSION_SPEC}' if '${VERSION_SPEC}' else '${INSTALLED_VERSION}',
+    'installed': '$(date -u +%Y-%m-%d)',
+    'previous': '${PREV_VERSION}' if '${PREV_VERSION}' else None
+}
+# Remove None values
+entry = lock['@${OWNER}/${NAME}']
+lock['@${OWNER}/${NAME}'] = {k: v for k, v in entry.items() if v is not None}
+json.dump(lock, open(lock_path, 'w'), indent=2)
+" 2>/dev/null
+
+      # Notify cloud of install (fire and forget)
+      curl -fsS -X POST "${CLOUD_API}/${OWNER}/${NAME}/install" \
+        -H "Content-Type: application/json" \
+        -d "{\"version\":\"${INSTALLED_VERSION}\"}" >/dev/null 2>&1 &
+
+      echo ""
+      echo "  Activate: savants guard preset standard+${NAME}"
+      echo "  View:     cat $DEST"
+
+    elif [[ "$PROFILE_NAME" == https://* ]] || [[ "$PROFILE_NAME" == http://* ]]; then
+      # Raw URL install
+      URL_NAME=$(basename "$PROFILE_NAME" .json)
+      DEST="${CUSTOM_DIR}/${URL_NAME}.json"
+
+      echo "Installing from URL..."
+      if curl -fsSL "$PROFILE_NAME" -o "$DEST" 2>/dev/null; then
+        if python3 -c "import json; rules=json.load(open('$DEST')); print(f'  Installed: {len(rules)} rules')" 2>/dev/null; then
+          echo ""
+          echo "  Activate: savants guard preset standard+${URL_NAME}"
+          echo "  View:     cat $DEST"
+        else
+          echo "  Error: downloaded file is not valid JSON"
+          rm -f "$DEST"
+          exit 1
+        fi
+      else
+        echo "  Failed to download from URL"
+        exit 1
+      fi
+
+    else
+      # Community profile from GitHub (original behavior)
+      DEST="${CUSTOM_DIR}/${PROFILE_NAME}.json"
+      URL="https://raw.githubusercontent.com/savants/savants/main/packages/guard-profiles/community/${PROFILE_NAME}.json"
+
+      echo "Installing ${PROFILE_NAME}..."
+      if curl -fsSL "$URL" -o "$DEST" 2>/dev/null; then
+        if python3 -c "import json; rules=json.load(open('$DEST')); print(f'  Installed: {len(rules)} rules')" 2>/dev/null; then
+          echo ""
+          echo "  Activate: savants guard preset standard+${PROFILE_NAME}"
+          echo "  View:     cat $DEST"
+        else
+          echo "  Error: downloaded file is not valid JSON"
+          rm -f "$DEST"
+          exit 1
+        fi
+      else
+        echo "  Profile '${PROFILE_NAME}' not found in community registry."
+        echo ""
+        echo "  Browse available: https://github.com/savants/savants/tree/main/packages/guard-profiles/community"
+        echo "  Create your own:  ~/.savants/custom-profiles/${PROFILE_NAME}.json"
+        exit 1
+      fi
+    fi
+    ;;
+
+  publish)
+    # Legacy alias for share
+    exec "$0" share "$@"
+    ;;
+
+  share)
+    # Share a guard profile to savants.cloud
+    PROFILE_NAME="${1:-}"
+    VERSION="${3:-1.0.0}"  # default version
+
+    # Parse --version flag
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --version) VERSION="$2"; shift 2 ;;
+        --description) DESCRIPTION="$2"; shift 2 ;;
+        *) if [ -z "$PROFILE_NAME" ]; then PROFILE_NAME="$1"; fi; shift ;;
+      esac
+    done
+
+    if [ -z "$PROFILE_NAME" ]; then
+      echo "Usage: savants guard share <profile-name> [--version 1.0.0] [--description \"...\"]"
+      echo ""
+      echo "Publishes ~/.savants/custom-profiles/<name>.json to savants.cloud"
+      echo ""
+      echo "Examples:"
+      echo "  savants guard share my-rules --version 1.0.0"
+      echo "  savants guard share nixos-flake-only --version 1.1.0 --description \"NixOS flake safety\""
+      exit 1
+    fi
+
+    CUSTOM_DIR="${SAVANTS_DIR}/custom-profiles"
+    SOURCE="${CUSTOM_DIR}/${PROFILE_NAME}.json"
+    if [ ! -f "$SOURCE" ]; then
+      echo "Profile not found: $SOURCE"
+      echo ""
+      echo "Create it first:"
+      echo "  mkdir -p $CUSTOM_DIR"
+      echo "  echo '[\"when tool eq ...\" ]' > $SOURCE"
+      exit 1
+    fi
+
+    # Get auth token
+    API_KEY="${SAVANTS_API_KEY:-}"
+    if [ -z "$API_KEY" ]; then
+      STATE_FILE="${SAVANTS_DIR}/state.json"
+      if [ -f "$STATE_FILE" ]; then
+        API_KEY=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('cloud_token',''))" 2>/dev/null)
+      fi
+    fi
+    if [ -z "$API_KEY" ]; then
+      echo "Not authenticated. Run: savants connect"
+      exit 1
+    fi
+
+    # Build payload
+    PAYLOAD=$(python3 -c "
+import json
+rules = json.load(open('${SOURCE}'))
+payload = {
+    'name': '${PROFILE_NAME}',
+    'version': '${VERSION}',
+    'rules': rules,
+}
+desc = '${DESCRIPTION:-}'
+if desc:
+    payload['description'] = desc
+print(json.dumps(payload))
+" 2>/dev/null)
+
+    echo "Publishing ${PROFILE_NAME}@${VERSION}..."
+    RESPONSE=$(curl -fsS -X POST "${CLOUD_API}/publish" \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d "$PAYLOAD" 2>&1)
+
+    if [ $? -eq 0 ]; then
+      HANDLE=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('handle',''))" 2>/dev/null)
+      echo "  Shared! Install with: savants guard install ${HANDLE}"
+    else
+      echo "  Error: $RESPONSE"
+      exit 1
+    fi
+    ;;
+
+  rollback)
+    # Rollback a cloud-installed profile to its previous version
+    PROFILE_NAME="${1:-}"
+    if [ -z "$PROFILE_NAME" ]; then
+      echo "Usage: savants guard rollback @owner/name"
+      echo ""
+      echo "Restores the previously installed version from profiles.lock"
+      exit 1
+    fi
+
+    # Normalize handle
+    HANDLE="$PROFILE_NAME"
+    if [[ "$HANDLE" != @* ]]; then
+      HANDLE="@${HANDLE}"
+    fi
+
+    if [ ! -f "$LOCK_FILE" ]; then
+      echo "No profiles.lock found. Nothing to rollback."
+      exit 1
+    fi
+
+    python3 -c "
+import json, sys, subprocess
+
+lock = json.load(open('${LOCK_FILE}'))
+entry = lock.get('${HANDLE}')
+if not entry:
+    print(f'  ${HANDLE} not found in profiles.lock')
+    sys.exit(1)
+
+prev = entry.get('previous')
+if not prev:
+    print(f'  No previous version recorded for ${HANDLE}')
+    sys.exit(1)
+
+current = entry.get('version', '?')
+print(f'  Rolling back ${HANDLE} from {current} to {prev}...')
+" 2>/dev/null || exit 1
+
+    PREV_VERSION=$(python3 -c "
+import json
+lock = json.load(open('${LOCK_FILE}'))
+print(lock['${HANDLE}']['previous'])
+" 2>/dev/null)
+
+    # Extract owner/name from handle
+    CLEAN_HANDLE="${HANDLE#@}"
+    OWNER="${CLEAN_HANDLE%%/*}"
+    NAME="${CLEAN_HANDLE#*/}"
+
+    # Re-install the previous version
+    exec "$0" install "@${OWNER}/${NAME}@${PREV_VERSION}"
+    ;;
+
+  versions)
+    # List all versions of a cloud profile
+    PROFILE_NAME="${1:-}"
+    if [ -z "$PROFILE_NAME" ]; then
+      echo "Usage: savants guard versions @owner/name"
+      exit 1
+    fi
+
+    # Normalize handle
+    HANDLE="${PROFILE_NAME#@}"
+    OWNER="${HANDLE%%/*}"
+    NAME="${HANDLE#*/}"
+
+    if [ -z "$OWNER" ] || [ -z "$NAME" ]; then
+      echo "Invalid handle. Use: @owner/name"
+      exit 1
+    fi
+
+    RESPONSE=$(curl -fsSL "${CLOUD_API}/${OWNER}/${NAME}/versions" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+      echo "  Profile @${OWNER}/${NAME} not found"
+      exit 1
+    fi
+
+    # Get current installed version from lock file
+    CURRENT=""
+    if [ -f "$LOCK_FILE" ]; then
+      CURRENT=$(python3 -c "
+import json
+lock = json.load(open('${LOCK_FILE}'))
+print(lock.get('@${OWNER}/${NAME}', {}).get('version', ''))
+" 2>/dev/null)
+    fi
+
+    echo "$RESPONSE" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+current = '${CURRENT}'
+print(f'Versions of {data[\"handle\"]}:')
+print()
+for v in data['versions']:
+    marker = ' (installed)' if v['version'] == current else ''
+    print(f'  {v[\"version\"]:>10}  {v[\"rule_count\"]:>3} rules  {v[\"installs\"]:>4} installs  {v[\"created_at\"]}{marker}')
+" 2>/dev/null
+    ;;
+
   preset)
     # Parse profile names: standard+secrets+git-safe
     PRESET_STR="${1:-standard}"
@@ -31,12 +377,21 @@ case "$cmd" in
     ALL_RULES="[]"
     LOADED=""
 
+    CUSTOM_DIR="${SAVANTS_DIR}/custom-profiles"
+
     for profile in "${PROFILES[@]}"; do
+      # Check built-in profiles first, then custom user profiles
       PROFILE_FILE="${PROFILES_DIR}/${profile}.json"
+      if [ ! -f "$PROFILE_FILE" ] && [ -f "${CUSTOM_DIR}/${profile}.json" ]; then
+        PROFILE_FILE="${CUSTOM_DIR}/${profile}.json"
+      fi
       if [ ! -f "$PROFILE_FILE" ]; then
         echo "Unknown profile: ${profile}"
-        echo "Available: minimal, standard, paranoid, comprehensive, filesystem-safe, credentials-safe,"
-        echo "  git-safe, database-safe, k8s-safe, cloud-safe, network-safe, publish-safe,"
+        echo "Built-in: minimal, standard, paranoid, comprehensive, battle-tested, nixos-safe,"
+        echo "  filesystem-safe, credentials-safe, git-safe, database-safe, k8s-safe,"
+        echo "  cloud-safe, network-safe, publish-safe, system-safe, cicd-safe, persistence-safe"
+        echo ""
+        echo "Custom profiles: place JSON files in ~/.savants/custom-profiles/"
         echo "  system-safe, cicd-safe, persistence-safe, secrets, infra-safe"
         exit 1
       fi
@@ -58,6 +413,13 @@ print(json.dumps(existing, indent=2))
 
     mkdir -p "$SAVANTS_DIR"
     echo "$ALL_RULES" > "$RULES_FILE"
+
+    # Track which preset was activated
+    python3 -c "
+import json
+state = {'preset': '${PRESET_STR}', 'profiles': '${PRESET_STR}'.split('+')}
+json.dump(state, open('${SAVANTS_DIR}/guard-state.json', 'w'), indent=2)
+" 2>/dev/null
 
     TOTAL=$(echo "$ALL_RULES" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
     echo "Guard profiles activated:"
@@ -188,30 +550,266 @@ print('  Share rules across all developers: managed mode')
     ;;
 
   sync)
-    # Sync local hook-stats.jsonl to Savants Cloud
-    API_KEY="${SAVANTS_API_KEY:-}"
-    if [ -z "$API_KEY" ]; then
+    SYNC_CMD="${1:-}"
+    shift || true
+
+    # Resolve API key for all sync subcommands
+    SYNC_API_KEY="${SAVANTS_API_KEY:-}"
+    if [ -z "$SYNC_API_KEY" ]; then
       STATE_FILE="${SAVANTS_DIR}/state.json"
       if [ -f "$STATE_FILE" ]; then
-        API_KEY=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('cloud_token',''))" 2>/dev/null)
+        SYNC_API_KEY=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('cloud_token',''))" 2>/dev/null)
       fi
     fi
+    SYNC_FILE="${SAVANTS_DIR}/guard-sync.json"
+    CLOUD_GUARD_API="${SAVANTS_CLOUD_GUARD_API:-https://api.savants.cloud/api/v1/guard}"
 
-    if [ -z "$API_KEY" ]; then
-      echo "No API key found. Set SAVANTS_API_KEY or run savants cloud login."
-      echo "  Sign up: savants.cloud/activate"
-      exit 1
-    fi
+    case "$SYNC_CMD" in
+      push)
+        if [ -z "$SYNC_API_KEY" ]; then
+          echo "Not authenticated. Run: savants connect"
+          exit 1
+        fi
 
-    if [ ! -f "$STATS_FILE" ]; then
-      echo "No local events to sync."
-      exit 0
-    fi
+        if [ ! -f "$RULES_FILE" ]; then
+          echo "No guard rules to push. Run: savants guard preset standard"
+          exit 1
+        fi
 
-    SYNC_MARKER="${SAVANTS_DIR}/guard-sync-offset"
-    OFFSET=$(cat "$SYNC_MARKER" 2>/dev/null || echo "0")
+        # Determine preset from guard-state.json if available
+        GUARD_STATE_FILE="${SAVANTS_DIR}/guard-state.json"
+        PRESET=""
+        if [ -f "$GUARD_STATE_FILE" ]; then
+          PRESET=$(python3 -c "import json; print(json.load(open('$GUARD_STATE_FILE')).get('preset',''))" 2>/dev/null)
+        fi
 
-    python3 -c "
+        MACHINE_ID=$(hostname 2>/dev/null || echo "unknown")
+
+        python3 -c "
+import json, sys
+try:
+    from urllib.request import Request, urlopen
+except:
+    print('Python urllib required')
+    sys.exit(1)
+
+rules = json.load(open('${RULES_FILE}'))
+payload = {
+    'rules': rules,
+    'preset': '${PRESET}' or None,
+    'custom_rules': [],
+    'machine_id': '${MACHINE_ID}',
+}
+
+data = json.dumps(payload).encode()
+req = Request(
+    '${CLOUD_GUARD_API}/config',
+    data=data,
+    headers={
+        'Authorization': 'Bearer ${SYNC_API_KEY}',
+        'Content-Type': 'application/json',
+        'User-Agent': 'savants-cli/0.21.0',
+    },
+    method='POST',
+)
+try:
+    resp = urlopen(req, timeout=10)
+    result = json.loads(resp.read().decode())
+    version = result.get('version', '?')
+    count = result.get('rules_count', len(rules))
+    print(f'Config synced to cloud ({count} rules, version {version})')
+
+    # Update local sync state
+    import os
+    from datetime import datetime, timezone
+    sync_state = {}
+    sync_path = '${SYNC_FILE}'
+    if os.path.exists(sync_path):
+        try: sync_state = json.load(open(sync_path))
+        except: pass
+    sync_state['local_version'] = version
+    sync_state['cloud_version'] = version
+    sync_state['last_push'] = datetime.now(timezone.utc).isoformat()
+    sync_state['machine_id'] = '${MACHINE_ID}'
+    json.dump(sync_state, open(sync_path, 'w'), indent=2)
+except Exception as e:
+    print(f'Sync error: {e}')
+    sys.exit(1)
+"
+        ;;
+
+      pull)
+        if [ -z "$SYNC_API_KEY" ]; then
+          echo "Not authenticated. Run: savants connect"
+          exit 1
+        fi
+
+        python3 -c "
+import json, sys
+try:
+    from urllib.request import Request, urlopen
+except:
+    print('Python urllib required')
+    sys.exit(1)
+
+req = Request(
+    '${CLOUD_GUARD_API}/config',
+    headers={
+        'Authorization': 'Bearer ${SYNC_API_KEY}',
+        'User-Agent': 'savants-cli/0.21.0',
+    },
+)
+try:
+    resp = urlopen(req, timeout=10)
+    result = json.loads(resp.read().decode())
+    rules = result.get('rules', [])
+    version = result.get('version', '?')
+
+    json.dump(rules, open('${RULES_FILE}', 'w'), indent=2)
+    print(f'Pulled config from cloud ({len(rules)} rules, version {version})')
+
+    # Update local sync state
+    import os
+    from datetime import datetime, timezone
+    sync_state = {}
+    sync_path = '${SYNC_FILE}'
+    if os.path.exists(sync_path):
+        try: sync_state = json.load(open(sync_path))
+        except: pass
+    sync_state['local_version'] = version
+    sync_state['cloud_version'] = version
+    sync_state['last_check'] = datetime.now(timezone.utc).isoformat()
+    sync_state['machine_id'] = '$(hostname 2>/dev/null || echo unknown)'
+    json.dump(sync_state, open(sync_path, 'w'), indent=2)
+
+    # Update guard-state.json with preset if returned
+    preset = result.get('preset', '')
+    if preset:
+        state_path = '${SAVANTS_DIR}/guard-state.json'
+        guard_state = {}
+        if os.path.exists(state_path):
+            try: guard_state = json.load(open(state_path))
+            except: pass
+        guard_state['preset'] = preset
+        json.dump(guard_state, open(state_path, 'w'), indent=2)
+except Exception as e:
+    print(f'Pull error: {e}')
+    sys.exit(1)
+"
+        ;;
+
+      status)
+        python3 -c "
+import json, sys, os
+from datetime import datetime, timezone
+
+sync_path = '${SYNC_FILE}'
+rules_path = '${RULES_FILE}'
+
+# Load sync state
+sync_state = {}
+if os.path.exists(sync_path):
+    try: sync_state = json.load(open(sync_path))
+    except: pass
+
+# Load local rules
+local_rules = []
+if os.path.exists(rules_path):
+    try: local_rules = json.load(open(rules_path))
+    except: pass
+
+local_version = sync_state.get('local_version', 0)
+cloud_version = sync_state.get('cloud_version', 0)
+auto_sync = sync_state.get('enabled', False)
+last_check = sync_state.get('last_check', '')
+last_push = sync_state.get('last_push', '')
+
+def relative_time(iso_str):
+    if not iso_str:
+        return 'never'
+    try:
+        dt = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+        delta = now - dt
+        secs = int(delta.total_seconds())
+        if secs < 60: return f'{secs}s ago'
+        if secs < 3600: return f'{secs // 60}m ago'
+        if secs < 86400: return f'{secs // 3600}h ago'
+        return f'{secs // 86400}d ago'
+    except:
+        return iso_str
+
+print('Guard Sync Status')
+print(f'  Local:  {len(local_rules)} rules (version {local_version}, updated {relative_time(last_push)})')
+print(f'  Cloud:  version {cloud_version} (checked {relative_time(last_check)})')
+
+if local_version == cloud_version and cloud_version > 0:
+    print(f'  Status: IN SYNC')
+elif cloud_version > local_version:
+    print(f\"  Status: OUT OF SYNC — run 'savants guard sync pull' to update\")
+elif local_version > cloud_version and cloud_version > 0:
+    print(f\"  Status: LOCAL AHEAD — run 'savants guard sync push' to upload\")
+elif cloud_version == 0:
+    print(f\"  Status: NOT SYNCED — run 'savants guard sync push' to start\")
+
+auto_str = 'on (checks every 5 min)' if auto_sync else 'off'
+print(f'  Auto-sync: {auto_str}')
+"
+        ;;
+
+      auto)
+        AUTO_ACTION="${1:-}"
+        case "$AUTO_ACTION" in
+          on)
+            python3 -c "
+import json, os
+from datetime import datetime, timezone
+sync_path = '${SYNC_FILE}'
+sync_state = {}
+if os.path.exists(sync_path):
+    try: sync_state = json.load(open(sync_path))
+    except: pass
+sync_state['enabled'] = True
+json.dump(sync_state, open(sync_path, 'w'), indent=2)
+print('Auto-sync enabled. Guard config will sync every 5 minutes.')
+"
+            ;;
+          off)
+            python3 -c "
+import json, os
+sync_path = '${SYNC_FILE}'
+sync_state = {}
+if os.path.exists(sync_path):
+    try: sync_state = json.load(open(sync_path))
+    except: pass
+sync_state['enabled'] = False
+json.dump(sync_state, open(sync_path, 'w'), indent=2)
+print('Auto-sync disabled.')
+"
+            ;;
+          *)
+            echo "Usage: savants guard sync auto on|off"
+            ;;
+        esac
+        ;;
+
+      events)
+        # Legacy: sync events to cloud (original sync behavior)
+        if [ -z "$SYNC_API_KEY" ]; then
+          echo "No API key found. Set SAVANTS_API_KEY or run savants connect."
+          echo "  Sign up: savants.cloud/activate"
+          exit 1
+        fi
+
+        if [ ! -f "$STATS_FILE" ]; then
+          echo "No local events to sync."
+          exit 0
+        fi
+
+        SYNC_MARKER="${SAVANTS_DIR}/guard-sync-offset"
+        OFFSET=$(cat "$SYNC_MARKER" 2>/dev/null || echo "0")
+
+        python3 -c "
 import json, sys
 try:
     from urllib.request import Request, urlopen
@@ -251,8 +849,9 @@ for i in range(0, len(events), 200):
         'https://api.savants.cloud/api/v1/guard/events',
         data=payload,
         headers={
-            'Authorization': 'Bearer ${API_KEY}',
+            'Authorization': 'Bearer ${SYNC_API_KEY}',
             'Content-Type': 'application/json',
+            'User-Agent': 'savants-cli/0.21.0',
         },
         method='POST',
     )
@@ -271,6 +870,19 @@ with open('${SYNC_MARKER}', 'w') as f:
 print(f'Synced {total_sent} events to Savants Cloud.')
 print(f'  View: savants.cloud/dashboard/guard-analytics')
 "
+        ;;
+
+      *)
+        echo "Usage: savants guard sync <command>"
+        echo ""
+        echo "Commands:"
+        echo "  push          Push local guard config to cloud"
+        echo "  pull          Pull guard config from cloud"
+        echo "  status        Show local vs cloud sync status"
+        echo "  auto on|off   Enable/disable automatic sync checking"
+        echo "  events        Sync guard events (blocks/allows) to cloud"
+        ;;
+    esac
     ;;
 
   off)
@@ -433,8 +1045,28 @@ if non_allow:
 " 2>/dev/null
     fi
 
-    # Cloud sync status
+    # Telemetry status
     STATE_FILE="${SAVANTS_DIR}/state.json"
+    if [ -f "$STATE_FILE" ]; then
+      python3 -c "
+import json, os
+state = json.load(open('${STATE_FILE}'))
+enabled = state.get('telemetry_enabled', True)
+tid = state.get('telemetry_id', '')
+env_off = os.environ.get('DO_NOT_TRACK') == '1' or os.environ.get('SAVANTS_DO_NOT_TRACK') == '1'
+
+print()
+if env_off:
+    print('  Telemetry: disabled (env var)')
+elif enabled:
+    print(f'  Telemetry: on (id: {tid[:12]}...)' if len(tid) > 12 else f'  Telemetry: on (id: {tid})')
+else:
+    print('  Telemetry: off')
+print('    Manage: savants config telemetry [on|off|status]')
+" 2>/dev/null
+    fi
+
+    # Cloud sync status
     if [ -f "$STATE_FILE" ]; then
       HAS_TOKEN=$(python3 -c "
 import json
@@ -457,7 +1089,7 @@ except:
     ;;
 
   disable)
-    # Disable a specific rule by number or substring
+    # Disable a specific rule by number or substring (moves to disabled-rules.json)
     RULE_ID="$*"
     if [ -z "$RULE_ID" ]; then
       echo "Usage:"
@@ -471,34 +1103,44 @@ except:
       exit 1
     fi
 
+    DISABLED_FILE="${SAVANTS_DIR}/disabled-rules.json"
+
     python3 -c "
 import json, sys
 rules = json.load(open('${RULES_FILE}'))
 target = '''${RULE_ID}'''
 
+# Load existing disabled rules
+try:
+    disabled = json.load(open('${DISABLED_FILE}'))
+except:
+    disabled = []
+
+removed = []
+
 # Try as number first
 try:
     idx = int(target) - 1
     if 0 <= idx < len(rules):
-        removed = rules.pop(idx)
-        json.dump(rules, open('${RULES_FILE}', 'w'), indent=2)
-        print(f'Disabled rule #{idx+1}: {removed}')
-        print(f'{len(rules)} rules remaining')
-        sys.exit(0)
+        removed = [rules.pop(idx)]
     else:
         print(f'Rule #{idx+1} not found. You have {len(rules)} rules.')
         sys.exit(1)
 except ValueError:
-    pass
+    # Try as substring match
+    removed = [r for r in rules if target.lower() in r.lower()]
+    rules = [r for r in rules if target.lower() not in r.lower()]
 
-# Try as substring match
-removed = [r for r in rules if target.lower() in r.lower()]
-kept = [r for r in rules if target.lower() not in r.lower()]
 if removed:
-    json.dump(kept, open('${RULES_FILE}', 'w'), indent=2)
+    for r in removed:
+        if r not in disabled:
+            disabled.append(r)
+    json.dump(rules, open('${RULES_FILE}', 'w'), indent=2)
+    json.dump(disabled, open('${DISABLED_FILE}', 'w'), indent=2)
     for r in removed:
         print(f'Disabled: {r}')
-    print(f'{len(kept)} rules remaining')
+    print(f'{len(rules)} rules remaining')
+    print(f'Re-enable with: savants guard enable <number>')
 else:
     print(f'No rules matching \"{target}\"')
     print('Run: savants guard list')
@@ -506,14 +1148,90 @@ else:
     ;;
 
   enable)
-    # Re-enable a previously disabled rule (add it back)
-    RULE="$*"
-    if [ -z "$RULE" ]; then
-      echo "Usage: savants guard enable \"when tool eq 'Bash' and command contains 'rm -rf' then block\""
+    # Re-enable a previously disabled rule by number or text
+    RULE_ID="${1:-}"
+    if [ -z "$RULE_ID" ]; then
+      echo "Usage:"
+      echo "  savants guard enable 1           # re-enable disabled rule #1"
+      echo "  savants guard enable 'rm -rf'    # re-enable rules matching 'rm -rf'"
+      echo ""
+      echo "See disabled rules: savants guard disabled"
       exit 1
     fi
-    # Delegate to add
-    exec "$0" add "$RULE"
+
+    DISABLED_FILE="${SAVANTS_DIR}/disabled-rules.json"
+
+    if [ ! -f "$DISABLED_FILE" ]; then
+      echo "No disabled rules found."
+      exit 0
+    fi
+
+    python3 -c "
+import json, sys
+
+disabled = json.load(open('${DISABLED_FILE}'))
+if not disabled:
+    print('No disabled rules to re-enable.')
+    sys.exit(0)
+
+try:
+    rules = json.load(open('${RULES_FILE}'))
+except:
+    rules = []
+
+target = '''${RULE_ID}'''
+restored = []
+
+# Try as number first
+try:
+    idx = int(target) - 1
+    if 0 <= idx < len(disabled):
+        restored = [disabled.pop(idx)]
+    else:
+        print(f'Disabled rule #{idx+1} not found. You have {len(disabled)} disabled rules.')
+        sys.exit(1)
+except ValueError:
+    # Try as substring match
+    restored = [r for r in disabled if target.lower() in r.lower()]
+    disabled = [r for r in disabled if target.lower() not in r.lower()]
+
+if restored:
+    for r in restored:
+        if r not in rules:
+            rules.append(r)
+    json.dump(rules, open('${RULES_FILE}', 'w'), indent=2)
+    json.dump(disabled, open('${DISABLED_FILE}', 'w'), indent=2)
+    for r in restored:
+        print(f'Re-enabled: {r}')
+    print(f'{len(rules)} rules active')
+else:
+    print(f'No disabled rules matching \"{target}\"')
+    print('Run: savants guard disabled')
+"
+    ;;
+
+  disabled)
+    # List all disabled rules
+    DISABLED_FILE="${SAVANTS_DIR}/disabled-rules.json"
+
+    if [ ! -f "$DISABLED_FILE" ]; then
+      echo "No disabled rules."
+      exit 0
+    fi
+
+    python3 -c "
+import json
+disabled = json.load(open('${DISABLED_FILE}'))
+if not disabled:
+    print('No disabled rules.')
+else:
+    print(f'{len(disabled)} disabled rules:')
+    print()
+    for i, r in enumerate(disabled, 1):
+        print(f'  {i:>2}. {r}')
+    print()
+    print('Re-enable: savants guard enable <number>')
+"
     ;;
 
   reset)
@@ -579,21 +1297,318 @@ else:
     echo "Combine with +: savants guard preset standard+credentials-safe+git-safe"
     ;;
 
+  browse)
+    # Browse popular guard profiles from cloud
+    TAG_FILTER=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --tag) TAG_FILTER="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+
+    if [ -n "$TAG_FILTER" ]; then
+      API_URL="${CLOUD_API}/browse?tag=${TAG_FILTER}"
+    else
+      API_URL="${CLOUD_API}/browse"
+    fi
+
+    RESPONSE=$(curl -fsSL "$API_URL" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+      echo "  Could not reach savants.cloud"
+      exit 1
+    fi
+
+    python3 -c "
+import json, sys
+
+data = json.load(sys.stdin)
+profiles = data if isinstance(data, list) else data.get('profiles', [])
+
+if not profiles:
+    print('No profiles found.')
+    sys.exit(0)
+
+tag = '${TAG_FILTER}'
+if tag:
+    print(f'Guard Profiles (tag: {tag})')
+else:
+    print('Popular Guard Profiles')
+print()
+
+for p in profiles:
+    handle = p.get('handle', p.get('name', '?'))
+    version = p.get('version', '?')
+    rules = p.get('rule_count', 0)
+    installs = p.get('installs', 0)
+    desc = p.get('description', '')
+
+    # Format install count
+    if installs >= 1000:
+        inst_str = f'{installs/1000:.1f}K'
+    else:
+        inst_str = str(installs)
+
+    print(f'  {handle:<25} v{version:<6} {rules:>3} rules  {inst_str:>6} installs')
+    if desc:
+        print(f'    {desc}')
+    print()
+
+print('Install: savants guard install @owner/name')
+" <<< "$RESPONSE"
+    ;;
+
+  update)
+    # Update installed cloud profiles
+    TARGET="${1:-}"
+    CHECK_ONLY=false
+
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --check) CHECK_ONLY=true; shift ;;
+        *) if [ -z "$TARGET" ]; then TARGET="$1"; fi; shift ;;
+      esac
+    done
+
+    if [ ! -f "$LOCK_FILE" ]; then
+      echo "No profiles.lock found. Install a profile first:"
+      echo "  savants guard install @owner/name"
+      exit 1
+    fi
+
+    python3 -c "
+import json, sys, subprocess
+
+lock = json.load(open('${LOCK_FILE}'))
+target = '${TARGET}'
+check_only = '${CHECK_ONLY}' == 'true'
+cloud_api = '${CLOUD_API}'
+
+if not lock:
+    print('No installed profiles to update.')
+    sys.exit(0)
+
+updates = []
+for handle, entry in lock.items():
+    if target and handle != target and handle != f'@{target}':
+        continue
+
+    pinned = entry.get('pinned', entry.get('version', ''))
+    current = entry.get('version', '')
+
+    # Query cloud for latest matching version
+    if pinned.startswith('^') or pinned.startswith('~'):
+        api_url = f'{cloud_api}/{handle.lstrip(\"@\")}/{pinned}'
+    else:
+        api_url = f'{cloud_api}/{handle.lstrip(\"@\")}'
+
+    try:
+        result = subprocess.run(
+            ['curl', '-fsSL', api_url],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            print(f'  {handle}: could not check (API unreachable)')
+            continue
+        data = json.loads(result.stdout)
+        latest = data.get('version', '')
+        rules = data.get('rules', [])
+    except Exception as e:
+        print(f'  {handle}: check failed ({e})')
+        continue
+
+    if latest and latest != current:
+        updates.append({
+            'handle': handle,
+            'current': current,
+            'latest': latest,
+            'pinned': pinned,
+            'rules': rules,
+        })
+    else:
+        print(f'  {handle}: up to date ({current})')
+
+if not updates:
+    print()
+    print('All profiles are up to date.')
+    sys.exit(0)
+
+print()
+for u in updates:
+    if check_only:
+        print(f'  {u[\"handle\"]}: {u[\"current\"]} -> {u[\"latest\"]} (update available)')
+    else:
+        handle = u['handle']
+        name = handle.lstrip('@').split('/')[-1]
+        dest = f'${SAVANTS_DIR}/custom-profiles/{name}.json'
+
+        json.dump(u['rules'], open(dest, 'w'), indent=2)
+        rule_count = len(u['rules'])
+
+        # Update lock
+        lock[handle]['previous'] = u['current']
+        lock[handle]['version'] = u['latest']
+        lock[handle]['installed'] = subprocess.run(
+            ['date', '-u', '+%Y-%m-%d'], capture_output=True, text=True
+        ).stdout.strip()
+
+        print(f'  {handle}: {u[\"current\"]} -> {u[\"latest\"]} ({rule_count} rules)')
+
+if not check_only and updates:
+    json.dump(lock, open('${LOCK_FILE}', 'w'), indent=2)
+    print()
+    print(f'Updated {len(updates)} profile(s).')
+
+if check_only and updates:
+    print()
+    print(f'{len(updates)} update(s) available. Run: savants guard update')
+"
+    ;;
+
+  pin)
+    # Pin a profile to an exact version
+    PROFILE_NAME="${1:-}"
+    PIN_VERSION="${2:-}"
+
+    if [ -z "$PROFILE_NAME" ] || [ -z "$PIN_VERSION" ]; then
+      echo "Usage: savants guard pin @owner/name 1.2.0"
+      echo ""
+      echo "Sets an exact version pin in profiles.lock."
+      echo "Re-downloads if current version doesn't match."
+      exit 1
+    fi
+
+    # Normalize handle
+    HANDLE="$PROFILE_NAME"
+    if [[ "$HANDLE" != @* ]]; then
+      HANDLE="@${HANDLE}"
+    fi
+
+    if [ ! -f "$LOCK_FILE" ]; then
+      echo "No profiles.lock found. Install the profile first:"
+      echo "  savants guard install ${HANDLE}"
+      exit 1
+    fi
+
+    python3 -c "
+import json, sys
+
+lock = json.load(open('${LOCK_FILE}'))
+handle = '${HANDLE}'
+pin_version = '${PIN_VERSION}'
+
+if handle not in lock:
+    print(f'{handle} not found in profiles.lock')
+    print(f'Install first: savants guard install {handle}')
+    sys.exit(1)
+
+current = lock[handle].get('version', '')
+lock[handle]['pinned'] = pin_version
+
+json.dump(lock, open('${LOCK_FILE}', 'w'), indent=2)
+print(f'Pinned {handle} to version {pin_version}')
+
+if current != pin_version:
+    print(f'Current version ({current}) differs from pin ({pin_version})')
+    print(f'Re-downloading...')
+    sys.exit(2)  # Signal to re-download
+else:
+    print(f'Current version already matches pin.')
+" 2>/dev/null
+    PIN_RESULT=$?
+
+    if [ "$PIN_RESULT" -eq 2 ]; then
+      # Re-download the pinned version
+      CLEAN_HANDLE="${HANDLE#@}"
+      OWNER="${CLEAN_HANDLE%%/*}"
+      NAME="${CLEAN_HANDLE#*/}"
+      exec "$0" install "@${OWNER}/${NAME}@${PIN_VERSION}"
+    fi
+    ;;
+
+  why|last-block)
+    # Show the last blocked event from hook-stats.jsonl
+    if [ ! -f "$STATS_FILE" ]; then
+      echo "No guard events recorded yet."
+      exit 0
+    fi
+
+    python3 -c "
+import json, sys
+from datetime import datetime, timezone
+
+events = []
+for line in open('${STATS_FILE}'):
+    try:
+        events.append(json.loads(line.strip()))
+    except:
+        pass
+
+# Find last block event
+blocks = [e for e in events if e.get('action') == 'block']
+if not blocks:
+    print('No blocked events found.')
+    sys.exit(0)
+
+last = blocks[-1]
+ts = last.get('ts', '')
+tool = last.get('tool', '?')
+detail = last.get('detail', '')
+rule = last.get('matched_rule', last.get('detail', ''))
+action = last.get('action', 'block')
+
+# Calculate relative time
+try:
+    event_time = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    now = datetime.now(timezone.utc)
+    delta = now - event_time
+    seconds = int(delta.total_seconds())
+    if seconds < 60:
+        ago = f'{seconds} seconds ago'
+    elif seconds < 3600:
+        ago = f'{seconds // 60} minutes ago'
+    elif seconds < 86400:
+        ago = f'{seconds // 3600} hours ago'
+    else:
+        ago = f'{seconds // 86400} days ago'
+except:
+    ago = ts
+
+print(f'Last blocked: {ago}')
+print(f'  Command: {detail}')
+print(f'  Rule: {rule}')
+print(f'  Action: {action}')
+"
+    ;;
+
   help|*)
     echo "savants guard — composable guardrails for AI coding agents"
     echo ""
     echo "Commands:"
     echo "  preset <profiles>  Set active profiles (e.g. standard+secrets+git-safe)"
+    echo "  install <source>   Install a profile (@user/name, community, or URL)"
+    echo "  browse             Browse popular profiles on savants.cloud"
+    echo "  update [name]      Update installed profiles to latest version"
+    echo "  pin @u/n <ver>     Pin a profile to an exact version"
+    echo "  share <name>       Share a profile to savants.cloud"
+    echo "  versions @u/n      List all versions of a cloud profile"
+    echo "  rollback @u/n      Rollback to previous installed version"
     echo "  on                 Resume guard protection"
     echo "  off [duration]     Pause guard (e.g. off 10m, off 1h, off = indefinite)"
     echo "  status             Show guard state (active/paused/inactive)"
-    echo "  disable <n|text>   Disable a specific rule by number or keyword"
-    echo "  enable <rule>      Re-enable a specific rule"
+    echo "  why / last-block   Show the last blocked event"
+    echo "  disable <n|text>   Disable a specific rule (reversible)"
+    echo "  enable <n|text>    Re-enable a disabled rule"
+    echo "  disabled           List all disabled rules"
     echo "  add <rule>         Add a custom guard rule"
     echo "  remove <rule>      Remove a guard rule"
     echo "  list               Show all active rules"
     echo "  stats              Show guard statistics (blocks, allows)"
-    echo "  sync               Sync local events to Savants Cloud"
+    echo "  sync push          Push guard config to cloud"
+    echo "  sync pull          Pull guard config from cloud"
+    echo "  sync status        Show sync status (local vs cloud)"
+    echo "  sync auto on|off   Toggle automatic sync"
+    echo "  sync events        Sync guard events to cloud"
     echo "  profiles           List available profiles"
     echo "  routing on|off     Toggle smart code routing"
     echo "  reset              Clear all guard rules"

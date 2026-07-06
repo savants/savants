@@ -16,6 +16,8 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
           - target: x86_64-apple-darwin
@@ -37,6 +39,10 @@ jobs:
           mkdir -p savants-cli/.cargo
           echo '[target.aarch64-unknown-linux-gnu]' >> savants-cli/.cargo/config.toml
           echo 'linker = "aarch64-linux-gnu-gcc"' >> savants-cli/.cargo/config.toml
+
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
         working-directory: savants-cli
@@ -80,7 +86,10 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           R2_API="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/savants-releases/objects"
+          EXPECTED_TARGETS="x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin"
 
+          # Step 1: Upload all binaries (versioned + latest)
+          UPLOADED=0
           for f in artifacts/*/savants-*.tar.gz; do
             FILENAME=$(basename "$f")
             echo "Uploading ${FILENAME}..."
@@ -97,15 +106,73 @@ jobs:
               -H "Content-Type: application/gzip" \
               --data-binary "@${f}"
 
+            UPLOADED=$((UPLOADED + 1))
             echo "Done: ${FILENAME}"
           done
 
-          # Update version.txt
+          echo "Uploaded ${UPLOADED} binaries."
+
+          # Step 2: Verify ALL expected targets were uploaded
+          EXPECTED_COUNT=$(echo "$EXPECTED_TARGETS" | wc -w)
+          if [ "$UPLOADED" -lt "$EXPECTED_COUNT" ]; then
+            echo "::error::Only ${UPLOADED}/${EXPECTED_COUNT} targets uploaded! NOT updating version.txt."
+            echo "Missing targets — version.txt still points to previous release."
+            exit 1
+          fi
+
+          # Step 3: Download each binary back and verify version matches
+          echo ""
+          echo "Verifying uploaded binaries..."
+          VERIFY_FAILED=0
+          for TARGET in $EXPECTED_TARGETS; do
+            ARCHIVE="savants-${TARGET}.tar.gz"
+            TMP_DIR=$(mktemp -d)
+
+            if curl -sf "https://releases.savants.dev/latest/${ARCHIVE}" -o "${TMP_DIR}/${ARCHIVE}"; then
+              tar xzf "${TMP_DIR}/${ARCHIVE}" -C "${TMP_DIR}" 2>/dev/null
+              BINARY=$(find "${TMP_DIR}" -name "savants*" -not -name "*.tar.gz" | head -1)
+
+              if [ -n "$BINARY" ] && [ -x "$BINARY" ] || chmod +x "$BINARY" 2>/dev/null; then
+                # Can only run native binaries, skip cross-arch verification
+                if [ "$(uname -m)" = "x86_64" ] && echo "$TARGET" | grep -q "x86_64.*linux"; then
+                  BIN_VERSION=$("$BINARY" --version 2>/dev/null | cut -d' ' -f2 || echo "unknown")
+                  if [ "$BIN_VERSION" != "$VERSION" ]; then
+                    echo "::error::${TARGET}: binary reports v${BIN_VERSION}, expected v${VERSION}"
+                    VERIFY_FAILED=1
+                  else
+                    echo "  ✓ ${TARGET}: v${BIN_VERSION}"
+                  fi
+                else
+                  echo "  ○ ${TARGET}: uploaded (cross-arch, skipping exec check)"
+                fi
+              fi
+            else
+              echo "::error::${TARGET}: download verification failed!"
+              VERIFY_FAILED=1
+            fi
+            rm -rf "${TMP_DIR}"
+          done
+
+          if [ "$VERIFY_FAILED" -eq 1 ]; then
+            echo "::error::Binary verification failed! NOT updating version.txt."
+            exit 1
+          fi
+
+          # Step 4: Only update version.txt AFTER all binaries verified
+          echo ""
+          echo "All binaries verified. Updating version.txt to ${VERSION}..."
           echo -n "${VERSION}" | curl -sf -X PUT "${R2_API}/latest/version.txt" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
             -H "Content-Type: text/plain" \
             --data-binary "@-"
-          echo "Updated version.txt to ${VERSION}"
+          echo "✓ version.txt updated to ${VERSION}"
+
+          # Step 5: Upload the install script too
+          curl -sf -X PUT "${R2_API}/latest/install.sh" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: text/plain" \
+            --data-binary @website/public/install.sh
+          echo "✓ install.sh updated"
 
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # Python SDK — publish to PyPI on tag

@@ -18,6 +18,7 @@ mod host;
 mod k8s;
 mod code_index;
 mod code_parser;
+mod code_graph;
 mod semantic_search;
 mod embeddings;
 mod embedding_store;
@@ -175,6 +176,37 @@ enum Commands {
         #[arg(long)]
         since: Option<String>,
     },
+    /// Ask a question and get answers from indexed documentation
+    Ask {
+        /// The question to ask (e.g. "does FalkorDB support embedded mode?")
+        question: String,
+    },
+
+    // ---- Graph algorithm commands ----
+
+    /// Find circular dependencies in the codebase
+    Cycles,
+    /// Show top most-connected functions (PageRank)
+    Hotspots {
+        /// Number of top functions to show (default: 10)
+        #[arg(long, short = 'n', default_value = "10")]
+        top: usize,
+    },
+    /// Find shortest call path between two functions
+    Path {
+        /// Source function name
+        from: String,
+        /// Target function name
+        to: String,
+    },
+    /// Show bridge/bottleneck functions (betweenness centrality)
+    Bridges {
+        /// Number of top functions to show (default: 10)
+        #[arg(long, short = 'n', default_value = "10")]
+        top: usize,
+    },
+    /// Show tightly-coupled function clusters
+    Communities,
 }
 
 #[derive(Subcommand)]
@@ -387,6 +419,11 @@ enum ConfigAction {
     Init,
     /// Show the config file path
     Path,
+    /// Manage anonymous telemetry (on/off/status)
+    Telemetry {
+        /// Action: on, off, or status
+        action: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -600,6 +637,106 @@ async fn main() {
                 Some(ConfigAction::Path) => {
                     println!("{}", dirs::home_dir().unwrap_or_default().join(".savants").display());
                 }
+                Some(ConfigAction::Telemetry { action }) => {
+                    let state_path = dirs::home_dir()
+                        .unwrap_or_default()
+                        .join(".savants")
+                        .join("state.json");
+
+                    let action_str = action.as_deref().unwrap_or("status");
+
+                    match action_str {
+                        "off" | "disable" => {
+                            let mut state: serde_json::Value = std::fs::read_to_string(&state_path)
+                                .ok()
+                                .and_then(|s| serde_json::from_str(&s).ok())
+                                .unwrap_or_else(|| serde_json::json!({}));
+
+                            state.as_object_mut().unwrap()
+                                .insert("telemetry_enabled".to_string(), serde_json::json!(false));
+
+                            if let Some(parent) = state_path.parent() {
+                                std::fs::create_dir_all(parent).ok();
+                            }
+                            std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap_or_default()).ok();
+
+                            // Remove last heartbeat file so it doesn't send stale data
+                            let last_path = dirs::home_dir().unwrap_or_default()
+                                .join(".savants").join("telemetry-last.txt");
+                            std::fs::remove_file(&last_path).ok();
+
+                            println!("Telemetry {}", "disabled".yellow());
+                            println!("  No anonymous usage data will be sent.");
+                            println!("  You can also set {} or {}", "DO_NOT_TRACK=1".cyan(), "SAVANTS_DO_NOT_TRACK=1".cyan());
+                        }
+                        "on" | "enable" => {
+                            let mut state: serde_json::Value = std::fs::read_to_string(&state_path)
+                                .ok()
+                                .and_then(|s| serde_json::from_str(&s).ok())
+                                .unwrap_or_else(|| serde_json::json!({}));
+
+                            state.as_object_mut().unwrap()
+                                .insert("telemetry_enabled".to_string(), serde_json::json!(true));
+
+                            // Generate telemetry_id if missing
+                            if state.get("telemetry_id").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                                use rand::Rng;
+                                let id_bytes: Vec<u8> = (0..8).map(|_| rand::thread_rng().gen::<u8>()).collect();
+                                let id_hex: String = id_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                                state.as_object_mut().unwrap()
+                                    .insert("telemetry_id".to_string(), serde_json::json!(format!("sv_{}", id_hex)));
+                            }
+
+                            if let Some(parent) = state_path.parent() {
+                                std::fs::create_dir_all(parent).ok();
+                            }
+                            std::fs::write(&state_path, serde_json::to_string_pretty(&state).unwrap_or_default()).ok();
+
+                            println!("Telemetry {}", "enabled".green());
+                            println!("  Anonymous usage data helps improve savants.");
+                            println!("  No code, file paths, or command arguments are ever sent.");
+                        }
+                        _ => {
+                            // Status
+                            let state: serde_json::Value = std::fs::read_to_string(&state_path)
+                                .ok()
+                                .and_then(|s| serde_json::from_str(&s).ok())
+                                .unwrap_or_else(|| serde_json::json!({}));
+
+                            let enabled = state.get("telemetry_enabled")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true);
+                            let telemetry_id = state.get("telemetry_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("(not set)");
+
+                            let env_disabled = std::env::var("DO_NOT_TRACK").unwrap_or_default() == "1"
+                                || std::env::var("SAVANTS_DO_NOT_TRACK").unwrap_or_default() == "1";
+
+                            println!("Telemetry status:");
+                            if env_disabled {
+                                println!("  State: {} (env var override)", "disabled".yellow());
+                            } else if enabled {
+                                println!("  State: {}", "enabled".green());
+                            } else {
+                                println!("  State: {}", "disabled".yellow());
+                            }
+                            println!("  ID:    {}", telemetry_id.dimmed());
+                            println!();
+                            println!("What's collected (privacy-safe only):");
+                            println!("  Tool name (e.g. Bash), rule count, preset name,");
+                            println!("  OS, arch, CLI version, hashed hostname.");
+                            println!();
+                            println!("What's NEVER collected:");
+                            println!("  Command arguments, file paths, code, rule content,");
+                            println!("  email, username, or any PII.");
+                            println!();
+                            println!("Manage:");
+                            println!("  {} {}", "savants config telemetry off".cyan(), "# disable".dimmed());
+                            println!("  {} {}", "savants config telemetry on ".cyan(), "# enable".dimmed());
+                        }
+                    }
+                }
                 None => {
                     let state = config::State::load();
                     println!("Context engine: {}:{}", state.graph_host(), state.graph_port());
@@ -630,6 +767,46 @@ async fn main() {
         }
         Commands::Brief { since } => {
             commands::tools::brief(since.as_deref());
+        }
+        Commands::Ask { question } => {
+            commands::tools::ask(&question);
+        }
+
+        // Graph algorithm commands
+        Commands::Cycles => {
+            let repo = commands::tools::detect_repo_name_pub();
+            match code_graph::load_graph(&repo) {
+                Ok(g) => println!("{}", g.find_cycles()),
+                Err(e) => eprintln!("{}: {}", "Error".red(), e),
+            }
+        }
+        Commands::Hotspots { top } => {
+            let repo = commands::tools::detect_repo_name_pub();
+            match code_graph::load_graph(&repo) {
+                Ok(g) => println!("{}", g.page_rank(top)),
+                Err(e) => eprintln!("{}: {}", "Error".red(), e),
+            }
+        }
+        Commands::Path { from, to } => {
+            let repo = commands::tools::detect_repo_name_pub();
+            match code_graph::load_graph(&repo) {
+                Ok(g) => println!("{}", g.shortest_path(&from, &to)),
+                Err(e) => eprintln!("{}: {}", "Error".red(), e),
+            }
+        }
+        Commands::Bridges { top } => {
+            let repo = commands::tools::detect_repo_name_pub();
+            match code_graph::load_graph(&repo) {
+                Ok(g) => println!("{}", g.bridge_nodes(top)),
+                Err(e) => eprintln!("{}: {}", "Error".red(), e),
+            }
+        }
+        Commands::Communities => {
+            let repo = commands::tools::detect_repo_name_pub();
+            match code_graph::load_graph(&repo) {
+                Ok(g) => println!("{}", g.communities()),
+                Err(e) => eprintln!("{}: {}", "Error".red(), e),
+            }
         }
     }
 }

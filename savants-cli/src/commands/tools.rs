@@ -14,6 +14,11 @@ fn get_api_key() -> Option<String> {
     state.cloud_token()
 }
 
+/// Public wrapper for detect_repo_name, used by graph commands in main.rs.
+pub fn detect_repo_name_pub() -> String {
+    detect_repo_name()
+}
+
 /// Detect the repo/project name from the current working directory.
 fn detect_repo_name() -> String {
     let repo_path = std::env::current_dir().unwrap_or_default();
@@ -774,6 +779,113 @@ fn count_guard_rules(savants_dir: &std::path::Path) -> usize {
         }
     }
     0
+}
+
+/// `savants ask <question>` -- ask a question and get answers from indexed docs
+pub fn ask(question: &str) {
+    let repo = detect_repo_name();
+
+    println!(
+        "{} '{}'...",
+        "Asking".bold(),
+        question.cyan()
+    );
+
+    // Try cloud API first
+    let api_key = get_api_key().unwrap_or_default();
+
+    let cloud_url = std::env::var("SAVANTS_CLOUD_URL")
+        .unwrap_or_else(|_| CLOUD_ENDPOINT.to_string());
+    let url = format!("{}/api/v1/ask", cloud_url.trim_end_matches('/'));
+
+    let body = json!({
+        "question": question,
+        "repo": repo,
+    });
+
+    let result = std::thread::spawn({
+        let api_key = api_key.clone();
+        let url = url.clone();
+        let body = body.clone();
+        move || {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| format!("HTTP client error: {}", e))?;
+
+            let mut req = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body);
+
+            if !api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", api_key));
+            }
+
+            let resp = req.send()
+                .map_err(|e| format!("Request failed: {}", e))?;
+
+            let status = resp.status();
+            if status.as_u16() == 401 {
+                return Err("Session expired. Run 'savants connect' to re-authenticate.".to_string());
+            }
+
+            let json_resp: Value = resp
+                .json()
+                .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+            if let Some(err) = json_resp.get("error").and_then(|e| e.as_str()) {
+                return Err(format!("Cloud error: {}", err));
+            }
+
+            Ok(json_resp)
+        }
+    }).join().unwrap_or_else(|_| Err("thread panic".to_string()));
+
+    match result {
+        Ok(resp) => {
+            println!();
+            println!("{}", "=== Savants Answer ===".bold());
+
+            if let Some(answer) = resp.get("answer").and_then(|a| a.as_str()) {
+                println!("{}", answer);
+            } else {
+                println!("{}", resp.to_string());
+            }
+
+            if let Some(sources) = resp.get("sources").and_then(|s| s.as_array()) {
+                if !sources.is_empty() {
+                    println!();
+                    println!("{}:", "Sources".dimmed());
+                    for src in sources {
+                        if let Some(s) = src.as_str() {
+                            println!("  {}", s);
+                        }
+                    }
+                }
+            }
+
+            if let Some(confidence) = resp.get("confidence").and_then(|c| c.as_f64()) {
+                let conf_label = if confidence >= 0.8 {
+                    "high".green().to_string()
+                } else if confidence >= 0.5 {
+                    "medium".yellow().to_string()
+                } else {
+                    "low".red().to_string()
+                };
+                println!();
+                println!("{}: {} ({:.0}%)", "Confidence".dimmed(), conf_label, confidence * 100.0);
+            }
+
+            return;
+        }
+        Err(e) => {
+            eprintln!("{}: cloud: {}. Falling back to local search...", "Warning".yellow(), e);
+        }
+    }
+
+    // Fall back to local semantic search
+    search(question, Some(5));
 }
 
 // ---- Local fallback implementations ----
