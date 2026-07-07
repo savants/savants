@@ -3085,7 +3085,7 @@ dependencies = [
 
 [[package]]
 name = "savants"
-version = "0.27.1"
+version = "0.27.2"
 dependencies = [
  "chrono",
  "clap",

@@ -9,6 +9,16 @@
 
 set -euo pipefail
 
+# Python: use python3 if available, fall back to python (Windows)
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON=python
+else
+  echo "Error: Python is required for guard commands" >&2
+  exit 1
+fi
+
 SAVANTS_DIR="${HOME}/.savants"
 RULES_FILE="${SAVANTS_DIR}/guard-rules.json"
 STATS_FILE="${SAVANTS_DIR}/hook-stats.jsonl"
@@ -84,8 +94,8 @@ case "$cmd" in
       fi
 
       # Extract rules and version from response
-      INSTALLED_VERSION=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['version'])" 2>/dev/null)
-      RULES=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['rules']))" 2>/dev/null)
+      INSTALLED_VERSION=$(echo "$RESPONSE" | $PYTHON -c "import json,sys; print(json.load(sys.stdin)['version'])" 2>/dev/null)
+      RULES=$(echo "$RESPONSE" | $PYTHON -c "import json,sys; print(json.dumps(json.load(sys.stdin)['rules']))" 2>/dev/null)
 
       if [ -z "$INSTALLED_VERSION" ] || [ -z "$RULES" ]; then
         echo "  Error: invalid response from cloud API"
@@ -97,7 +107,7 @@ case "$cmd" in
       # Read previous version from lock file for rollback support
       PREV_VERSION=""
       if [ -f "$LOCK_FILE" ]; then
-        PREV_VERSION=$(python3 -c "
+        PREV_VERSION=$($PYTHON -c "
 import json
 lock = json.load(open('${LOCK_FILE}'))
 entry = lock.get('@${OWNER}/${NAME}', {})
@@ -106,11 +116,11 @@ print(entry.get('version', ''))
       fi
 
       echo "$RULES" > "$DEST"
-      RULE_COUNT=$(python3 -c "import json; print(len(json.load(open('$DEST'))))" 2>/dev/null)
+      RULE_COUNT=$($PYTHON -c "import json; print(len(json.load(open('$DEST'))))" 2>/dev/null)
       echo "  Installed: @${OWNER}/${NAME}@${INSTALLED_VERSION} (${RULE_COUNT} rules)"
 
       # Update lock file
-      python3 -c "
+      $PYTHON -c "
 import json, os
 lock_path = '${LOCK_FILE}'
 try:
@@ -145,7 +155,7 @@ json.dump(lock, open(lock_path, 'w'), indent=2)
 
       echo "Installing from URL..."
       if curl -fsSL "$PROFILE_NAME" -o "$DEST" 2>/dev/null; then
-        if python3 -c "import json; rules=json.load(open('$DEST')); print(f'  Installed: {len(rules)} rules')" 2>/dev/null; then
+        if $PYTHON -c "import json; rules=json.load(open('$DEST')); print(f'  Installed: {len(rules)} rules')" 2>/dev/null; then
           echo ""
           echo "  Activate: savants guard preset standard+${URL_NAME}"
           echo "  View:     cat $DEST"
@@ -166,7 +176,7 @@ json.dump(lock, open(lock_path, 'w'), indent=2)
 
       echo "Installing ${PROFILE_NAME}..."
       if curl -fsSL "$URL" -o "$DEST" 2>/dev/null; then
-        if python3 -c "import json; rules=json.load(open('$DEST')); print(f'  Installed: {len(rules)} rules')" 2>/dev/null; then
+        if $PYTHON -c "import json; rules=json.load(open('$DEST')); print(f'  Installed: {len(rules)} rules')" 2>/dev/null; then
           echo ""
           echo "  Activate: savants guard preset standard+${PROFILE_NAME}"
           echo "  View:     cat $DEST"
@@ -231,7 +241,7 @@ json.dump(lock, open(lock_path, 'w'), indent=2)
     if [ -z "$API_KEY" ]; then
       STATE_FILE="${SAVANTS_DIR}/state.json"
       if [ -f "$STATE_FILE" ]; then
-        API_KEY=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('cloud_token',''))" 2>/dev/null)
+        API_KEY=$($PYTHON -c "import json; print(json.load(open('$STATE_FILE')).get('cloud_token',''))" 2>/dev/null)
       fi
     fi
     if [ -z "$API_KEY" ]; then
@@ -240,7 +250,7 @@ json.dump(lock, open(lock_path, 'w'), indent=2)
     fi
 
     # Build payload
-    PAYLOAD=$(python3 -c "
+    PAYLOAD=$($PYTHON -c "
 import json
 rules = json.load(open('${SOURCE}'))
 payload = {
@@ -261,7 +271,7 @@ print(json.dumps(payload))
       -d "$PAYLOAD" 2>&1)
 
     if [ $? -eq 0 ]; then
-      HANDLE=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('handle',''))" 2>/dev/null)
+      HANDLE=$(echo "$RESPONSE" | $PYTHON -c "import json,sys; print(json.load(sys.stdin).get('handle',''))" 2>/dev/null)
       echo "  Shared! Install with: savants guard install ${HANDLE}"
     else
       echo "  Error: $RESPONSE"
@@ -290,7 +300,7 @@ print(json.dumps(payload))
       exit 1
     fi
 
-    python3 -c "
+    $PYTHON -c "
 import json, sys, subprocess
 
 lock = json.load(open('${LOCK_FILE}'))
@@ -308,7 +318,7 @@ current = entry.get('version', '?')
 print(f'  Rolling back ${HANDLE} from {current} to {prev}...')
 " 2>/dev/null || exit 1
 
-    PREV_VERSION=$(python3 -c "
+    PREV_VERSION=$($PYTHON -c "
 import json
 lock = json.load(open('${LOCK_FILE}'))
 print(lock['${HANDLE}']['previous'])
@@ -350,14 +360,14 @@ print(lock['${HANDLE}']['previous'])
     # Get current installed version from lock file
     CURRENT=""
     if [ -f "$LOCK_FILE" ]; then
-      CURRENT=$(python3 -c "
+      CURRENT=$($PYTHON -c "
 import json
 lock = json.load(open('${LOCK_FILE}'))
 print(lock.get('@${OWNER}/${NAME}', {}).get('version', ''))
 " 2>/dev/null)
     fi
 
-    echo "$RESPONSE" | python3 -c "
+    echo "$RESPONSE" | $PYTHON -c "
 import json, sys
 data = json.load(sys.stdin)
 current = '${CURRENT}'
@@ -397,7 +407,7 @@ for v in data['versions']:
       fi
 
       # Merge rules (deduplicate)
-      ALL_RULES=$(python3 -c "
+      ALL_RULES=$($PYTHON -c "
 import json, sys
 existing = json.loads(sys.argv[1])
 new = json.load(open(sys.argv[2]))
@@ -407,7 +417,7 @@ for r in new:
 print(json.dumps(existing, indent=2))
 " "$ALL_RULES" "$PROFILE_FILE")
 
-      COUNT=$(python3 -c "import json; print(len(json.load(open('$PROFILE_FILE'))))")
+      COUNT=$($PYTHON -c "import json; print(len(json.load(open('$PROFILE_FILE'))))")
       LOADED="${LOADED}  ✓ ${profile} (${COUNT} rules)\n"
     done
 
@@ -415,13 +425,13 @@ print(json.dumps(existing, indent=2))
     echo "$ALL_RULES" > "$RULES_FILE"
 
     # Track which preset was activated
-    python3 -c "
+    $PYTHON -c "
 import json
 state = {'preset': '${PRESET_STR}', 'profiles': '${PRESET_STR}'.split('+')}
 json.dump(state, open('${SAVANTS_DIR}/guard-state.json', 'w'), indent=2)
 " 2>/dev/null
 
-    TOTAL=$(echo "$ALL_RULES" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
+    TOTAL=$(echo "$ALL_RULES" | $PYTHON -c "import json,sys; print(len(json.load(sys.stdin)))")
     echo "Guard profiles activated:"
     echo -e "$LOADED"
     echo "Total: ${TOTAL} rules → ${RULES_FILE}"
@@ -441,7 +451,7 @@ json.dump(state, open('${SAVANTS_DIR}/guard-state.json', 'w'), indent=2)
       echo "[]" > "$RULES_FILE"
     fi
 
-    python3 -c "
+    $PYTHON -c "
 import json
 rules = json.load(open('${RULES_FILE}'))
 rule = '''${RULE}'''
@@ -457,7 +467,7 @@ else:
 
   remove)
     RULE="$*"
-    python3 -c "
+    $PYTHON -c "
 import json
 rules = json.load(open('${RULES_FILE}'))
 rule = '''${RULE}'''
@@ -489,7 +499,7 @@ else:
       echo ""
     fi
 
-    python3 -c "
+    $PYTHON -c "
 import json
 rules = json.load(open('${RULES_FILE}'))
 print(f'{len(rules)} active guard rules:')
@@ -508,7 +518,7 @@ print('Disable a rule: savants guard disable <number>')
       echo "No guard events yet. Use Claude Code with savants guard enabled."
       exit 0
     fi
-    python3 -c "
+    $PYTHON -c "
 import json
 events = []
 for line in open('${STATS_FILE}'):
@@ -558,7 +568,7 @@ print('  Share rules across all developers: managed mode')
     if [ -z "$SYNC_API_KEY" ]; then
       STATE_FILE="${SAVANTS_DIR}/state.json"
       if [ -f "$STATE_FILE" ]; then
-        SYNC_API_KEY=$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('cloud_token',''))" 2>/dev/null)
+        SYNC_API_KEY=$($PYTHON -c "import json; print(json.load(open('$STATE_FILE')).get('cloud_token',''))" 2>/dev/null)
       fi
     fi
     SYNC_FILE="${SAVANTS_DIR}/guard-sync.json"
@@ -580,12 +590,12 @@ print('  Share rules across all developers: managed mode')
         GUARD_STATE_FILE="${SAVANTS_DIR}/guard-state.json"
         PRESET=""
         if [ -f "$GUARD_STATE_FILE" ]; then
-          PRESET=$(python3 -c "import json; print(json.load(open('$GUARD_STATE_FILE')).get('preset',''))" 2>/dev/null)
+          PRESET=$($PYTHON -c "import json; print(json.load(open('$GUARD_STATE_FILE')).get('preset',''))" 2>/dev/null)
         fi
 
         MACHINE_ID=$(hostname 2>/dev/null || echo "unknown")
 
-        python3 -c "
+        $PYTHON -c "
 import json, sys
 try:
     from urllib.request import Request, urlopen
@@ -644,7 +654,7 @@ except Exception as e:
           exit 1
         fi
 
-        python3 -c "
+        $PYTHON -c "
 import json, sys
 try:
     from urllib.request import Request, urlopen
@@ -699,7 +709,7 @@ except Exception as e:
         ;;
 
       status)
-        python3 -c "
+        $PYTHON -c "
 import json, sys, os
 from datetime import datetime, timezone
 
@@ -761,7 +771,7 @@ print(f'  Auto-sync: {auto_str}')
         AUTO_ACTION="${1:-}"
         case "$AUTO_ACTION" in
           on)
-            python3 -c "
+            $PYTHON -c "
 import json, os
 from datetime import datetime, timezone
 sync_path = '${SYNC_FILE}'
@@ -775,7 +785,7 @@ print('Auto-sync enabled. Guard config will sync every 5 minutes.')
 "
             ;;
           off)
-            python3 -c "
+            $PYTHON -c "
 import json, os
 sync_path = '${SYNC_FILE}'
 sync_state = {}
@@ -809,7 +819,7 @@ print('Auto-sync disabled.')
         SYNC_MARKER="${SAVANTS_DIR}/guard-sync-offset"
         OFFSET=$(cat "$SYNC_MARKER" 2>/dev/null || echo "0")
 
-        python3 -c "
+        $PYTHON -c "
 import json, sys
 try:
     from urllib.request import Request, urlopen
@@ -899,7 +909,7 @@ print(f'  View: savants.cloud/dashboard/guard-analytics')
         h) SECONDS_ADD=$((NUM * 3600)) ;;
         *) echo "Usage: savants guard off [10m|1h|30s]"; exit 1 ;;
       esac
-      EXPIRY=$(python3 -c "
+      EXPIRY=$($PYTHON -c "
 from datetime import datetime, timedelta, timezone
 exp = datetime.now(timezone.utc) + timedelta(seconds=$SECONDS_ADD)
 print(exp.isoformat())
@@ -919,7 +929,7 @@ print(exp.isoformat())
     PAUSE_FILE="${SAVANTS_DIR}/guard-paused"
     rm -f "$PAUSE_FILE"
     if [ -f "$RULES_FILE" ]; then
-      COUNT=$(python3 -c "import json; print(len(json.load(open('$RULES_FILE'))))")
+      COUNT=$($PYTHON -c "import json; print(len(json.load(open('$RULES_FILE'))))")
       echo "Guard resumed. ${COUNT} rules active."
     else
       echo "Guard resumed (no rules loaded)."
@@ -939,7 +949,7 @@ print(exp.isoformat())
       fi
       echo "  Resume: savants guard on"
     elif [ -f "$RULES_FILE" ]; then
-      python3 -c "
+      $PYTHON -c "
 import json
 rules = json.load(open('${RULES_FILE}'))
 blocks = sum(1 for r in rules if 'then block' in r)
@@ -963,7 +973,7 @@ print(f'  Rules file: ${RULES_FILE}')
 
     # Show stats if available
     if [ -f "$STATS_FILE" ]; then
-      python3 -c "
+      $PYTHON -c "
 import json
 events = []
 for line in open('${STATS_FILE}'):
@@ -1048,7 +1058,7 @@ if non_allow:
     # Telemetry status
     STATE_FILE="${SAVANTS_DIR}/state.json"
     if [ -f "$STATE_FILE" ]; then
-      python3 -c "
+      $PYTHON -c "
 import json, os
 state = json.load(open('${STATE_FILE}'))
 enabled = state.get('telemetry_enabled', True)
@@ -1068,7 +1078,7 @@ print('    Manage: savants config telemetry [on|off|status]')
 
     # Cloud sync status
     if [ -f "$STATE_FILE" ]; then
-      HAS_TOKEN=$(python3 -c "
+      HAS_TOKEN=$($PYTHON -c "
 import json
 try:
     s = json.load(open('${STATE_FILE}'))
@@ -1105,7 +1115,7 @@ except:
 
     DISABLED_FILE="${SAVANTS_DIR}/disabled-rules.json"
 
-    python3 -c "
+    $PYTHON -c "
 import json, sys
 rules = json.load(open('${RULES_FILE}'))
 target = '''${RULE_ID}'''
@@ -1166,7 +1176,7 @@ else:
       exit 0
     fi
 
-    python3 -c "
+    $PYTHON -c "
 import json, sys
 
 disabled = json.load(open('${DISABLED_FILE}'))
@@ -1219,7 +1229,7 @@ else:
       exit 0
     fi
 
-    python3 -c "
+    $PYTHON -c "
 import json
 disabled = json.load(open('${DISABLED_FILE}'))
 if not disabled:
@@ -1319,7 +1329,7 @@ else:
       exit 1
     fi
 
-    python3 -c "
+    $PYTHON -c "
 import json, sys
 
 data = json.load(sys.stdin)
@@ -1376,7 +1386,7 @@ print('Install: savants guard install @owner/name')
       exit 1
     fi
 
-    python3 -c "
+    $PYTHON -c "
 import json, sys, subprocess
 
 lock = json.load(open('${LOCK_FILE}'))
@@ -1490,7 +1500,7 @@ if check_only and updates:
       exit 1
     fi
 
-    python3 -c "
+    $PYTHON -c "
 import json, sys
 
 lock = json.load(open('${LOCK_FILE}'))
@@ -1533,7 +1543,7 @@ else:
       exit 0
     fi
 
-    python3 -c "
+    $PYTHON -c "
 import json, sys
 from datetime import datetime, timezone
 

@@ -93,7 +93,23 @@ pub fn run(args: Vec<String>) {
         std::process::exit(1);
     }
 
-    let status = Command::new("bash")
+    // Find bash — on Windows it may be at a non-standard path (Git Bash)
+    let bash = if cfg!(windows) {
+        // Try common Windows bash locations
+        let candidates = [
+            "bash".to_string(),
+            "C:\\Program Files\\Git\\bin\\bash.exe".to_string(),
+            "C:\\Program Files (x86)\\Git\\bin\\bash.exe".to_string(),
+            format!("{}\\Git\\bin\\bash.exe", std::env::var("ProgramFiles").unwrap_or_default()),
+        ];
+        candidates.into_iter()
+            .find(|p| Command::new(p).arg("--version").output().is_ok())
+            .unwrap_or_else(|| "bash".to_string())
+    } else {
+        "bash".to_string()
+    };
+
+    let status = Command::new(&bash)
         .arg(&script)
         .args(&args)
         .status();
