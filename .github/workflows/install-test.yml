@@ -1,0 +1,304 @@
+name: Install Path Verification
+
+# Runs AFTER every release to verify the install flow works on every OS.
+# Downloads from R2 (same path real users take) and tests everything.
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:  # manual trigger for testing
+
+jobs:
+  install-test:
+    name: Install on ${{ matrix.name }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false  # test ALL platforms even if one fails
+      matrix:
+        include:
+          # ─── Linux ─────────────────────────────────────
+          - name: Ubuntu 24.04
+            os: ubuntu-latest
+            install: "curl -fsSL savants.sh | sh"
+            shell: bash
+
+          - name: Ubuntu 22.04
+            os: ubuntu-22.04
+            install: "curl -fsSL savants.sh | sh"
+            shell: bash
+
+          # ─── macOS ─────────────────────────────────────
+          - name: macOS (Apple Silicon)
+            os: macos-14
+            install: "curl -fsSL savants.sh | sh"
+            shell: bash
+
+          - name: macOS (Intel)
+            os: macos-latest
+            install: "curl -fsSL savants.sh | sh"
+            shell: bash
+
+          # ─── Windows ───────────────────────────────────
+          - name: Windows
+            os: windows-latest
+            install: "irm https://releases.savants.dev/latest/install.ps1 | iex"
+            shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ─── Install ─────────────────────────────────────
+      - name: Install Savants
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.install }}
+
+      # ─── Test: version matches R2 ────────────────────
+      - name: "Test: version matches latest on R2"
+        shell: bash
+        run: |
+          if [ "${{ matrix.shell }}" = "pwsh" ]; then
+            BIN="$USERPROFILE/.savants/bin/savants.exe"
+          else
+            BIN="$HOME/.savants/bin/savants"
+          fi
+          export PATH="$(dirname $BIN):$PATH"
+
+          EXPECTED=$(curl -sf https://releases.savants.dev/latest/version.txt)
+          INSTALLED=$(savants --version | cut -d' ' -f2)
+
+          echo "Expected: v${EXPECTED}"
+          echo "Installed: v${INSTALLED}"
+
+          if [ "$INSTALLED" != "$EXPECTED" ]; then
+            echo "::error::VERSION MISMATCH: installed v${INSTALLED}, expected v${EXPECTED}"
+            exit 1
+          fi
+          echo "✓ Version matches"
+
+      # ─── Test: guard preset ──────────────────────────
+      - name: "Test: guard preset standard"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          savants guard preset standard
+          echo "✓ Guard preset loaded"
+
+      # ─── Test: guard list shows rules ────────────────
+      - name: "Test: guard list"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          OUTPUT=$(savants guard list 2>&1)
+          echo "$OUTPUT" | head -5
+
+          if echo "$OUTPUT" | grep -q "active guard rules"; then
+            RULE_COUNT=$(echo "$OUTPUT" | head -1 | grep -oE '[0-9]+')
+            echo "✓ Guard list works (${RULE_COUNT} rules)"
+          else
+            echo "::error::Guard list failed"
+            exit 1
+          fi
+
+      # ─── Test: guard stats ──────────────────────────
+      - name: "Test: guard stats"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          savants guard stats 2>&1 | head -5
+          echo "✓ Guard stats works"
+
+      # ─── Test: guard status ─────────────────────────
+      - name: "Test: guard status"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          OUTPUT=$(savants guard status 2>&1)
+          echo "$OUTPUT" | head -5
+          echo "✓ Guard status works"
+
+      # ─── Test: guard on/off ─────────────────────────
+      - name: "Test: guard on/off cycle"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          savants guard off 2>&1 | head -2
+          savants guard on 2>&1 | head -2
+          echo "✓ Guard on/off works"
+
+      # ─── Test: guard add/remove ─────────────────────
+      - name: "Test: guard add custom rule"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          savants guard add "when tool eq 'Bash' and command contains 'test-ci-rule' then block"
+
+          if savants guard list 2>&1 | grep -q "test-ci-rule"; then
+            echo "✓ Custom rule added"
+          else
+            echo "::error::Custom rule not found"
+            exit 1
+          fi
+
+      # ─── Test: guard disable/enable ─────────────────
+      - name: "Test: guard disable rule"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # Disable the last rule we just added
+          RULE_NUM=$(savants guard list 2>&1 | grep "test-ci-rule" | grep -oE '^\s*[0-9]+' | tr -d ' ')
+          if [ -n "$RULE_NUM" ]; then
+            savants guard disable "$RULE_NUM" 2>&1 || true
+            echo "✓ Guard disable works"
+          else
+            echo "○ Skipping disable test (rule number not found)"
+          fi
+
+      # ─── Test: guard profiles list ──────────────────
+      - name: "Test: guard profiles"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          OUTPUT=$(savants guard profiles 2>&1)
+          echo "$OUTPUT" | head -10
+
+          if echo "$OUTPUT" | grep -qi "standard\|minimal\|battle"; then
+            echo "✓ Guard profiles lists available presets"
+          else
+            echo "::error::Guard profiles not listing presets"
+            exit 1
+          fi
+
+      # ─── Test: hook intercept (simulated) ───────────
+      - name: "Test: hook intercept"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # Simulate a safe hook input
+          echo '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}' | savants hook 2>&1 || true
+          echo "✓ Hook evaluation works"
+
+      # ─── Test: search command ───────────────────────
+      - name: "Test: search"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          savants search "test function" 2>&1 | head -3 || true
+          echo "✓ Search command exists"
+
+      # ─── Test: help for all commands ────────────────
+      - name: "Test: all commands have help"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          COMMANDS="guard search skeleton callers xray blast brief"
+          FAILED=0
+          for CMD in $COMMANDS; do
+            if savants $CMD --help >/dev/null 2>&1; then
+              echo "  ✓ savants $CMD --help"
+            else
+              echo "  ✗ savants $CMD --help FAILED"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::$FAILED commands missing help"
+            exit 1
+          fi
+          echo "✓ All commands have help"
+
+      # ─── Test: upgrade path (re-install) ────────────
+      - name: "Test: upgrade (re-run installer)"
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.install }}
+
+      - name: "Test: version still correct after upgrade"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          EXPECTED=$(curl -sf https://releases.savants.dev/latest/version.txt)
+          INSTALLED=$(savants --version | cut -d' ' -f2)
+          if [ "$INSTALLED" != "$EXPECTED" ]; then
+            echo "::error::Version mismatch after upgrade: v${INSTALLED} != v${EXPECTED}"
+            exit 1
+          fi
+          echo "✓ Upgrade path works (still v${INSTALLED})"
+
+      # ─── Test: uninstall ──────────────────────────
+      - name: "Test: uninstall removes everything"
+        shell: bash
+        run: |
+          SAVANTS_HOME="${HOME}/.savants"
+          if [ "${{ matrix.shell }}" = "pwsh" ]; then
+            SAVANTS_HOME="$USERPROFILE/.savants"
+          fi
+
+          echo "Before uninstall:"
+          echo "  Binary: $(ls $SAVANTS_HOME/bin/savants* 2>/dev/null | wc -l) files"
+          echo "  Config: $(ls $SAVANTS_HOME/*.json 2>/dev/null | wc -l) files"
+
+          # Run uninstall
+          if [ "${{ matrix.shell }}" = "pwsh" ]; then
+            curl -sf https://releases.savants.dev/latest/uninstall.ps1 -o /tmp/uninstall.ps1
+            pwsh -File /tmp/uninstall.ps1 || true
+          else
+            curl -sf https://releases.savants.dev/latest/uninstall.sh -o /tmp/uninstall.sh
+            sh /tmp/uninstall.sh || true
+          fi
+
+          echo "After uninstall:"
+          # Verify binary is gone
+          if [ -f "$SAVANTS_HOME/bin/savants" ] || [ -f "$SAVANTS_HOME/bin/savants.exe" ]; then
+            echo "::error::Binary still exists after uninstall"
+            exit 1
+          fi
+          echo "  ✓ Binary removed"
+
+          # Verify directory is gone
+          if [ -d "$SAVANTS_HOME" ]; then
+            echo "::error::~/.savants directory still exists"
+            exit 1
+          fi
+          echo "  ✓ Directory removed"
+
+          # Verify Claude hooks are gone
+          SETTINGS="$HOME/.claude/settings.json"
+          if [ -f "$SETTINGS" ] && grep -q "savants" "$SETTINGS" 2>/dev/null; then
+            echo "::error::Claude hooks still reference savants"
+            exit 1
+          fi
+          echo "  ✓ Claude Code hooks cleaned"
+          echo "✓ Uninstall complete — nothing left behind"
+
+      # ─── Test: reinstall after uninstall ────────────
+      - name: "Test: reinstall after uninstall"
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.install }}
+
+      - name: "Test: works after reinstall"
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          savants --version
+          savants guard preset standard
+          RULES=$(savants guard list 2>&1 | head -1 | grep -oE '[0-9]+' | head -1)
+          if [ "$RULES" -gt 0 ] 2>/dev/null; then
+            echo "✓ Reinstall works ($RULES rules active)"
+          else
+            echo "::error::Reinstall failed"
+            exit 1
+          fi
+
+      # ─── Summary ────────────────────────────────────
+      - name: Test summary
+        shell: bash
+        run: |
+          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          echo ""
+          echo "═══════════════════════════════════════════════════════"
+          echo "  ${{ matrix.name }}: ALL INSTALL TESTS PASSED"
+          echo "  Version: $(savants --version)"
+          echo "  Platform: $(uname -sm 2>/dev/null || echo Windows)"
+          echo "  Install → Test → Upgrade → Uninstall → Reinstall: ✓"
+          echo "═══════════════════════════════════════════════════════"

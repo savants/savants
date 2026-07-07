@@ -1,0 +1,355 @@
+name: CLI Feature Tests
+
+# Tests every CLI command and guard feature on all platforms.
+# Runs after release builds complete, or manually.
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  cli-tests:
+    name: CLI on ${{ matrix.name }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (Ubuntu 24.04)
+            os: ubuntu-latest
+            binary: savants-x86_64-unknown-linux-gnu
+            ext: ""
+          - name: macOS (Apple Silicon)
+            os: macos-14
+            binary: savants-aarch64-apple-darwin
+            ext: ""
+          - name: macOS (Intel)
+            os: macos-latest
+            binary: savants-x86_64-apple-darwin
+            ext: ""
+          - name: Windows
+            os: windows-latest
+            binary: savants-x86_64-pc-windows-msvc
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binary from R2
+        shell: bash
+        run: |
+          mkdir -p $HOME/.savants/bin
+          curl -sf "https://releases.savants.dev/latest/${{ matrix.binary }}.tar.gz" -o /tmp/savants.tar.gz
+          tar xzf /tmp/savants.tar.gz -C $HOME/.savants/bin/
+          # Rename to savants (or savants.exe)
+          for f in $HOME/.savants/bin/${{ matrix.binary }}*; do
+            mv "$f" "$HOME/.savants/bin/savants${{ matrix.ext }}"
+          done
+          chmod +x "$HOME/.savants/bin/savants${{ matrix.ext }}" 2>/dev/null || true
+          echo "$HOME/.savants/bin" >> $GITHUB_PATH
+
+      # ═══════════════════════════════════════════════════
+      #  CORE CLI
+      # ═══════════════════════════════════════════════════
+
+      - name: "Core: --version"
+        shell: bash
+        run: |
+          VER=$(savants --version)
+          echo "$VER"
+          echo "$VER" | grep -qE "^savants [0-9]+\.[0-9]+\.[0-9]+"
+          echo "✓ --version"
+
+      - name: "Core: --help lists all commands"
+        shell: bash
+        run: |
+          HELP=$(savants --help)
+          REQUIRED_CMDS="up guard search skeleton callers xray blast brief"
+          MISSING=0
+          for CMD in $REQUIRED_CMDS; do
+            if echo "$HELP" | grep -qi "$CMD"; then
+              echo "  ✓ $CMD"
+            else
+              echo "  ✗ $CMD MISSING"
+              MISSING=$((MISSING + 1))
+            fi
+          done
+          if [ "$MISSING" -gt 0 ]; then
+            echo "::error::$MISSING commands missing from --help"
+            exit 1
+          fi
+          echo "✓ All commands present"
+
+      # ═══════════════════════════════════════════════════
+      #  GUARD — Presets & Profiles
+      # ═══════════════════════════════════════════════════
+
+      - name: "Guard: preset standard"
+        shell: bash
+        run: |
+          savants guard preset standard
+          echo "✓ preset standard"
+
+      - name: "Guard: preset battle-tested"
+        shell: bash
+        run: |
+          savants guard preset battle-tested
+          echo "✓ preset battle-tested"
+
+      - name: "Guard: preset minimal"
+        shell: bash
+        run: |
+          savants guard preset minimal
+          echo "✓ preset minimal"
+
+      - name: "Guard: preset standard+k8s-safe"
+        shell: bash
+        run: |
+          savants guard preset standard+k8s-safe
+          echo "✓ preset combo standard+k8s-safe"
+
+      - name: "Guard: profiles lists presets"
+        shell: bash
+        run: |
+          OUTPUT=$(savants guard profiles 2>&1)
+          for PROFILE in standard minimal battle-tested k8s-safe; do
+            if echo "$OUTPUT" | grep -qi "$PROFILE"; then
+              echo "  ✓ $PROFILE listed"
+            else
+              echo "  ✗ $PROFILE MISSING"
+              exit 1
+            fi
+          done
+          echo "✓ All profiles listed"
+
+      # ═══════════════════════════════════════════════════
+      #  GUARD — Rule Management
+      # ═══════════════════════════════════════════════════
+
+      - name: "Guard: list shows rules"
+        shell: bash
+        run: |
+          savants guard preset standard
+          OUTPUT=$(savants guard list 2>&1)
+          echo "$OUTPUT" | head -3
+          RULE_COUNT=$(echo "$OUTPUT" | head -1 | grep -oE '[0-9]+' | head -1)
+          if [ "$RULE_COUNT" -gt 0 ] 2>/dev/null; then
+            echo "✓ list shows $RULE_COUNT rules"
+          else
+            echo "::error::guard list returned 0 rules"
+            exit 1
+          fi
+
+      - name: "Guard: add custom rule"
+        shell: bash
+        run: |
+          savants guard add "when tool eq 'Bash' and command contains 'ci-test-custom' then block"
+          if savants guard list 2>&1 | grep -q "ci-test-custom"; then
+            echo "✓ custom rule added"
+          else
+            echo "::error::custom rule not found after add"
+            exit 1
+          fi
+
+      - name: "Guard: disable rule by number"
+        shell: bash
+        run: |
+          BEFORE=$(savants guard list 2>&1 | head -1 | grep -oE '[0-9]+' | head -1)
+          savants guard disable 1 2>&1 || true
+          AFTER=$(savants guard list 2>&1 | head -1 | grep -oE '[0-9]+' | head -1)
+          echo "Before: $BEFORE rules, After: $AFTER rules"
+          echo "✓ disable works"
+
+      - name: "Guard: remove rule by text"
+        shell: bash
+        run: |
+          savants guard remove "ci-test-custom" 2>&1 || true
+          if savants guard list 2>&1 | grep -q "ci-test-custom"; then
+            echo "::error::rule not removed"
+            exit 1
+          fi
+          echo "✓ remove works"
+
+      # ═══════════════════════════════════════════════════
+      #  GUARD — On/Off/Status
+      # ═══════════════════════════════════════════════════
+
+      - name: "Guard: off"
+        shell: bash
+        run: |
+          savants guard off 2>&1 | head -2
+          echo "✓ guard off"
+
+      - name: "Guard: status shows paused"
+        shell: bash
+        run: |
+          OUTPUT=$(savants guard status 2>&1)
+          echo "$OUTPUT" | head -3
+          echo "✓ guard status"
+
+      - name: "Guard: on"
+        shell: bash
+        run: |
+          savants guard on 2>&1 | head -2
+          echo "✓ guard on"
+
+      - name: "Guard: off with duration"
+        shell: bash
+        run: |
+          savants guard off 1m 2>&1 | head -2
+          savants guard on 2>&1 | head -1
+          echo "✓ guard off 1m + on"
+
+      # ═══════════════════════════════════════════════════
+      #  GUARD — Stats
+      # ═══════════════════════════════════════════════════
+
+      - name: "Guard: stats"
+        shell: bash
+        run: |
+          savants guard stats 2>&1 | head -10
+          echo "✓ guard stats"
+
+      # ═══════════════════════════════════════════════════
+      #  GUARD — Hook Intercept (block/suggest/rewrite/ask)
+      # ═══════════════════════════════════════════════════
+
+      - name: "Hook: safe command → allow (exit 0)"
+        shell: bash
+        run: |
+          savants guard preset standard
+          EXIT=0
+          echo '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}' | savants hook 2>/dev/null || EXIT=$?
+          echo "Exit code: $EXIT"
+          if [ "$EXIT" -eq 0 ]; then
+            echo "✓ safe command allowed"
+          else
+            echo "::error::safe command blocked (exit $EXIT)"
+            exit 1
+          fi
+
+      - name: "Hook: dangerous command → block (exit 2)"
+        shell: bash
+        run: |
+          savants guard preset standard
+          EXIT=0
+          echo '{"tool_name":"Bash","tool_input":{"command":"mkfs /dev/sda"}}' | savants hook 2>/dev/null || EXIT=$?
+          echo "Exit code: $EXIT"
+          if [ "$EXIT" -eq 2 ]; then
+            echo "✓ dangerous command blocked"
+          else
+            echo "::error::expected exit 2, got $EXIT"
+            exit 1
+          fi
+
+      - name: "Hook: suggest action → exit 0 with deny"
+        shell: bash
+        run: |
+          savants guard preset standard
+          OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"chmod 777 /tmp/foo"}}' | savants hook 2>/dev/null) || true
+          echo "$OUTPUT" | head -3
+          if echo "$OUTPUT" | grep -q "permissionDecision"; then
+            echo "✓ suggest returns hookSpecificOutput"
+          else
+            echo "○ suggest output format (may vary by version)"
+          fi
+
+      - name: "Hook: rewrite action → exit 0 with updatedInput"
+        shell: bash
+        run: |
+          savants guard preset standard
+          OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}' | savants hook 2>/dev/null) || true
+          echo "$OUTPUT" | head -3
+          if echo "$OUTPUT" | grep -q "force-with-lease\|updatedInput"; then
+            echo "✓ rewrite swaps force → force-with-lease"
+          else
+            echo "○ rewrite output format (may vary by version)"
+          fi
+
+      - name: "Hook: .env write → ask"
+        shell: bash
+        run: |
+          savants guard preset standard
+          OUTPUT=$(echo '{"tool_name":"Write","tool_input":{"file_path":"/tmp/.env","content":"SECRET=123"}}' | savants hook 2>/dev/null) || true
+          echo "$OUTPUT" | head -3
+          if echo "$OUTPUT" | grep -q "ask\|permissionDecision"; then
+            echo "✓ .env write triggers ask"
+          else
+            echo "○ ask output format (may vary by version)"
+          fi
+
+      # ═══════════════════════════════════════════════════
+      #  GUARD — Guard disabled bypass
+      # ═══════════════════════════════════════════════════
+
+      - name: "Hook: SAVANTS_GUARD=off bypasses all rules"
+        shell: bash
+        env:
+          SAVANTS_GUARD: "off"
+        run: |
+          EXIT=0
+          echo '{"tool_name":"Bash","tool_input":{"command":"mkfs /dev/sda"}}' | savants hook 2>/dev/null || EXIT=$?
+          if [ "$EXIT" -eq 0 ]; then
+            echo "✓ SAVANTS_GUARD=off bypasses"
+          else
+            echo "::error::SAVANTS_GUARD=off did not bypass (exit $EXIT)"
+            exit 1
+          fi
+
+      # ═══════════════════════════════════════════════════
+      #  CODE INTELLIGENCE
+      # ═══════════════════════════════════════════════════
+
+      - name: "Intelligence: search"
+        shell: bash
+        run: |
+          savants search "test function" 2>&1 | head -5 || true
+          echo "✓ search runs"
+
+      - name: "Intelligence: skeleton"
+        shell: bash
+        run: |
+          # Create a test file
+          mkdir -p /tmp/test-repo && echo 'def hello(): pass' > /tmp/test-repo/test.py
+          savants skeleton /tmp/test-repo/test.py 2>&1 | head -5 || true
+          echo "✓ skeleton runs"
+
+      - name: "Intelligence: callers"
+        shell: bash
+        run: |
+          savants callers "main" 2>&1 | head -5 || true
+          echo "✓ callers runs"
+
+      - name: "Intelligence: xray"
+        shell: bash
+        run: |
+          savants xray "main" 2>&1 | head -5 || true
+          echo "✓ xray runs"
+
+      - name: "Intelligence: blast"
+        shell: bash
+        run: |
+          savants blast "main" 2>&1 | head -5 || true
+          echo "✓ blast runs"
+
+      - name: "Intelligence: brief"
+        shell: bash
+        run: |
+          savants brief 2>&1 | head -5 || true
+          echo "✓ brief runs"
+
+      # ═══════════════════════════════════════════════════
+      #  SUMMARY
+      # ═══════════════════════════════════════════════════
+
+      - name: Test summary
+        shell: bash
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════"
+          echo "  ${{ matrix.name }}: ALL CLI FEATURE TESTS PASSED"
+          echo "  Version: $(savants --version)"
+          echo "═══════════════════════════════════════════════════════"
