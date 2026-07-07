@@ -6,6 +6,7 @@ pub mod template;
 
 use crate::graph::{GraphClient, ParamValue};
 use colored::*;
+#[cfg(unix)]
 use nix::sys::statvfs::statvfs;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -2059,6 +2060,7 @@ fn get_disk_partitions() -> Vec<DiskPartition> {
     partitions
 }
 
+#[cfg(unix)]
 fn disk_usage(mountpoint: &str) -> Result<DiskUsage, String> {
     let stat = statvfs(mountpoint).map_err(|e| e.to_string())?;
     let block_size = stat.block_size() as u64;
@@ -2066,6 +2068,11 @@ fn disk_usage(mountpoint: &str) -> Result<DiskUsage, String> {
     let free = stat.blocks_available() as u64 * block_size;
     let used = total.saturating_sub(free);
     Ok(DiskUsage { total, used, free })
+}
+
+#[cfg(not(unix))]
+fn disk_usage(_mountpoint: &str) -> Result<DiskUsage, String> {
+    Err("disk_usage not supported on this platform".to_string())
 }
 
 fn read_proc_user(pid_path: &Path) -> String {

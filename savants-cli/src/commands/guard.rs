@@ -1,4 +1,5 @@
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -32,11 +33,14 @@ fn ensure_script() -> PathBuf {
         if let Err(e) = fs::write(&path, GUARD_SCRIPT) {
             eprintln!("Warning: could not write guard script to {}: {}", path.display(), e);
         } else {
-            // Make executable
-            if let Ok(meta) = fs::metadata(&path) {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&path, perms).ok();
+            // Make executable (Unix only — on Windows, .exe extension determines executability)
+            #[cfg(unix)]
+            {
+                if let Ok(meta) = fs::metadata(&path) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o755);
+                    fs::set_permissions(&path, perms).ok();
+                }
             }
         }
     }

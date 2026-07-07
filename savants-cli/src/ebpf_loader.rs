@@ -98,10 +98,18 @@ pub struct DropData {
 }
 
 pub fn can_load() -> bool {
-    std::path::Path::new("/sys/kernel/btf/vmlinux").exists()
-        && (nix::unistd::geteuid().is_root() || has_cap_bpf())
+    #[cfg(unix)]
+    {
+        std::path::Path::new("/sys/kernel/btf/vmlinux").exists()
+            && (nix::unistd::geteuid().is_root() || has_cap_bpf())
+    }
+    #[cfg(not(unix))]
+    {
+        false // eBPF is Linux-only
+    }
 }
 
+#[cfg(unix)]
 fn has_cap_bpf() -> bool {
     if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
         for line in status.lines() {

@@ -1,6 +1,6 @@
 [package]
 name = "savants"
-version = "0.26.8"
+version = "0.26.9"
 edition = "2021"
 description = "Your infrastructure savant. Know what's wrong in 60 seconds."
 
@@ -23,7 +23,6 @@ futures = "0.3"
 tracing = "0.1"
 regex = "1"
 chrono = "0.4"
-nix = { version = "0.27", features = ["fs", "user"] }
 sha2 = "0.10"
 gethostname = "0.4"
 rand = "0.8"
@@ -47,12 +46,16 @@ glob = "0.3"
 fastembed = { version = "5", optional = true }
 libbpf-rs = { version = "0.24", optional = true }
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["fs", "user"] }
+
 [profile.release]
 opt-level = 3
 strip = true
 panic = "abort"
 lto = true
 codegen-units = 1
+
 [features]
 embeddings = ["fastembed"]
 ebpf = ["libbpf-rs"]

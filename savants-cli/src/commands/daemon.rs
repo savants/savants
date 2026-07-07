@@ -21,12 +21,30 @@ fn daemon_log_file() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".savants").join("daemon.log")
 }
 
+#[cfg(unix)]
+fn is_process_alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{}", pid)).exists()
+}
+
+#[cfg(not(unix))]
+fn is_process_alive(pid: u32) -> bool {
+    // On Windows, use tasklist to check if the process exists
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+        .output()
+        .map(|o| {
+            let out = String::from_utf8_lossy(&o.stdout);
+            out.contains(&pid.to_string())
+        })
+        .unwrap_or(false)
+}
+
 fn is_daemon_running() -> Option<u32> {
     let pid_file = daemon_pid_file();
     if !pid_file.exists() { return None; }
     let pid: u32 = fs::read_to_string(&pid_file).ok()?.trim().parse().ok()?;
     // Check if process is alive
-    if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
+    if is_process_alive(pid) {
         Some(pid)
     } else {
         let _ = fs::remove_file(&pid_file);
@@ -101,8 +119,17 @@ pub fn start() {
 pub fn stop() {
     match is_daemon_running() {
         Some(pid) => {
-            // Send SIGTERM
-            unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+            // Send termination signal
+            #[cfg(unix)]
+            {
+                unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F"])
+                    .output();
+            }
             println!("Savants daemon stopped (pid {})", pid);
             let _ = fs::remove_file(daemon_pid_file());
         }
