@@ -297,7 +297,8 @@ jobs:
             echo "✓ Reinstall works (binary verified)"
           else
             savants guard preset standard
-            RULES=$(savants guard list 2>&1 | head -1 | grep -oE '[0-9]+' | head -1)
+            OUTPUT=$(savants guard list 2>&1)
+            RULES=$(echo "$OUTPUT" | head -1 | grep -oE '[0-9]+' | head -1)
             if [ "$RULES" -gt 0 ] 2>/dev/null; then
               echo "✓ Reinstall works ($RULES rules active)"
             else
