@@ -13,7 +13,7 @@ const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
 pub struct CloudProxyServer {
     cloud_url: String,
-    api_key: String,
+    api_key: RefCell<String>,
     /// Repos we've confirmed are indexed (avoids re-checking every call)
     indexed_repos: RefCell<HashSet<String>>,
 }
@@ -22,8 +22,24 @@ impl CloudProxyServer {
     pub fn new(cloud_url: &str, api_key: &str) -> Self {
         Self {
             cloud_url: cloud_url.trim_end_matches('/').to_string(),
-            api_key: api_key.to_string(),
+            api_key: RefCell::new(api_key.to_string()),
             indexed_repos: RefCell::new(HashSet::new()),
+        }
+    }
+
+    /// Re-read the API key from state.json if it has changed.
+    /// This ensures token refreshes are picked up without restarting.
+    fn current_api_key(&self) -> String {
+        let state = crate::config::State::load();
+        if let Some(fresh_token) = state.cloud_token() {
+            let current = self.api_key.borrow().clone();
+            if fresh_token != current {
+                eprintln!("[savants] Token refreshed from state.json");
+                *self.api_key.borrow_mut() = fresh_token.clone();
+            }
+            fresh_token
+        } else {
+            self.api_key.borrow().clone()
         }
     }
 
@@ -237,7 +253,7 @@ impl CloudProxyServer {
     fn cloud_get(&self, path: &str) -> Result<Value, String> {
         let url = format!("{}{}", self.cloud_url, path);
         let output = std::process::Command::new("curl")
-            .args(["-s", "--max-time", "60", "-w", "\n%{http_code}", "-H", &format!("Authorization: Bearer {}", self.api_key), &url])
+            .args(["-s", "--max-time", "60", "-w", "\n%{http_code}", "-H", &format!("Authorization: Bearer {}", self.current_api_key()), &url])
             .output()
             .map_err(|e| format!("curl failed: {}", e))?;
         let raw = String::from_utf8_lossy(&output.stdout);
@@ -260,7 +276,7 @@ impl CloudProxyServer {
                 "-s", "--max-time", "60",
                 "-w", "\n%{http_code}",
                 "-X", "POST",
-                "-H", &format!("Authorization: Bearer {}", self.api_key),
+                "-H", &format!("Authorization: Bearer {}", self.current_api_key()),
                 "-H", "Content-Type: application/json",
                 "-d", &body_str,
                 &url,
