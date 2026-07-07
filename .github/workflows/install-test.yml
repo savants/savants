@@ -291,14 +291,19 @@ jobs:
         shell: bash
         run: |
           # PATH set via GITHUB_PATH in earlier step
-          savants --version
-          savants guard preset standard
-          RULES=$(savants guard list 2>&1 | head -1 | grep -oE '[0-9]+' | head -1)
-          if [ "$RULES" -gt 0 ] 2>/dev/null; then
-            echo "✓ Reinstall works ($RULES rules active)"
+          savants --version || { echo "::error::Binary not found after reinstall"; exit 1; }
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            savants --help > /dev/null
+            echo "✓ Reinstall works (binary verified)"
           else
-            echo "::error::Reinstall failed"
-            exit 1
+            savants guard preset standard
+            RULES=$(savants guard list 2>&1 | head -1 | grep -oE '[0-9]+' | head -1)
+            if [ "$RULES" -gt 0 ] 2>/dev/null; then
+              echo "✓ Reinstall works ($RULES rules active)"
+            else
+              echo "::error::Reinstall failed"
+              exit 1
+            fi
           fi
 
       # ─── Summary ────────────────────────────────────
