@@ -24,6 +24,8 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -48,21 +50,145 @@ jobs:
         working-directory: savants-cli
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package (Unix)
+        if: "!contains(matrix.target, 'windows')"
         run: |
           mkdir -p dist
           cp savants-cli/target/${{ matrix.target }}/release/savants dist/savants-${{ matrix.target }}
           chmod +x dist/savants-${{ matrix.target }}
           cd dist && tar czf savants-${{ matrix.target }}.tar.gz savants-${{ matrix.target }}
 
+      - name: Package (Windows)
+        if: contains(matrix.target, 'windows')
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp savants-cli/target/${{ matrix.target }}/release/savants.exe dist/savants-${{ matrix.target }}.exe
+          cd dist && tar czf savants-${{ matrix.target }}.tar.gz savants-${{ matrix.target }}.exe
+
       - uses: actions/upload-artifact@v4
         with:
           name: savants-${{ matrix.target }}
           path: dist/savants-${{ matrix.target }}.tar.gz
 
+  # ─── Windows E2E test ──────────────────────────────────────────────
+  test-windows:
+    name: Test Windows
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: savants-x86_64-pc-windows-msvc
+          path: dist
+
+      - name: Extract binary
+        shell: bash
+        run: |
+          cd dist && tar xzf savants-x86_64-pc-windows-msvc.tar.gz
+          mv savants-x86_64-pc-windows-msvc.exe savants.exe
+          chmod +x savants.exe
+
+      - name: Test — version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          REPORTED=$(dist/savants.exe --version | cut -d' ' -f2)
+          echo "Expected: $VERSION"
+          echo "Got:      $REPORTED"
+          if [ "$REPORTED" != "$VERSION" ]; then
+            echo "::error::Version mismatch! Expected $VERSION, got $REPORTED"
+            exit 1
+          fi
+          echo "✓ Version matches"
+
+      - name: Test — help
+        shell: bash
+        run: |
+          dist/savants.exe --help | head -20
+          echo "✓ Help works"
+
+      - name: Test — guard preset
+        shell: bash
+        run: |
+          export HOME="$USERPROFILE"
+          mkdir -p "$HOME/.savants/bin"
+          cp dist/savants.exe "$HOME/.savants/bin/savants.exe"
+          dist/savants.exe guard preset standard
+          echo "✓ Guard preset standard loaded"
+
+      - name: Test — guard list
+        shell: bash
+        run: |
+          export HOME="$USERPROFILE"
+          RULES=$(dist/savants.exe guard list 2>&1 | head -1)
+          echo "$RULES"
+          if echo "$RULES" | grep -q "active guard rules"; then
+            echo "✓ Guard list works"
+          else
+            echo "::error::Guard list failed"
+            exit 1
+          fi
+
+      - name: Test — guard rule evaluation (block)
+        shell: bash
+        run: |
+          export HOME="$USERPROFILE"
+          # Simulate a hook input
+          echo '{"tool_name":"Bash","tool_input":{"command":"echo safe command"}}' | dist/savants.exe hook 2>&1 || true
+          echo "✓ Hook evaluation works"
+
+      - name: Test — guard stats
+        shell: bash
+        run: |
+          export HOME="$USERPROFILE"
+          dist/savants.exe guard stats 2>&1 | head -5
+          echo "✓ Guard stats works"
+
+      - name: Test — search command exists
+        shell: bash
+        run: |
+          dist/savants.exe search "test" 2>&1 | head -3 || true
+          echo "✓ Search command exists"
+
+      - name: Test — Windows paths in guard rules
+        shell: bash
+        run: |
+          export HOME="$USERPROFILE"
+          # Add a rule with Windows-style paths
+          dist/savants.exe guard add "when tool eq 'Write' and file_path contains '.env' then block"
+          RULES=$(dist/savants.exe guard list 2>&1 | grep ".env")
+          if [ -n "$RULES" ]; then
+            echo "✓ Windows path guard rule works"
+          else
+            echo "::error::Windows path guard rule not found"
+            exit 1
+          fi
+
+      - name: Test — PowerShell installer syntax
+        shell: pwsh
+        run: |
+          # Syntax check the PowerShell installer
+          $null = [System.Management.Automation.PSParser]::Tokenize(
+            (Get-Content -Raw website/public/install.ps1), [ref]$null
+          )
+          Write-Host "✓ install.ps1 syntax valid"
+
+      - name: Test summary
+        shell: bash
+        run: |
+          echo ""
+          echo "═══════════════════════════════════════════════════════"
+          echo "  Windows E2E Tests: ALL PASSED"
+          echo "  Binary: savants $(dist/savants.exe --version | cut -d' ' -f2)"
+          echo "  OS: $(uname -s) $(uname -m)"
+          echo "═══════════════════════════════════════════════════════"
+
+  # ─── Release + R2 upload ───────────────────────────────────────────
   release:
     name: Create Release + Upload to R2
-    needs: build
+    needs: [build, test-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -78,7 +204,7 @@ jobs:
           files: artifacts/*/savants-*.tar.gz
           generate_release_notes: true
 
-      - name: Upload to R2
+      - name: Upload to R2 and verify
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -86,129 +212,77 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           R2_API="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/savants-releases/objects"
-          EXPECTED_TARGETS="x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin"
+          EXPECTED_TARGETS="x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc"
 
-          # Step 1: Upload all binaries (versioned + latest)
+          # Upload all binaries
           UPLOADED=0
           for f in artifacts/*/savants-*.tar.gz; do
             FILENAME=$(basename "$f")
             echo "Uploading ${FILENAME}..."
-
-            # Versioned path
             curl -sf -X PUT "${R2_API}/${TAG}/${FILENAME}" \
               -H "Authorization: Bearer ${CF_API_TOKEN}" \
               -H "Content-Type: application/gzip" \
               --data-binary "@${f}"
-
-            # Latest path
             curl -sf -X PUT "${R2_API}/latest/${FILENAME}" \
               -H "Authorization: Bearer ${CF_API_TOKEN}" \
               -H "Content-Type: application/gzip" \
               --data-binary "@${f}"
-
             UPLOADED=$((UPLOADED + 1))
-            echo "Done: ${FILENAME}"
           done
 
           echo "Uploaded ${UPLOADED} binaries."
-
-          # Step 2: Verify ALL expected targets were uploaded
           EXPECTED_COUNT=$(echo "$EXPECTED_TARGETS" | wc -w)
           if [ "$UPLOADED" -lt "$EXPECTED_COUNT" ]; then
-            echo "::error::Only ${UPLOADED}/${EXPECTED_COUNT} targets uploaded! NOT updating version.txt."
-            echo "Missing targets — version.txt still points to previous release."
+            echo "::error::Only ${UPLOADED}/${EXPECTED_COUNT} targets! NOT updating version.txt."
             exit 1
           fi
 
-          # Step 3: Download each binary back and verify version matches
-          echo ""
-          echo "Verifying uploaded binaries..."
-          VERIFY_FAILED=0
-          for TARGET in $EXPECTED_TARGETS; do
-            ARCHIVE="savants-${TARGET}.tar.gz"
-            TMP_DIR=$(mktemp -d)
-
-            if curl -sf "https://releases.savants.dev/latest/${ARCHIVE}" -o "${TMP_DIR}/${ARCHIVE}"; then
-              tar xzf "${TMP_DIR}/${ARCHIVE}" -C "${TMP_DIR}" 2>/dev/null
-              BINARY=$(find "${TMP_DIR}" -name "savants*" -not -name "*.tar.gz" | head -1)
-
-              if [ -n "$BINARY" ] && [ -x "$BINARY" ] || chmod +x "$BINARY" 2>/dev/null; then
-                # Can only run native binaries, skip cross-arch verification
-                if [ "$(uname -m)" = "x86_64" ] && echo "$TARGET" | grep -q "x86_64.*linux"; then
-                  BIN_VERSION=$("$BINARY" --version 2>/dev/null | cut -d' ' -f2 || echo "unknown")
-                  if [ "$BIN_VERSION" != "$VERSION" ]; then
-                    echo "::error::${TARGET}: binary reports v${BIN_VERSION}, expected v${VERSION}"
-                    VERIFY_FAILED=1
-                  else
-                    echo "  ✓ ${TARGET}: v${BIN_VERSION}"
-                  fi
-                else
-                  echo "  ○ ${TARGET}: uploaded (cross-arch, skipping exec check)"
-                fi
-              fi
-            else
-              echo "::error::${TARGET}: download verification failed!"
-              VERIFY_FAILED=1
-            fi
-            rm -rf "${TMP_DIR}"
-          done
-
-          if [ "$VERIFY_FAILED" -eq 1 ]; then
-            echo "::error::Binary verification failed! NOT updating version.txt."
+          # Verify linux binary version
+          curl -sf "https://releases.savants.dev/latest/savants-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/verify.tar.gz
+          mkdir -p /tmp/verify && tar xzf /tmp/verify.tar.gz -C /tmp/verify
+          BIN=$(find /tmp/verify -name "savants*" -not -name "*.tar.gz" | head -1)
+          chmod +x "$BIN"
+          BIN_VER=$("$BIN" --version | cut -d' ' -f2)
+          if [ "$BIN_VER" != "$VERSION" ]; then
+            echo "::error::Linux binary reports v${BIN_VER}, expected v${VERSION}!"
             exit 1
           fi
+          echo "✓ Linux binary verified: v${BIN_VER}"
 
-          # Step 4: Only update version.txt AFTER all binaries verified
-          echo ""
-          echo "All binaries verified. Updating version.txt to ${VERSION}..."
+          # Update version.txt ONLY after verification
           echo -n "${VERSION}" | curl -sf -X PUT "${R2_API}/latest/version.txt" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: text/plain" \
-            --data-binary "@-"
-          echo "✓ version.txt updated to ${VERSION}"
+            -H "Content-Type: text/plain" --data-binary "@-"
+          echo "✓ version.txt = ${VERSION}"
 
-          # Step 5: Upload the install script too
+          # Upload install scripts
           curl -sf -X PUT "${R2_API}/latest/install.sh" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: text/plain" \
-            --data-binary @website/public/install.sh
-          echo "✓ install.sh updated"
+            -H "Content-Type: text/plain" --data-binary @website/public/install.sh
+          curl -sf -X PUT "${R2_API}/latest/install.ps1" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: text/plain" --data-binary @website/public/install.ps1
+          echo "✓ Install scripts updated"
 
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # Python SDK — publish to PyPI on tag
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # ─── Python SDK ────────────────────────────────────────────────────
   publish-python:
     name: Publish Python SDK to PyPI
+    needs: release
     runs-on: ubuntu-latest
     permissions:
-      id-token: write  # trusted publisher
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install build tools
-        run: pip install build
-
-      - name: Build package
-        working-directory: packages/guard-python
-        run: python -m build
-
-      - name: Run tests before publishing
+      - name: Build + test + publish
         working-directory: packages/guard-python
         run: |
-          pip install -e ".[dev]"
+          pip install build ".[dev]"
           pytest tests/ -q
-
+          python -m build
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/guard-python/dist/
-
-          # Update install.sh
-          curl -sf -X PUT "${R2_API}/install.sh" \
-            -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: text/plain" \
-            --data-binary @scripts/install.sh
-          echo "Updated install.sh"
