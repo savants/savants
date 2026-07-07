@@ -1,5 +1,6 @@
 [
-  "when tool eq 'Bash' and command contains 'rm -rf /' then block",
+  "when tool eq 'Bash' and command contains 'rm -rf / ' then block",
+  "when tool eq 'Bash' and command ends_with 'rm -rf /' then block",
   "when tool eq 'Bash' and command contains 'rm -rf ~' then block",
   "when tool eq 'Bash' and command contains 'rm -rf $HOME' then block",
   "when tool eq 'Bash' and command contains 'rm --no-preserve-root' then block",
