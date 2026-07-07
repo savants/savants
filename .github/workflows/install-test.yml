@@ -18,47 +18,35 @@ jobs:
       fail-fast: false  # test ALL platforms even if one fails
       matrix:
         include:
-          # ─── Linux ─────────────────────────────────────
           - name: Ubuntu 24.04
             os: ubuntu-latest
-            install: "curl -fsSL savants.sh | sh"
-            shell: bash
-
           - name: Ubuntu 22.04
             os: ubuntu-22.04
-            install: "curl -fsSL savants.sh | sh"
-            shell: bash
-
-          # ─── macOS ─────────────────────────────────────
           - name: macOS (Apple Silicon)
             os: macos-14
-            install: "curl -fsSL savants.sh | sh"
-            shell: bash
-
           - name: macOS (Intel)
             os: macos-latest
-            install: "curl -fsSL savants.sh | sh"
-            shell: bash
-
-          # ─── Windows ───────────────────────────────────
           - name: Windows
             os: windows-latest
-            install: "irm https://releases.savants.dev/latest/install.ps1 | iex"
-            shell: pwsh
 
     steps:
       - uses: actions/checkout@v4
 
       # ─── Install ─────────────────────────────────────
       - name: Install Savants
-        shell: ${{ matrix.shell }}
-        run: ${{ matrix.install }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -Command "irm https://releases.savants.dev/latest/install.ps1 | iex"
+          else
+            curl -fsSL savants.sh | sh
+          fi
 
       # ─── Test: version matches R2 ────────────────────
       - name: "Test: version matches latest on R2"
         shell: bash
         run: |
-          if [ "${{ matrix.shell }}" = "pwsh" ]; then
+          if [ "$RUNNER_OS" = "Windows" ]; then
             BIN="$USERPROFILE/.savants/bin/savants.exe"
           else
             BIN="$HOME/.savants/bin/savants"
@@ -210,8 +198,13 @@ jobs:
 
       # ─── Test: upgrade path (re-install) ────────────
       - name: "Test: upgrade (re-run installer)"
-        shell: ${{ matrix.shell }}
-        run: ${{ matrix.install }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -Command "irm https://releases.savants.dev/latest/install.ps1 | iex"
+          else
+            curl -fsSL savants.sh | sh
+          fi
 
       - name: "Test: version still correct after upgrade"
         shell: bash
@@ -230,7 +223,7 @@ jobs:
         shell: bash
         run: |
           SAVANTS_HOME="${HOME}/.savants"
-          if [ "${{ matrix.shell }}" = "pwsh" ]; then
+          if [ "$RUNNER_OS" = "Windows" ]; then
             SAVANTS_HOME="$USERPROFILE/.savants"
           fi
 
@@ -239,7 +232,7 @@ jobs:
           echo "  Config: $(ls $SAVANTS_HOME/*.json 2>/dev/null | wc -l) files"
 
           # Run uninstall
-          if [ "${{ matrix.shell }}" = "pwsh" ]; then
+          if [ "$RUNNER_OS" = "Windows" ]; then
             curl -sf https://releases.savants.dev/latest/uninstall.ps1 -o /tmp/uninstall.ps1
             pwsh -File /tmp/uninstall.ps1 || true
           else
@@ -273,8 +266,13 @@ jobs:
 
       # ─── Test: reinstall after uninstall ────────────
       - name: "Test: reinstall after uninstall"
-        shell: ${{ matrix.shell }}
-        run: ${{ matrix.install }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -Command "irm https://releases.savants.dev/latest/install.ps1 | iex"
+          else
+            curl -fsSL savants.sh | sh
+          fi
 
       - name: "Test: works after reinstall"
         shell: bash
