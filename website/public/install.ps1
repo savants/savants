@@ -53,14 +53,33 @@ try {
     exit 1
 }
 
-# Extract (tar is available on Windows 10+)
+# Extract
 Write-Host "  [3/3] Installing..." -NoNewline
 if (Test-Path $TmpDir) { Remove-Item -Recurse -Force $TmpDir }
 New-Item -ItemType Directory -Path $TmpDir -Force | Out-Null
-tar xzf $TmpFile -C $TmpDir 2>$null
+
+# Use .NET to extract tar.gz (avoids GNU tar drive letter issues)
+try {
+    $fs = [System.IO.File]::OpenRead($TmpFile)
+    $gz = New-Object System.IO.Compression.GZipStream($fs, [System.IO.Compression.CompressionMode]::Decompress)
+    $tarFile = Join-Path $TmpDir "savants.tar"
+    $tarFs = [System.IO.File]::Create($tarFile)
+    $gz.CopyTo($tarFs)
+    $tarFs.Close(); $gz.Close(); $fs.Close()
+    # Use tar on the uncompressed .tar (no gzip = no drive letter issue)
+    Push-Location $TmpDir
+    & tar xf "savants.tar" 2>$null
+    Pop-Location
+    Remove-Item $tarFile -Force -ErrorAction SilentlyContinue
+} catch {
+    # Fallback: try system tar directly
+    Push-Location $TmpDir
+    & tar xzf $TmpFile 2>$null
+    Pop-Location
+}
 
 # Find the binary
-$ExtractedBin = Get-ChildItem -Path $TmpDir -Filter "savants*" -Recurse | Select-Object -First 1
+$ExtractedBin = Get-ChildItem -Path $TmpDir -Filter "savants*" -Recurse -File | Where-Object { $_.Extension -eq '.exe' -or $_.Extension -eq '' } | Select-Object -First 1
 if (-not $ExtractedBin) {
     Write-Host " failed" -ForegroundColor Red
     Write-Host "  Could not find savants binary in archive" -ForegroundColor Red

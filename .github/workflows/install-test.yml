@@ -42,17 +42,20 @@ jobs:
             curl -fsSL savants.sh | sh
           fi
 
+      # ─── Add savants to PATH for all subsequent steps ──
+      - name: Add savants to PATH
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "$USERPROFILE/.savants/bin" >> $GITHUB_PATH
+          else
+            echo "$HOME/.savants/bin" >> $GITHUB_PATH
+          fi
+
       # ─── Test: version matches R2 ────────────────────
       - name: "Test: version matches latest on R2"
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            BIN="$USERPROFILE/.savants/bin/savants.exe"
-          else
-            BIN="$HOME/.savants/bin/savants"
-          fi
-          export PATH="$(dirname $BIN):$PATH"
-
           EXPECTED=$(curl -sf https://releases.savants.dev/latest/version.txt)
           INSTALLED=$(savants --version | cut -d' ' -f2)
 
@@ -69,7 +72,7 @@ jobs:
       - name: "Test: guard preset standard"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           savants guard preset standard
           echo "✓ Guard preset loaded"
 
@@ -77,7 +80,7 @@ jobs:
       - name: "Test: guard list"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           OUTPUT=$(savants guard list 2>&1)
           echo "$OUTPUT" | head -5
 
@@ -93,7 +96,7 @@ jobs:
       - name: "Test: guard stats"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           savants guard stats 2>&1 | head -5
           echo "✓ Guard stats works"
 
@@ -101,7 +104,7 @@ jobs:
       - name: "Test: guard status"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           OUTPUT=$(savants guard status 2>&1)
           echo "$OUTPUT" | head -5
           echo "✓ Guard status works"
@@ -110,7 +113,7 @@ jobs:
       - name: "Test: guard on/off cycle"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           savants guard off 2>&1 | head -2
           savants guard on 2>&1 | head -2
           echo "✓ Guard on/off works"
@@ -119,7 +122,7 @@ jobs:
       - name: "Test: guard add custom rule"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           savants guard add "when tool eq 'Bash' and command contains 'test-ci-rule' then block"
 
           if savants guard list 2>&1 | grep -q "test-ci-rule"; then
@@ -133,7 +136,7 @@ jobs:
       - name: "Test: guard disable rule"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           # Disable the last rule we just added
           RULE_NUM=$(savants guard list 2>&1 | grep "test-ci-rule" | grep -oE '^\s*[0-9]+' | tr -d ' ')
           if [ -n "$RULE_NUM" ]; then
@@ -147,7 +150,7 @@ jobs:
       - name: "Test: guard profiles"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           OUTPUT=$(savants guard profiles 2>&1)
           echo "$OUTPUT" | head -10
 
@@ -162,7 +165,7 @@ jobs:
       - name: "Test: hook intercept"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           # Simulate a safe hook input
           echo '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}' | savants hook 2>&1 || true
           echo "✓ Hook evaluation works"
@@ -171,7 +174,7 @@ jobs:
       - name: "Test: search"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           savants search "test function" 2>&1 | head -3 || true
           echo "✓ Search command exists"
 
@@ -179,7 +182,7 @@ jobs:
       - name: "Test: all commands have help"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           COMMANDS="guard search skeleton callers xray blast brief"
           FAILED=0
           for CMD in $COMMANDS; do
@@ -209,7 +212,7 @@ jobs:
       - name: "Test: version still correct after upgrade"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           EXPECTED=$(curl -sf https://releases.savants.dev/latest/version.txt)
           INSTALLED=$(savants --version | cut -d' ' -f2)
           if [ "$INSTALLED" != "$EXPECTED" ]; then
@@ -277,7 +280,7 @@ jobs:
       - name: "Test: works after reinstall"
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           savants --version
           savants guard preset standard
           RULES=$(savants guard list 2>&1 | head -1 | grep -oE '[0-9]+' | head -1)
@@ -292,7 +295,7 @@ jobs:
       - name: Test summary
         shell: bash
         run: |
-          export PATH="$HOME/.savants/bin:$USERPROFILE/.savants/bin:$PATH"
+          # PATH set via GITHUB_PATH in earlier step
           echo ""
           echo "═══════════════════════════════════════════════════════"
           echo "  ${{ matrix.name }}: ALL INSTALL TESTS PASSED"
