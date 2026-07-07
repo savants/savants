@@ -972,6 +972,82 @@ fn savants_is_ready() -> bool {
     false
 }
 
+/// Detect the repo name from git remote origin URL.
+/// Falls back to the current directory name.
+fn detect_repo_name() -> String {
+    let repo_path = std::env::current_dir().unwrap_or_default();
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&repo_path)
+        .output()
+    {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some(name) = url.rsplit('/').next() {
+            let name = name.trim_end_matches(".git").to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    repo_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Call a Savants cloud tool and return the result text.
+/// Returns None if no API key, cloud unavailable, or timeout (2s).
+/// This is non-blocking in the sense that it won't hang the hook on failure.
+fn call_cloud_tool(tool: &str, input: &Value) -> Option<String> {
+    let state = crate::config::State::load();
+    let api_key = state.cloud_token()?;
+    if api_key.is_empty() {
+        return None;
+    }
+
+    let cloud_url = std::env::var("SAVANTS_CLOUD_URL")
+        .unwrap_or_else(|_| "https://api.savants.cloud".to_string());
+    let url = format!("{}/api/v1/tools/call", cloud_url.trim_end_matches('/'));
+
+    let body = json!({
+        "tool": tool,
+        "input": input,
+    });
+
+    let version = env!("SAVANTS_VERSION");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .header("User-Agent", format!("savants-cli/{}", version))
+        .json(&body)
+        .send()
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let json_resp: Value = resp.json().ok()?;
+
+    if json_resp.get("error").and_then(|e| e.as_str()).is_some() {
+        return None;
+    }
+
+    match json_resp.get("result") {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(v) => Some(serde_json::to_string_pretty(v).unwrap_or_default()),
+        None => None,
+    }
+}
+
 fn handle_grep_intercept(tool: &str, input: &Value) {
     let pattern = input.get("pattern")
         .and_then(|v| v.as_str())
@@ -1006,6 +1082,28 @@ fn handle_grep_intercept(tool: &str, input: &Value) {
         return;
     }
 
+    // Try cloud semantic search for Pro/Team users
+    let repo = detect_repo_name();
+    if let Some(result) = call_cloud_tool("semantic_search", &json!({
+        "query": pattern,
+        "repository": repo,
+    })) {
+        log_event(tool, "suggest", "graph_intercept", pattern);
+        let output = json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": format!(
+                    "Savants found results from your indexed codebase:\n\n{}\n\nUse these results instead of grep. For exact matches, use Grep with a specific file path.",
+                    result
+                )
+            }
+        });
+        println!("{}", output);
+        std::process::exit(0);
+    }
+
+    // Fall back to block (free users, or cloud unavailable)
     block(tool, "code_search", pattern,
         "STOP: Use mcp__savants__search_code, mcp__savants__advanced_graph_query, \
         or mcp__savants__function_xray instead of grep/find/rg. \
@@ -1040,6 +1138,29 @@ fn handle_read_intercept(tool: &str, input: &Value) {
     }
 
     let file_name = file_path.rsplit('/').next().unwrap_or(file_path);
+
+    // Try cloud file_skeleton for Pro/Team users
+    let repo = detect_repo_name();
+    if let Some(result) = call_cloud_tool("file_skeleton", &json!({
+        "file": file_path,
+        "repository": repo,
+    })) {
+        log_event(tool, "suggest", "graph_intercept", file_name);
+        let output = json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": format!(
+                    "Savants file skeleton for {}:\n\n{}\n\nUse Read with offset/limit to read specific functions instead of the entire file.",
+                    file_name, result
+                )
+            }
+        });
+        println!("{}", output);
+        std::process::exit(0);
+    }
+
+    // Fall back to block (free users, or cloud unavailable)
     block(tool, "full_file_read", file_name,
         &format!(
             "STOP: Use `mcp__savants__file_skeleton` with file=\"{}\" first to see the structure \
