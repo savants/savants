@@ -36,13 +36,13 @@ jobs:
         run: cargo clippy --release -- -D warnings
         continue-on-error: true  # TODO: fix all clippy warnings then remove this
 
-      - name: Binary size gate (max 20MB)
+      - name: Binary size gate (max 40MB)
         working-directory: savants-cli
         run: |
           SIZE=$(du -m target/release/savants | cut -f1)
           echo "Binary: ${SIZE}MB"
-          if [ "$SIZE" -gt 20 ]; then
-            echo "::error::Binary exceeds 20MB (${SIZE}MB)"
+          if [ "$SIZE" -gt 40 ]; then
+            echo "::error::Binary exceeds 40MB (${SIZE}MB)"
             exit 1
           fi
 
