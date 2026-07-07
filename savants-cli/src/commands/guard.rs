@@ -112,6 +112,7 @@ pub fn run(args: Vec<String>) {
     let status = Command::new(&bash)
         .arg(&script)
         .args(&args)
+        .env("HOME", dirs::home_dir().unwrap_or_default())
         .status();
 
     match status {
@@ -121,7 +122,11 @@ pub fn run(args: Vec<String>) {
             }
         }
         Err(e) => {
-            eprintln!("Error: failed to run guard script: {}", e);
+            eprintln!("Error: failed to run guard script with '{}': {}", bash, e);
+            eprintln!("Script path: {}", script.display());
+            if cfg!(windows) {
+                eprintln!("Hint: Guard requires bash (Git Bash). Install Git for Windows: https://git-scm.com");
+            }
             std::process::exit(1);
         }
     }
