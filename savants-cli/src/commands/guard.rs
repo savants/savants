@@ -32,6 +32,8 @@ fn ensure_script() -> PathBuf {
         }
         if let Err(e) = fs::write(&path, GUARD_SCRIPT) {
             eprintln!("Warning: could not write guard script to {}: {}", path.display(), e);
+            eprintln!("  Home dir: {:?}", dirs::home_dir());
+            eprintln!("  Parent exists: {}", path.parent().map(|p| p.exists()).unwrap_or(false));
         } else {
             // Make executable (Unix only — on Windows, .exe extension determines executability)
             #[cfg(unix)]
