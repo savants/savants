@@ -997,8 +997,8 @@ fn detect_repo_name() -> String {
 }
 
 /// Call a Savants cloud tool and return the result text.
-/// Returns None if no API key, cloud unavailable, or timeout (2s).
-/// This is non-blocking in the sense that it won't hang the hook on failure.
+/// Returns None if no API key, cloud unavailable, or timeout (10s).
+/// Semantic search can take 3-8s for large repos — 2s was too aggressive.
 fn call_cloud_tool(tool: &str, input: &Value) -> Option<String> {
     let state = crate::config::State::load();
     let api_key = state.cloud_token()?;
@@ -1018,7 +1018,7 @@ fn call_cloud_tool(tool: &str, input: &Value) -> Option<String> {
     let version = env!("SAVANTS_VERSION");
 
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .ok()?;
 
