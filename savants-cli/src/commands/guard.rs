@@ -51,6 +51,10 @@ fn pause_path() -> PathBuf {
     savants_dir().join("guard-paused")
 }
 
+fn policy_path() -> PathBuf {
+    savants_dir().join("org-policy.json")
+}
+
 fn stats_path() -> PathBuf {
     savants_dir().join("hook-stats.jsonl")
 }
@@ -413,6 +417,14 @@ fn cmd_off(args: &[String]) {
         println!("Guard paused (indefinitely).");
         println!("  Resume: savants guard on");
     }
+
+    // Warn if enforced policy is active
+    let policy_rules = load_enforced_policy_rules();
+    if !policy_rules.is_empty() {
+        println!();
+        println!("  Note: Guard paused for personal rules. {} org policy rules remain active.",
+            policy_rules.len());
+    }
 }
 
 fn cmd_status() {
@@ -700,10 +712,20 @@ fn cmd_disable(args: &[String]) {
     let mut disabled = read_json_array(&disabled_path());
     let mut removed: Vec<Value> = Vec::new();
 
+    // Load enforced policy rules to check against
+    let policy_rules = load_enforced_policy_rules();
+
     // Try as number first
     if let Ok(idx) = target.parse::<usize>() {
         let idx = idx - 1; // 1-based to 0-based
         if idx < rules.len() {
+            // Check if this is a policy rule
+            let rule_str = rules[idx].as_str().unwrap_or("").to_string();
+            if policy_rules.iter().any(|pr| pr == &rule_str) {
+                println!("Cannot disable org policy rule. Contact your admin.");
+                println!("  Rule: {}", rule_str);
+                std::process::exit(1);
+            }
             removed.push(rules.remove(idx));
         } else {
             println!("Rule #{} not found. You have {} rules.", idx + 1, rules.len());
@@ -715,8 +737,30 @@ fn cmd_disable(args: &[String]) {
         let (matched, remaining): (Vec<_>, Vec<_>) = rules.into_iter().partition(|r| {
             r.as_str().map(|s| s.to_lowercase().contains(&target_lower)).unwrap_or(false)
         });
-        removed = matched;
+
+        // Filter out policy rules from matched
+        let mut policy_blocked: Vec<Value> = Vec::new();
+        for m in matched {
+            let rule_str = m.as_str().unwrap_or("").to_string();
+            if policy_rules.iter().any(|pr| pr == &rule_str) {
+                policy_blocked.push(m);
+            } else {
+                removed.push(m);
+            }
+        }
+
+        if !policy_blocked.is_empty() {
+            println!("Cannot disable {} org policy rule(s). Contact your admin.", policy_blocked.len());
+            for r in &policy_blocked {
+                println!("  Protected: {}", r.as_str().unwrap_or(""));
+            }
+        }
+
+        // Re-add policy-blocked rules to remaining
         rules = remaining;
+        for r in policy_blocked {
+            rules.push(r);
+        }
     }
 
     if removed.is_empty() {
@@ -1896,6 +1940,390 @@ fn sync_events() {
     println!("  View: savants.cloud/dashboard/guard-analytics");
 }
 
+// ── Policy ─────────────────────────────────────────────────────────────────
+
+fn cmd_policy(args: &[String]) {
+    let subcmd = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = if args.len() > 1 { &args[1..] } else { &[] };
+
+    match subcmd {
+        "set" => policy_set(rest),
+        "status" => policy_status(),
+        "compliance" => policy_compliance(),
+        _ => {
+            println!("Usage: savants guard policy <command>");
+            println!();
+            println!("Commands:");
+            println!("  set <profile> [--enforce]  Push an org-wide policy to the cloud");
+            println!("  status                     Show current org policy and local compliance");
+            println!("  compliance                 Show team compliance (admin only)");
+        }
+    }
+}
+
+fn policy_set(args: &[String]) {
+    let api_key = match get_api_key() {
+        Some(k) => k,
+        None => {
+            eprintln!("Not authenticated. Run: savants connect");
+            std::process::exit(1);
+        }
+    };
+
+    let mut profile_name = String::new();
+    let mut enforce = false;
+    let mut version = "1.0.0".to_string();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--enforce" => {
+                enforce = true;
+                i += 1;
+            }
+            "--version" => {
+                if i + 1 < args.len() {
+                    version = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                if profile_name.is_empty() {
+                    profile_name = args[i].clone();
+                }
+                i += 1;
+            }
+        }
+    }
+
+    if profile_name.is_empty() {
+        eprintln!("Usage: savants guard policy set <profile> [--enforce] [--version 1.0.0]");
+        eprintln!();
+        eprintln!("Examples:");
+        eprintln!("  savants guard policy set standard --enforce");
+        eprintln!("  savants guard policy set standard+secrets --enforce --version 2.0.0");
+        std::process::exit(1);
+    }
+
+    // Load rules from the profile(s)
+    let profile_names: Vec<&str> = profile_name.split('+').collect();
+    let mut all_rules: Vec<Value> = Vec::new();
+
+    for name in &profile_names {
+        match load_profile_rules(name) {
+            Some(rules) => {
+                for r in rules {
+                    if !all_rules.contains(&r) {
+                        all_rules.push(r);
+                    }
+                }
+            }
+            None => {
+                eprintln!("Unknown profile: {}", name);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let rules_strings: Vec<String> = all_rules.iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+
+    let payload = serde_json::json!({
+        "rules": rules_strings,
+        "name": profile_name,
+        "version": version,
+        "enforce": enforce,
+    });
+
+    println!("Pushing org policy: {} ({} rules, enforce={})...", profile_name, rules_strings.len(), enforce);
+
+    match http_post_json(
+        &format!("{}/policy", cloud_guard_api()),
+        &payload,
+        Some(&api_key),
+    ) {
+        Ok(result) => {
+            let count = result.get("rules_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let ver = result.get("version").and_then(|v| v.as_str()).unwrap_or(&version);
+            println!("  Policy set: {} ({} rules, version {})", profile_name, count, ver);
+            if enforce {
+                println!("  Enforce: ON - these rules cannot be disabled by team members");
+            }
+            println!();
+            println!("  Team members will sync within 5 minutes automatically.");
+        }
+        Err(e) => {
+            eprintln!("Error setting policy: {}", e);
+            if e.contains("403") {
+                eprintln!("  Admin access required. Contact your org admin.");
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+fn policy_status() {
+    let pp = policy_path();
+
+    // Show cloud policy status
+    if let Some(api_key) = get_api_key() {
+        match http_get_json(
+            &format!("{}/policy", cloud_guard_api()),
+            Some(&api_key),
+        ) {
+            Ok(policy) => {
+                let name = policy.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let version = policy.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                let enforce = policy.get("enforce").and_then(|v| v.as_bool()).unwrap_or(false);
+                let rules = policy.get("rules").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                let updated = policy.get("updated_at").and_then(|v| v.as_str()).unwrap_or("");
+
+                println!("Org Policy");
+                println!("  Name:    {}", name);
+                println!("  Version: {}", version);
+                println!("  Rules:   {}", rules);
+                println!("  Enforce: {}", if enforce { "ON (cannot be disabled)" } else { "OFF" });
+                println!("  Updated: {}", relative_time(updated));
+                println!();
+
+                // Check local compliance
+                let local_rules = read_json_array(&rules_path());
+                if !local_rules.is_empty() {
+                    let policy_rules: Vec<String> = policy.get("rules")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|r| r.as_str().map(|s| s.to_string())).collect())
+                        .unwrap_or_default();
+
+                    let local_strs: Vec<String> = local_rules.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect();
+
+                    let missing: Vec<&String> = policy_rules.iter()
+                        .filter(|pr| !local_strs.contains(pr))
+                        .collect();
+
+                    if missing.is_empty() {
+                        println!("  Local compliance: {}", "COMPLIANT (all policy rules present)".green());
+                    } else {
+                        println!("  Local compliance: {} ({} policy rules missing)", "NON-COMPLIANT".red(), missing.len());
+                        for m in missing.iter().take(3) {
+                            println!("    Missing: {}", m);
+                        }
+                        if missing.len() > 3 {
+                            println!("    ... and {} more", missing.len() - 3);
+                        }
+                        println!();
+                        println!("  Run 'savants guard sync pull' to sync your rules.");
+                    }
+                } else {
+                    println!("  Local compliance: {} (no local rules)", "NON-COMPLIANT".red());
+                    println!("  Run: savants guard preset {}", name);
+                }
+            }
+            Err(e) => {
+                if e.contains("404") {
+                    println!("No org policy set.");
+                    println!("  Admin can set one: savants guard policy set standard --enforce");
+                } else {
+                    eprintln!("Error fetching policy: {}", e);
+                }
+            }
+        }
+    } else {
+        // Offline: check local policy cache
+        if pp.exists() {
+            let obj = read_json_object(&pp);
+            let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let version = obj.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+            let enforce = obj.get("enforce").and_then(|v| v.as_bool()).unwrap_or(false);
+            let rules = obj.get("rules").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            let last_sync = obj.get("last_sync").and_then(|v| v.as_str()).unwrap_or("");
+
+            println!("Org Policy (cached)");
+            println!("  Name:      {}", name);
+            println!("  Version:   {}", version);
+            println!("  Rules:     {}", rules);
+            println!("  Enforce:   {}", if enforce { "ON" } else { "OFF" });
+            println!("  Last sync: {}", relative_time(last_sync));
+        } else {
+            println!("No org policy configured.");
+            println!("  Not authenticated. Run: savants connect");
+        }
+    }
+    println!();
+}
+
+fn policy_compliance() {
+    let api_key = match get_api_key() {
+        Some(k) => k,
+        None => {
+            eprintln!("Not authenticated. Run: savants connect");
+            std::process::exit(1);
+        }
+    };
+
+    match http_get_json(
+        &format!("{}/policy/compliance", cloud_guard_api()),
+        Some(&api_key),
+    ) {
+        Ok(result) => {
+            let total = result.get("total_members").and_then(|v| v.as_u64()).unwrap_or(0);
+            let compliant = result.get("compliant").and_then(|v| v.as_u64()).unwrap_or(0);
+            let version = result.get("policy_version").and_then(|v| v.as_str()).unwrap_or("?");
+            let non_compliant = result.get("non_compliant").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+            println!("Team Compliance (policy v{})", version);
+            println!();
+            println!("  {}/{} developers compliant", compliant, total);
+
+            if !non_compliant.is_empty() {
+                println!();
+                println!("  Non-compliant members:");
+                for member in &non_compliant {
+                    println!("    - {}", member.as_str().unwrap_or("?"));
+                }
+            }
+            println!();
+        }
+        Err(e) => {
+            if e.contains("403") {
+                eprintln!("Admin access required.");
+            } else if e.contains("404") {
+                eprintln!("No enforced policy set.");
+                eprintln!("  Set one: savants guard policy set standard --enforce");
+            } else {
+                eprintln!("Error: {}", e);
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Check if an enforced org policy is active locally.
+/// Returns the policy rules if enforce=true, empty vec otherwise.
+pub fn load_enforced_policy_rules() -> Vec<String> {
+    let pp = policy_path();
+
+    if !pp.exists() {
+        return Vec::new();
+    }
+
+    let obj = read_json_object(&pp);
+    let enforce = obj.get("enforce").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !enforce {
+        return Vec::new();
+    }
+
+    obj.get("rules")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|r| r.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default()
+}
+
+/// Check if a specific rule is from the enforced org policy.
+pub fn is_policy_rule(rule: &str) -> bool {
+    let policy_rules = load_enforced_policy_rules();
+    policy_rules.iter().any(|pr| pr == rule)
+}
+
+/// Sync org policy from cloud (lightweight, called from hooks).
+/// Spawns a background thread. Returns immediately.
+pub fn maybe_sync_org_policy() {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let pp = home.join(".savants").join("org-policy.json");
+
+    // Check last_sync timestamp — only sync if > 5 minutes ago
+    if pp.exists() {
+        if let Ok(content) = fs::read_to_string(&pp) {
+            if let Ok(obj) = serde_json::from_str::<serde_json::Map<String, Value>>(&content) {
+                if let Some(last_sync) = obj.get("last_sync").and_then(|v| v.as_str()) {
+                    if let Ok(last) = chrono::DateTime::parse_from_rfc3339(last_sync) {
+                        let elapsed = chrono::Utc::now().signed_duration_since(last).num_seconds();
+                        if elapsed < 300 {
+                            return; // Synced < 5 min ago
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Resolve API key
+    let api_key = std::env::var("SAVANTS_API_KEY")
+        .or_else(|_| {
+            let state_path = home.join(".savants").join("state.json");
+            fs::read_to_string(&state_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v.get("cloud_token").and_then(|t| t.as_str().map(|s| s.to_string())))
+                .ok_or(std::env::VarError::NotPresent)
+        })
+        .ok();
+
+    let api_key = match api_key {
+        Some(k) if !k.is_empty() => k,
+        _ => return, // No API key, skip
+    };
+
+    let pp_str = pp.to_string_lossy().to_string();
+    let guard_api = std::env::var("SAVANTS_CLOUD_GUARD_API")
+        .unwrap_or_else(|_| "https://api.savants.cloud/api/v1/guard".to_string());
+
+    // Spawn background thread — never blocks the hook
+    let _ = std::thread::spawn(move || {
+        let _ = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()?;
+
+            let resp = client
+                .get(format!("{}/policy", guard_api))
+                .header("Authorization", format!("Bearer {}", api_key))
+                .send()?;
+
+            if resp.status().as_u16() == 404 {
+                // No policy set — remove local cache if exists
+                let _ = std::fs::remove_file(&pp_str);
+                return Ok(());
+            }
+
+            if !resp.status().is_success() {
+                return Ok(());
+            }
+
+            let policy: Value = resp.json()?;
+
+            // Build local policy cache
+            let mut local_policy = serde_json::Map::new();
+            if let Some(org_id) = policy.get("org_id") {
+                local_policy.insert("org_id".to_string(), org_id.clone());
+            }
+            if let Some(name) = policy.get("name") {
+                local_policy.insert("name".to_string(), name.clone());
+            }
+            if let Some(version) = policy.get("version") {
+                local_policy.insert("version".to_string(), version.clone());
+            }
+            if let Some(enforce) = policy.get("enforce") {
+                local_policy.insert("enforce".to_string(), enforce.clone());
+            }
+            if let Some(rules) = policy.get("rules") {
+                local_policy.insert("rules".to_string(), rules.clone());
+            }
+            local_policy.insert("last_sync".to_string(),
+                Value::String(chrono::Utc::now().to_rfc3339()));
+
+            let json = serde_json::to_string_pretty(&local_policy)?;
+            std::fs::write(&pp_str, json)?;
+
+            Ok(())
+        })();
+    });
+}
+
 // ── Help ───────────────────────────────────────────────────────────────────
 
 fn cmd_help() {
@@ -1928,6 +2356,9 @@ fn cmd_help() {
     println!("  sync events        Sync guard events to cloud");
     println!("  profiles           List available profiles");
     println!("  routing on|off     Toggle smart code routing");
+    println!("  policy set <prof>  Set org-wide enforced policy (admin)");
+    println!("  policy status      Show org policy and local compliance");
+    println!("  policy compliance  Show team compliance (admin)");
     println!("  reset              Clear all guard rules");
     println!();
     println!("Quick start:");
@@ -1973,6 +2404,7 @@ pub fn run(args: Vec<String>) {
         "pin" => cmd_pin(rest),
         "why" | "last-block" => cmd_why(),
         "routing" => cmd_routing(rest),
+        "policy" => cmd_policy(rest),
         _ => cmd_help(),
     }
 }

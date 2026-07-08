@@ -316,7 +316,110 @@ fn intercept_inner() {
     // ─── Daily telemetry heartbeat (non-blocking, fire-and-forget) ───
     maybe_send_heartbeat(&tool_name);
 
-    // ─── Guard bypass: SAVANTS_GUARD=off skips all guard rules ───
+    // ─── Org policy sync: lightweight background check (non-blocking) ───
+    crate::commands::guard::maybe_sync_org_policy();
+
+    // ─── Enforced policy rules: evaluate FIRST, bypass ALL pause/disable ───
+    // These rules cannot be disabled by savants guard off, disable, or SAVANTS_GUARD=off
+    {
+        let policy_rules = crate::commands::guard::load_enforced_policy_rules();
+        if !policy_rules.is_empty() {
+            let mut context = std::collections::HashMap::<String, String>::new();
+            context.insert("tool".to_string(), tool_name.to_string());
+            context.insert("action".to_string(), tool_name.to_lowercase());
+            if let Some(obj) = tool_input.as_object() {
+                for (key, val) in obj {
+                    match val {
+                        Value::String(s) => { context.insert(key.clone(), s.clone()); }
+                        Value::Number(n) => { context.insert(key.clone(), n.to_string()); }
+                        Value::Bool(b) => { context.insert(key.clone(), b.to_string()); }
+                        _ => { context.insert(key.clone(), val.to_string()); }
+                    }
+                }
+            }
+            for rule_text in &policy_rules {
+                if let Some(action) = evaluate_dsl_rule(rule_text, &context) {
+                    let rule_str = match &action {
+                        GuardAction::Block(r) | GuardAction::Suggest(r, _)
+                        | GuardAction::Rewrite(r, _) | GuardAction::Ask(r, _) => r.clone(),
+                    };
+
+                    // Session approval still works for policy rules
+                    if is_session_approved(&rule_str) {
+                        log_event(&tool_name, "allow", "policy_session_approved", &rule_str);
+                        continue;
+                    }
+
+                    // Cooloff escalation for policy rules too
+                    let action = match &action {
+                        GuardAction::Block(rule) if should_cooloff(rule) => {
+                            GuardAction::Ask(
+                                rule.clone(),
+                                format!("Org policy rule has blocked you multiple times. Approve to proceed this once."),
+                            )
+                        }
+                        _ => action,
+                    };
+
+                    match action {
+                        GuardAction::Block(rule) => {
+                            send_guard_telemetry("block", &rule, &tool_name, &cmd_preview);
+                            block(&tool_name, "org_policy", &rule,
+                                "Savants Guard BLOCKED this action (org policy - cannot be bypassed).\n\nThis rule is enforced by your organization's admin.\nContact your admin to modify the policy.");
+                            return;
+                        }
+                        GuardAction::Suggest(rule, suggestion) => {
+                            send_guard_telemetry("suggest", &rule, &tool_name, &cmd_preview);
+                            log_event(&tool_name, "suggest", "org_policy", &rule);
+                            let reason = format!("Savants Guard (org policy): {}", suggestion);
+                            let output = json!({
+                                "hookSpecificOutput": {
+                                    "hookEventName": "PreToolUse",
+                                    "permissionDecision": "deny",
+                                    "permissionDecisionReason": reason,
+                                    "additionalContext": suggestion
+                                }
+                            });
+                            println!("{}", output);
+                            std::process::exit(0);
+                        }
+                        GuardAction::Rewrite(rule, replacement) => {
+                            send_guard_telemetry("rewrite", &rule, &tool_name, &cmd_preview);
+                            log_event(&tool_name, "rewrite", "org_policy", &rule);
+                            let output = json!({
+                                "hookSpecificOutput": {
+                                    "hookEventName": "PreToolUse",
+                                    "permissionDecision": "defer",
+                                    "updatedInput": {
+                                        "command": replacement
+                                    }
+                                }
+                            });
+                            println!("{}", output);
+                            std::process::exit(0);
+                        }
+                        GuardAction::Ask(rule, reason) => {
+                            write_pending_ask(&rule);
+                            send_guard_telemetry("ask", &rule, &tool_name, &cmd_preview);
+                            log_event(&tool_name, "ask", "org_policy", &rule);
+                            let ask_reason = format!("Savants Guard (org policy): {}", reason);
+                            let output = json!({
+                                "hookSpecificOutput": {
+                                    "hookEventName": "PreToolUse",
+                                    "permissionDecision": "ask",
+                                    "permissionDecisionReason": ask_reason
+                                }
+                            });
+                            println!("{}", output);
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── Guard bypass: SAVANTS_GUARD=off skips personal guard rules ───
     let guard_disabled = std::env::var("SAVANTS_GUARD")
         .map(|v| v == "off" || v == "0" || v == "false")
         .unwrap_or(false);
