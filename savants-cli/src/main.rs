@@ -32,6 +32,7 @@ mod update_check;
 mod utils;
 mod kernel_probes;
 mod ebpf_loader;
+mod doc_parser;
 
 pub use utils::find_in_path;
 

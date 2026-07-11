@@ -71,6 +71,7 @@ pub async fn run(repo: Option<String>, _tail_lines: u32) {
     // Index the git repo's code into a local search index
     if let Some(ref repo_dir) = repo_path {
         index_code_repo(repo_dir);
+        index_docs(repo_dir);
     }
 
     // 2. Ingest host (pure Rust)
@@ -310,6 +311,146 @@ fn detect_repo_name(repo_dir: &str) -> String {
         .unwrap_or_default()
         .to_string_lossy()
         .to_string()
+}
+
+/// Parse and index documentation files (markdown, astro) into the embedding store.
+fn index_docs(repo_dir: &str) {
+    use crate::doc_parser;
+    use crate::embedding_store::EmbeddingStore;
+    use crate::embeddings::EmbeddingEngine;
+
+    let repo_name = detect_repo_name(repo_dir);
+    let doc_store_name = format!("{}-docs", repo_name);
+
+    // Collect doc sections from multiple directories
+    let mut all_sections: Vec<doc_parser::DocSection> = Vec::new();
+
+    // 1. docs/ directory
+    let docs_dir = Path::new(repo_dir).join("docs");
+    if docs_dir.exists() {
+        all_sections.extend(doc_parser::parse_docs(&docs_dir.to_string_lossy()));
+    }
+
+    // 2. Root-level .md files
+    if let Ok(entries) = std::fs::read_dir(repo_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if ext == "md" {
+                        let rel = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            let sections = parse_markdown_sections(&content, &rel);
+                            all_sections.extend(sections);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. website/src/pages/docs/ (.astro files)
+    let website_docs = Path::new(repo_dir).join("website").join("src").join("pages").join("docs");
+    if website_docs.exists() {
+        all_sections.extend(doc_parser::parse_docs(&website_docs.to_string_lossy()));
+    }
+
+    if all_sections.is_empty() {
+        return;
+    }
+
+    // Count unique files
+    let mut unique_files = std::collections::HashSet::new();
+    for section in &all_sections {
+        unique_files.insert(section.file.clone());
+    }
+
+    println!("\n[{}] Indexing documentation...", "docs".bold());
+
+    // Build embeddings for doc sections
+    match EmbeddingEngine::new() {
+        Ok(mut engine) => {
+            // Prepare texts for embedding — heading repeated for emphasis + content
+            let texts: Vec<String> = all_sections.iter()
+                .map(|s| {
+                    let heading_expanded = s.heading.replace('-', " ").replace('_', " ");
+                    let content_preview: String = s.content.chars().take(500).collect();
+                    format!("{h} {h} {f} {c}",
+                        h = heading_expanded,
+                        f = s.file.replace('/', " ").replace('.', " "),
+                        c = content_preview,
+                    )
+                })
+                .collect();
+
+            match engine.embed(&texts) {
+                Ok(embeddings) => {
+                    let dim = embeddings.first().map(|v| v.len() as u32).unwrap_or(128);
+                    let mut store = EmbeddingStore::new(dim);
+
+                    for (section, emb) in all_sections.iter().zip(embeddings.into_iter()) {
+                        // kind=3 for doc sections (0=function, 1=class, 2=interface)
+                        store.add(
+                            &section.heading,
+                            &section.file,
+                            section.line as u32,
+                            3,
+                            emb,
+                        );
+                    }
+
+                    match store.save(&doc_store_name) {
+                        Ok(_) => println!("  {} Indexed {} doc sections from {} files",
+                            "✓".green(), all_sections.len(), unique_files.len()),
+                        Err(e) => eprintln!("  {}: saving doc embeddings: {}", "Warning".yellow(), e),
+                    }
+
+                    // Also save a JSON sidecar with section details for rich display
+                    if let Err(e) = save_doc_index(&doc_store_name, &all_sections) {
+                        eprintln!("  {}: saving doc index: {}", "Warning".yellow(), e);
+                    }
+                }
+                Err(e) => eprintln!("  {}: embedding docs: {}", "Warning".yellow(), e),
+            }
+        }
+        Err(e) => eprintln!("  {}: embedding engine: {}", "Warning".yellow(), e),
+    }
+}
+
+/// Wrapper around doc_parser::parse_markdown for root-level .md files.
+fn parse_markdown_sections(content: &str, file: &str) -> Vec<crate::doc_parser::DocSection> {
+    crate::doc_parser::parse_markdown(content, file)
+}
+
+/// Save doc section metadata to ~/.savants/doc-index/{repo}.json
+fn save_doc_index(store_name: &str, sections: &[crate::doc_parser::DocSection]) -> Result<(), String> {
+    let index_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".savants")
+        .join("doc-index");
+    std::fs::create_dir_all(&index_dir).map_err(|e| format!("mkdir: {}", e))?;
+
+    #[derive(serde::Serialize)]
+    struct DocEntry {
+        file: String,
+        heading: String,
+        content: String,
+        level: usize,
+        line: usize,
+    }
+
+    let entries: Vec<DocEntry> = sections.iter().map(|s| DocEntry {
+        file: s.file.clone(),
+        heading: s.heading.clone(),
+        content: s.content.clone(),
+        level: s.level,
+        line: s.line,
+    }).collect();
+
+    let path = index_dir.join(format!("{}.json", store_name));
+    let json = serde_json::to_string(&entries).map_err(|e| format!("serialize: {}", e))?;
+    std::fs::write(&path, json).map_err(|e| format!("write: {}", e))?;
+    Ok(())
 }
 
 /// Save parsed entities to ~/.savants/code-index/{repo}.json for local queries.

@@ -123,15 +123,42 @@ pub fn search(query: &str, limit: Option<usize>) {
     );
 
     // Try local index first (fast, no network, works offline)
-    if crate::embedding_store::EmbeddingStore::exists(&repo) {
-        match search_local(query, &repo, limit) {
-            Ok(result) => {
-                println!("{}", result);
-                return;
+    let has_local_code = crate::embedding_store::EmbeddingStore::exists(&repo);
+    let doc_store_name = format!("{}-docs", repo);
+    let has_local_docs = crate::embedding_store::EmbeddingStore::exists(&doc_store_name);
+
+    if has_local_code || has_local_docs {
+        let mut printed = false;
+
+        // Doc results first
+        if has_local_docs {
+            match search_docs_local(query, &repo, 5) {
+                Ok(result) if !result.contains("No results") => {
+                    println!("{}", result);
+                    println!();
+                    printed = true;
+                }
+                _ => {}
             }
-            Err(e) => {
-                eprintln!("{}: local search: {}. Trying cloud...", "Warning".yellow(), e);
+        }
+
+        // Code results
+        if has_local_code {
+            match search_local(query, &repo, limit) {
+                Ok(result) => {
+                    println!("{}", result);
+                    printed = true;
+                }
+                Err(e) => {
+                    if !printed {
+                        eprintln!("{}: local search: {}. Trying cloud...", "Warning".yellow(), e);
+                    }
+                }
             }
+        }
+
+        if printed {
+            return;
         }
     }
 
@@ -791,7 +818,30 @@ pub fn ask(question: &str) {
         question.cyan()
     );
 
-    // Try cloud API first
+    // Try local doc search first (fast, offline, and this is the primary use case)
+    let doc_store_name = format!("{}-docs", repo);
+    if crate::embedding_store::EmbeddingStore::exists(&doc_store_name) {
+        match search_docs_local(question, &repo, 5) {
+            Ok(result) if !result.is_empty() && !result.contains("No results") => {
+                println!();
+                println!("{}", result);
+
+                // Also show code results if available
+                if crate::embedding_store::EmbeddingStore::exists(&repo) {
+                    if let Ok(code_result) = search_local(question, &repo, 3) {
+                        if !code_result.contains("No results") {
+                            println!();
+                            println!("{}", code_result);
+                        }
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    // Try cloud API
     let api_key = get_api_key().unwrap_or_default();
 
     let cloud_url = std::env::var("SAVANTS_CLOUD_URL")
@@ -884,7 +934,7 @@ pub fn ask(question: &str) {
         }
     }
 
-    // Fall back to local semantic search
+    // Fall back to local semantic search (code only)
     search(question, Some(5));
 }
 
@@ -1814,4 +1864,83 @@ fn blast_local(function: &str, depth: usize, repo: &str) -> Result<String, Strin
     }
 
     Ok(lines.join("\n"))
+}
+
+/// Search the local doc embedding index for matching documentation sections.
+fn search_docs_local(query: &str, repo: &str, limit: usize) -> Result<String, String> {
+    let doc_store_name = format!("{}-docs", repo);
+
+    if !crate::embedding_store::EmbeddingStore::exists(&doc_store_name) {
+        return Err(format!("No doc index for '{}'. Run 'savants up' to index docs.", repo));
+    }
+
+    let store = crate::embedding_store::EmbeddingStore::load(&doc_store_name)?;
+    if store.entries.is_empty() {
+        return Ok("No results for query in docs.".to_string());
+    }
+
+    let mut engine = crate::embeddings::EmbeddingEngine::new()
+        .map_err(|e| format!("Embedding engine: {}", e))?;
+    let query_emb = engine.embed_one(query)
+        .map_err(|e| format!("Embedding query: {}", e))?;
+
+    let results = store.search(&query_emb, limit);
+
+    if results.is_empty() || results[0].1 < 0.35 {
+        return Ok(format!("No results for '{}' in docs.", query));
+    }
+
+    // Load the doc-index JSON for content previews
+    let doc_index = load_doc_index(&doc_store_name);
+
+    let mut lines = vec![format!("=== Savants Docs ===")];
+
+    for (idx, score) in &results {
+        if *score < 0.35 { break; }
+        if let Some(entry) = store.entries.get(*idx) {
+            let score_label = if *score >= 0.7 {
+                format!("{}", "[high]".green())
+            } else if *score >= 0.5 {
+                "[medium]".to_string()
+            } else {
+                "[low]".to_string()
+            };
+
+            lines.push(format!("{}:{} -- {} {}",
+                entry.file, entry.line, entry.name, score_label));
+
+            // Show content preview from the doc-index JSON
+            if let Some(ref sections) = doc_index {
+                if let Some(section) = sections.iter().find(|s| {
+                    s.get("file").and_then(|f| f.as_str()) == Some(&entry.file)
+                        && s.get("line").and_then(|l| l.as_u64()) == Some(entry.line as u64)
+                }) {
+                    if let Some(content) = section.get("content").and_then(|c| c.as_str()) {
+                        let preview: String = content.lines()
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let preview: String = preview.chars().take(200).collect();
+                        if !preview.trim().is_empty() {
+                            lines.push(format!("  {}", preview.trim()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(lines.join("\n"))
+}
+
+/// Load the doc-index JSON sidecar for a repo.
+fn load_doc_index(store_name: &str) -> Option<Vec<serde_json::Value>> {
+    let path = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".savants")
+        .join("doc-index")
+        .join(format!("{}.json", store_name));
+
+    let data = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&data).ok()
 }
