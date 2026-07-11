@@ -110,56 +110,69 @@ fn require_api_key() -> Option<String> {
     }
 }
 
-/// `savants search <query>` -- semantic search across the codebase
-pub fn search(query: &str, limit: Option<usize>) {
+/// `savants search <query>` -- fused search across the codebase
+/// Combines vector similarity + graph context + temporal recency.
+pub fn search(query: &str, limit: Option<usize>, since: Option<String>) {
     let repo = detect_repo_name();
     let limit = limit.unwrap_or(10);
 
+    let since_label = since.as_ref()
+        .map(|s| format!(" (since {})", s))
+        .unwrap_or_default();
     println!(
-        "{} '{}' in {}...",
+        "{} '{}' in {}{}...",
         "Searching".bold(),
         query.cyan(),
-        repo.dimmed()
+        repo.dimmed(),
+        since_label.dimmed(),
     );
 
-    // Try local index first (fast, no network, works offline)
+    // Check prefetch cache first (0ms if hit)
+    let repo_path = std::env::current_dir().unwrap_or_default();
+    let cache = crate::prefetch_cache::PrefetchCache::new(&repo, &repo_path.to_string_lossy());
+    if let Some(answer) = cache.lookup(query, None) {
+        println!("{}", crate::prefetch_cache::format_cached_answer(answer));
+        return;
+    }
+
+    // Check community summaries first (instant, pre-computed)
+    let mut community_printed = false;
+    if let Ok(communities) = crate::code_graph::load_communities(&repo) {
+        if let Some(result) = search_communities(query, &communities) {
+            println!("{}", result);
+            println!();
+            community_printed = true;
+        }
+    }
+
+    // Try fused local search first (vectors + graph + temporal)
     let has_local_code = crate::embedding_store::EmbeddingStore::exists(&repo);
-    let doc_store_name = format!("{}-docs", repo);
-    let has_local_docs = crate::embedding_store::EmbeddingStore::exists(&doc_store_name);
 
-    if has_local_code || has_local_docs {
-        let mut printed = false;
+    if has_local_code {
+        let fq = crate::fusion_query::FusionQuery {
+            text: query.to_string(),
+            repo: repo.clone(),
+            max_results: limit,
+            include_docs: true,
+            since,
+        };
 
-        // Doc results first
-        if has_local_docs {
-            match search_docs_local(query, &repo, 5) {
-                Ok(result) if !result.contains("No results") => {
-                    println!("{}", result);
-                    println!();
-                    printed = true;
-                }
-                _ => {}
+        match crate::fusion_query::fused_search(&fq) {
+            Ok(results) if !results.is_empty() => {
+                println!("{}", crate::fusion_query::format_results(query, &results));
+                return;
+            }
+            Ok(_) => {
+                if community_printed { return; }
+                // Empty results -- fall through to cloud/grep
+            }
+            Err(e) => {
+                if community_printed { return; }
+                eprintln!("{}: fused search: {}. Trying cloud...", "Warning".yellow(), e);
             }
         }
-
-        // Code results
-        if has_local_code {
-            match search_local(query, &repo, limit) {
-                Ok(result) => {
-                    println!("{}", result);
-                    printed = true;
-                }
-                Err(e) => {
-                    if !printed {
-                        eprintln!("{}: local search: {}. Trying cloud...", "Warning".yellow(), e);
-                    }
-                }
-            }
-        }
-
-        if printed {
-            return;
-        }
+    } else if community_printed {
+        return;
     }
 
     // Cloud fallback: use block_in_place to allow blocking HTTP inside tokio runtime
@@ -818,6 +831,32 @@ pub fn ask(question: &str) {
         question.cyan()
     );
 
+    // Check prefetch cache first (0ms if hit)
+    let repo_path_ask = std::env::current_dir().unwrap_or_default();
+    let cache = crate::prefetch_cache::PrefetchCache::new(&repo, &repo_path_ask.to_string_lossy());
+    if let Some(answer) = cache.lookup(question, None) {
+        println!("{}", crate::prefetch_cache::format_cached_answer(answer));
+        return;
+    }
+
+    // Check community summaries first (instant answer for module-level questions)
+    if let Ok(communities) = crate::code_graph::load_communities(&repo) {
+        if let Some(result) = search_communities(question, &communities) {
+            println!();
+            println!("{}", result);
+            // Also show code results below
+            if crate::embedding_store::EmbeddingStore::exists(&repo) {
+                if let Ok(code_result) = search_local(question, &repo, 3) {
+                    if !code_result.contains("No results") {
+                        println!();
+                        println!("{}", code_result);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
     // Try local doc search first (fast, offline, and this is the primary use case)
     let doc_store_name = format!("{}-docs", repo);
     if crate::embedding_store::EmbeddingStore::exists(&doc_store_name) {
@@ -935,7 +974,33 @@ pub fn ask(question: &str) {
     }
 
     // Fall back to local semantic search (code only)
-    search(question, Some(5));
+    search(question, Some(5), None);
+}
+
+/// `savants prefetch <file>` -- pre-compute answers for a file
+pub fn prefetch(file: &str) {
+    let repo = detect_repo_name();
+    let repo_path = std::env::current_dir().unwrap_or_default();
+
+    let mut cache = crate::prefetch_cache::PrefetchCache::new(
+        &repo,
+        &repo_path.to_string_lossy(),
+    );
+
+    let (count, ms) = cache.prefetch_for_file(file);
+
+    if count == 0 {
+        eprintln!("{}: No code entities found in '{}'. Is it indexed? Run '{}' first.",
+            "Error".red(), file, "savants up".cyan());
+    } else {
+        println!("Pre-computed {} answers for {} ({}ms)", count, file.cyan(), ms);
+
+        // Show what was cached
+        if let Some(entry) = cache.lookup("what does", Some(file)) {
+            println!();
+            println!("{}", crate::prefetch_cache::format_cached_answer(entry));
+        }
+    }
 }
 
 // ---- Local fallback implementations ----
@@ -1943,4 +2008,115 @@ fn load_doc_index(store_name: &str) -> Option<Vec<serde_json::Value>> {
 
     let data = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&data).ok()
+}
+
+/// Search pre-computed community summaries for matches against a query.
+/// Returns formatted output if a community matches, None otherwise.
+fn search_communities(
+    query: &str,
+    communities: &[crate::code_graph::Community],
+) -> Option<String> {
+    let query_lower = query.to_lowercase();
+    let query_words: Vec<&str> = query_lower.split_whitespace().collect();
+
+    // Skip very short queries (single word < 4 chars)
+    if query_words.len() == 1 && query_words[0].len() < 4 {
+        return None;
+    }
+
+    // Score each community against the query
+    let mut scored: Vec<(&crate::code_graph::Community, f32)> = Vec::new();
+    for community in communities {
+        let mut score: f32 = 0.0;
+
+        let name_lower = community.name.to_lowercase();
+        let desc_lower = community.description.to_lowercase();
+
+        // Exact name match (highest signal)
+        if name_lower == query_lower {
+            score += 2.0;
+        } else if name_lower.contains(&query_lower) || query_lower.contains(&name_lower) {
+            score += 1.5;
+        }
+
+        // Word-level matching against name + description
+        for word in &query_words {
+            if word.len() < 3 {
+                continue;
+            }
+            if name_lower.contains(*word) {
+                score += 0.5;
+            }
+            if desc_lower.contains(*word) {
+                score += 0.3;
+            }
+            // Check function names
+            for func in &community.functions {
+                if func.to_lowercase().contains(*word) {
+                    score += 0.2;
+                    break; // only count once per word
+                }
+            }
+            // Check file paths
+            for file in &community.files {
+                if file.to_lowercase().contains(*word) {
+                    score += 0.1;
+                    break;
+                }
+            }
+        }
+
+        if score >= 1.0 {
+            scored.push((community, score));
+        }
+    }
+
+    if scored.is_empty() {
+        return None;
+    }
+
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Show top matching communities
+    let mut lines = Vec::new();
+    for (community, _score) in scored.iter().take(3) {
+        lines.push(format!(
+            "=== Module: {} ===",
+            community.name
+        ));
+        lines.push(format!(
+            "{} functions in {} files. Entry point: {}.",
+            community.functions.len(),
+            community.files.len(),
+            community.key_function,
+        ));
+        lines.push(community.description.clone());
+
+        // Key functions (up to 6)
+        let key_funcs: Vec<&str> = community
+            .functions
+            .iter()
+            .take(6)
+            .map(|s| s.as_str())
+            .collect();
+        lines.push(format!("Key functions: {}", key_funcs.join(", ")));
+
+        // Files
+        if community.files.len() <= 5 {
+            lines.push(format!("Files: {}", community.files.join(", ")));
+        } else {
+            let shown: Vec<&str> = community.files.iter().take(3).map(|s| s.as_str()).collect();
+            lines.push(format!(
+                "Files: {}, ... +{} more",
+                shown.join(", "),
+                community.files.len() - 3
+            ));
+        }
+        lines.push(String::new());
+    }
+
+    Some(lines.join("\n"))
 }

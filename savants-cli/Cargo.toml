@@ -1,6 +1,6 @@
 [package]
 name = "savants"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "Your infrastructure savant. Know what's wrong in 60 seconds."
 

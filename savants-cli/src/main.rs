@@ -33,6 +33,9 @@ mod utils;
 mod kernel_probes;
 mod ebpf_loader;
 mod doc_parser;
+mod file_watcher;
+mod fusion_query;
+mod prefetch_cache;
 
 pub use utils::find_in_path;
 
@@ -53,6 +56,9 @@ enum Commands {
         repo: Option<String>,
         #[arg(long, default_value = "200")]
         tail_lines: u32,
+        /// After initial index, watch for file changes and update incrementally
+        #[arg(long)]
+        watch: bool,
     },
     /// Full diagnosis narrative of your infrastructure
     Story {
@@ -144,6 +150,9 @@ enum Commands {
         /// Max results (default: 10)
         #[arg(long, short = 'n')]
         limit: Option<usize>,
+        /// Only show results modified within time window (e.g. "7d", "2w", "1m")
+        #[arg(long)]
+        since: Option<String>,
     },
     /// Show file structure: functions, classes, types (no bodies)
     Skeleton {
@@ -181,6 +190,11 @@ enum Commands {
     Ask {
         /// The question to ask (e.g. "does FalkorDB support embedded mode?")
         question: String,
+    },
+    /// Pre-compute answers for a file (predictive cache)
+    Prefetch {
+        /// File path relative to repo root (e.g. "src/main.rs")
+        file: String,
     },
 
     // ---- Graph algorithm commands ----
@@ -435,8 +449,8 @@ async fn main() {
     update_check::check_background();
 
     match cli.command {
-        Commands::Up { repo, tail_lines } => {
-            commands::up::run(repo, tail_lines).await;
+        Commands::Up { repo, tail_lines, watch } => {
+            commands::up::run(repo, tail_lines, watch).await;
         }
         Commands::Story { since_minutes, min_severity, cluster, host } => {
             commands::story::run(since_minutes, &min_severity, cluster, host).await;
@@ -751,8 +765,8 @@ async fn main() {
         }
 
         // Direct tool shortcuts
-        Commands::Search { query, limit } => {
-            commands::tools::search(&query, limit);
+        Commands::Search { query, limit, since } => {
+            commands::tools::search(&query, limit, since);
         }
         Commands::Skeleton { file } => {
             commands::tools::skeleton(&file);
@@ -771,6 +785,9 @@ async fn main() {
         }
         Commands::Ask { question } => {
             commands::tools::ask(&question);
+        }
+        Commands::Prefetch { file } => {
+            commands::tools::prefetch(&file);
         }
 
         // Graph algorithm commands
@@ -804,9 +821,45 @@ async fn main() {
         }
         Commands::Communities => {
             let repo = commands::tools::detect_repo_name_pub();
-            match code_graph::load_graph(&repo) {
-                Ok(g) => println!("{}", g.communities()),
-                Err(e) => eprintln!("{}: {}", "Error".red(), e),
+            // Try loading pre-computed communities first (fast)
+            match code_graph::load_communities(&repo) {
+                Ok(communities) if !communities.is_empty() => {
+                    println!("{}", "=== Code Communities ===".bold());
+                    println!("{} communities detected:\n", communities.len());
+                    for c in &communities {
+                        println!(
+                            "  {}. {} ({} functions, {} files)",
+                            c.id + 1,
+                            c.name.cyan(),
+                            c.functions.len(),
+                            c.files.len(),
+                        );
+                        // Show call chain from entry point
+                        let display_funcs: Vec<&str> = c.functions.iter()
+                            .filter(|f| *f != &c.key_function)
+                            .take(3)
+                            .map(|s| s.as_str())
+                            .collect();
+                        if !display_funcs.is_empty() {
+                            println!(
+                                "     Entry: {} -> {}",
+                                c.key_function.green(),
+                                display_funcs.join(" -> "),
+                            );
+                        } else {
+                            println!("     Entry: {}", c.key_function.green());
+                        }
+                        println!("     {}", c.description.dimmed());
+                        println!();
+                    }
+                }
+                _ => {
+                    // Fall back to basic graph communities
+                    match code_graph::load_graph(&repo) {
+                        Ok(g) => println!("{}", g.communities()),
+                        Err(e) => eprintln!("{}: {}", "Error".red(), e),
+                    }
+                }
             }
         }
     }

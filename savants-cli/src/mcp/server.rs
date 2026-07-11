@@ -11,6 +11,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Detect the repo name for community lookups in MCP context.
+fn detect_repo_name_for_mcp() -> String {
+    let repo_path = std::env::current_dir().unwrap_or_default();
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&repo_path)
+        .output()
+    {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some(name) = url.rsplit('/').next() {
+            let name = name.trim_end_matches(".git").to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    repo_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string()
+}
+
 pub struct McpServer {
     client: GraphClient,
 }
@@ -327,10 +350,11 @@ impl McpServer {
             },
             {
                 "name": "community_summary",
-                "description": "Identify the most connected hub files in the codebase.",
+                "description": "Show detected code communities (clusters of related functions). Returns pre-computed summaries with entry points, file lists, and descriptions. Query by name to filter, or omit for all communities.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "query": {"type": "string", "description": "Optional: filter communities by name/description match"},
                         "max_results": {"type": "integer", "default": 10}
                     }
                 }
@@ -2461,8 +2485,63 @@ impl McpServer {
     }
 
     fn tool_community_summary(&self, args: &Value) -> Result<String, String> {
-        let max_results = args.get("max_results").and_then(|v| v.as_i64()).unwrap_or(10);
+        let max_results = args.get("max_results").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
+        let query_filter = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
 
+        // Try pre-computed communities first
+        let repo = detect_repo_name_for_mcp();
+        if let Ok(communities) = crate::code_graph::load_communities(&repo) {
+            if !communities.is_empty() {
+                let filtered: Vec<&crate::code_graph::Community> = if query_filter.is_empty() {
+                    communities.iter().take(max_results).collect()
+                } else {
+                    let q = query_filter.to_lowercase();
+                    communities.iter()
+                        .filter(|c| {
+                            c.name.to_lowercase().contains(&q)
+                                || c.description.to_lowercase().contains(&q)
+                                || c.functions.iter().any(|f| f.to_lowercase().contains(&q))
+                        })
+                        .take(max_results)
+                        .collect()
+                };
+
+                if filtered.is_empty() {
+                    return Ok(format!("No communities matching '{}' found.", query_filter));
+                }
+
+                let mut lines = vec![format!("{} communities detected:", communities.len())];
+                for c in &filtered {
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "=== Module: {} ===",
+                        c.name
+                    ));
+                    lines.push(format!(
+                        "{} functions in {} files. Entry point: {}.",
+                        c.functions.len(),
+                        c.files.len(),
+                        c.key_function,
+                    ));
+                    lines.push(c.description.clone());
+                    let key_funcs: Vec<&str> = c.functions.iter().take(8).map(|s| s.as_str()).collect();
+                    lines.push(format!("Key functions: {}", key_funcs.join(", ")));
+                    if c.files.len() <= 5 {
+                        lines.push(format!("Files: {}", c.files.join(", ")));
+                    } else {
+                        let shown: Vec<&str> = c.files.iter().take(3).map(|s| s.as_str()).collect();
+                        lines.push(format!(
+                            "Files: {}, ... +{} more",
+                            shown.join(", "),
+                            c.files.len() - 3
+                        ));
+                    }
+                }
+                return Ok(lines.join("\n"));
+            }
+        }
+
+        // Fall back to graph query
         let query = format!(
             "MATCH (f:CodeFunction)-[r:CALLS]->() \
              RETURN f.file, count(r) AS edges \
@@ -2472,7 +2551,7 @@ impl McpServer {
         let rows = self.query_text(&self.client, &query, &[])?;
 
         if rows.is_empty() {
-            return Ok("No call edges found in the graph.".to_string());
+            return Ok("No call edges found in the graph. Run 'savants up' to index the codebase.".to_string());
         }
 
         let mut lines = vec!["Most connected hub files (by outgoing call edges):".to_string()];

@@ -147,6 +147,71 @@ impl CodeParser {
         }
     }
 
+    /// Parse a single file and return its entities and call sites.
+    /// Used for incremental indexing — avoids re-parsing the entire repo.
+    pub fn parse_single_file(&mut self, file_path: &Path, repo_root: &str) -> Option<ParseResult> {
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+        let file_entities = match ext {
+            "ts" | "tsx" => self.parse_file(file_path, repo_root, tree_sitter_typescript::language_tsx()),
+            "js" | "jsx" | "mjs" | "cjs" => self.parse_file(file_path, repo_root, tree_sitter_javascript::language()),
+            "py" | "pyi" => self.parse_file(file_path, repo_root, tree_sitter_python::language()),
+            "rs" => self.parse_file(file_path, repo_root, tree_sitter_rust::language()),
+            "go" => self.parse_file(file_path, repo_root, tree_sitter_go::language()),
+            "java" => self.parse_file(file_path, repo_root, tree_sitter_java::language()),
+            "c" | "h" => self.parse_file(file_path, repo_root, tree_sitter_c::language()),
+            "cpp" | "cc" | "cxx" | "hpp" | "hxx" => self.parse_file(file_path, repo_root, tree_sitter_cpp::language()),
+            "rb" => self.parse_file(file_path, repo_root, tree_sitter_ruby::language()),
+            "cs" => self.parse_file(file_path, repo_root, tree_sitter_c_sharp::language()),
+            _ => return None,
+        }?;
+
+        // Extract call sites from function bodies
+        let full_source = std::fs::read_to_string(file_path).unwrap_or_default();
+        let call_re = regex::Regex::new(r"(\w+)\s*\(").unwrap();
+        let skip_keywords = ["if", "for", "while", "return", "switch", "catch", "new",
+            "typeof", "await", "import", "require", "console", "Math",
+            "let", "mut", "pub", "fn", "mod", "use", "impl", "struct",
+            "enum", "match", "Some", "None", "Ok", "Err", "println", "eprintln",
+            "format", "vec", "assert", "assert_eq", "panic", "todo", "unimplemented",
+            "include_str", "cfg", "derive", "test", "allow", "warn", "deny"];
+
+        let mut call_sites = vec![];
+        for e in &file_entities {
+            if e.kind == "function" {
+                let start_line = e.line.saturating_sub(1);
+                let end_line = e.end_line;
+                let full_body: String = full_source.lines()
+                    .skip(start_line)
+                    .take(end_line - start_line)
+                    .collect::<Vec<&str>>()
+                    .join("\n");
+
+                for cap in call_re.captures_iter(&full_body) {
+                    let called = &cap[1];
+                    if called.len() > 1
+                        && !skip_keywords.contains(&called)
+                        && called != e.name
+                        && called.chars().next().map(|c| c.is_lowercase()).unwrap_or(false)
+                    {
+                        call_sites.push(CallSite {
+                            caller_file: e.file.clone(),
+                            caller_name: e.name.clone(),
+                            callee_name: called.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        Some(ParseResult {
+            repo: self.repo_name.clone(),
+            files: 1,
+            entities: file_entities,
+            call_sites,
+        })
+    }
+
     fn parse_file(&self, path: &Path, repo_root: &str, language: tree_sitter::Language) -> Option<Vec<ParsedEntity>> {
         let source = std::fs::read_to_string(path).ok()?;
         let mut parser = tree_sitter::Parser::new();

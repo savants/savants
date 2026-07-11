@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::find_in_path;
 use crate::embedded::EmbeddedEngine;
 
-pub async fn run(repo: Option<String>, _tail_lines: u32) {
+pub async fn run(repo: Option<String>, _tail_lines: u32, watch: bool) {
     println!("{}", "Starting Savants...".bold());
     println!();
 
@@ -72,6 +72,7 @@ pub async fn run(repo: Option<String>, _tail_lines: u32) {
     if let Some(ref repo_dir) = repo_path {
         index_code_repo(repo_dir);
         index_docs(repo_dir);
+        detect_and_save_communities(repo_dir);
     }
 
     // 2. Ingest host (pure Rust)
@@ -187,8 +188,28 @@ pub async fn run(repo: Option<String>, _tail_lines: u32) {
         println!("\nRun {} for full diagnosis.", "savants story".cyan());
     }
     println!("{}", "=".repeat(60));
-    println!("\nSavants is ready. Use the MCP tools from your AI assistant,");
-    println!("or run {} for live monitoring.", "savants k8s watch <cluster>".cyan());
+
+    // 6. If --watch flag is set, start the differential file watcher
+    if watch {
+        if let Some(ref repo_dir) = repo_path {
+            let repo_name = detect_repo_name(repo_dir);
+            println!("\n[{}] Starting differential file watcher for '{}'...",
+                "watch".bold(), repo_name.cyan());
+
+            let mut indexer = crate::file_watcher::DiffIndexer::new(repo_dir, &repo_name);
+            // Snapshot current mtimes so we only detect future changes
+            indexer.snapshot_mtimes();
+            // Poll every 500ms
+            indexer.watch(500);
+        } else {
+            println!("\n{}: --watch requires a git repo. Run from a git directory or pass --repo.",
+                "Error".red());
+        }
+    } else {
+        println!("\nSavants is ready. Use the MCP tools from your AI assistant,");
+        println!("or run {} for live monitoring.", "savants k8s watch <cluster>".cyan());
+        println!("Or run {} for incremental file watching.", "savants up --watch".cyan());
+    }
 }
 
 fn detect_k8s() -> Vec<String> {
@@ -451,6 +472,53 @@ fn save_doc_index(store_name: &str, sections: &[crate::doc_parser::DocSection]) 
     let json = serde_json::to_string(&entries).map_err(|e| format!("serialize: {}", e))?;
     std::fs::write(&path, json).map_err(|e| format!("write: {}", e))?;
     Ok(())
+}
+
+/// Detect code communities and save summaries to disk.
+fn detect_and_save_communities(repo_dir: &str) {
+    use crate::code_graph;
+
+    let repo_name = detect_repo_name(repo_dir);
+
+    // Load the code graph
+    let graph = match code_graph::load_graph(&repo_name) {
+        Ok(g) => g,
+        Err(_) => return, // No index yet, skip
+    };
+
+    println!("\n[{}] Detecting code communities...", "communities".bold());
+
+    let communities = graph.detect_communities();
+
+    if communities.is_empty() {
+        println!("  {}", "No communities detected (all functions isolated).".dimmed());
+        return;
+    }
+
+    // Save to disk
+    if let Err(e) = code_graph::save_communities(&repo_name, &communities) {
+        eprintln!("  {}: saving communities: {}", "Warning".yellow(), e);
+        return;
+    }
+
+    // Print summary
+    let names: Vec<String> = communities
+        .iter()
+        .take(8)
+        .map(|c| c.name.clone())
+        .collect();
+    let extra = if communities.len() > 8 {
+        format!(", ... +{} more", communities.len() - 8)
+    } else {
+        String::new()
+    };
+    println!(
+        "  {} Detected {} communities ({}{})",
+        "✓".green(),
+        communities.len(),
+        names.join(", "),
+        extra,
+    );
 }
 
 /// Save parsed entities to ~/.savants/code-index/{repo}.json for local queries.
