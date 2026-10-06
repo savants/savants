@@ -39,6 +39,14 @@ fn write_cache(version: &str) {
 /// Spawn a background task that checks for updates and prints a notice.
 /// Never blocks the main command.
 pub fn check_background() {
+    // 2026-09-30 legal review: no network egress without explicit
+    // opt-in. The update check polls releases.savants.dev daily even
+    // with the banner disabled — a phone-home that contradicts the
+    // product's local-only promise. The entire check (fetch included)
+    // is opt-in via SAVANTS_UPDATE_NOTICE.
+    if std::env::var("SAVANTS_UPDATE_NOTICE").is_err() {
+        return;
+    }
     tokio::spawn(async {
         // Check cache first
         if let Some((cached_version, ts)) = read_cache() {

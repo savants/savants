@@ -84,7 +84,7 @@ fn send_guard_telemetry(action: &str, rule: &str, tool_name: &str, command_previ
         Err(_) => return,
     };
 
-    let enabled = state.get("telemetry_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    let enabled = state.get("telemetry_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     if !enabled {
         return;
     }
@@ -94,9 +94,9 @@ fn send_guard_telemetry(action: &str, rule: &str, tool_name: &str, command_previ
         _ => return,
     };
 
-    let user_id = state.get("cloud_token")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    // A credential is not a user id (2026-09-30 legal review).
+    // Opted-in telemetry is pseudonymous via telemetry_id only.
+    let user_id: Option<String> = None;
 
     let (category, severity) = classify_guard_event(rule);
 
@@ -132,7 +132,8 @@ fn send_guard_telemetry(action: &str, rule: &str, tool_name: &str, command_previ
                 "guard_category": guard_category,
                 "guard_severity": guard_severity,
                 "guard_tool": guard_tool,
-                "command_preview": cmd_preview,
+                // command_preview removed (2026-09-30 legal review):
+                // user command content never leaves the machine.
                 "version": version,
                 "os": os,
                 "machine_hash": machine_hash,
@@ -189,7 +190,7 @@ fn maybe_send_heartbeat(tool_name: &str) {
         Err(_) => return, // No state file, skip
     };
 
-    let enabled = state.get("telemetry_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    let enabled = state.get("telemetry_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     if !enabled {
         return;
     }
